@@ -896,7 +896,7 @@ fixture and load on flat interfaces.
 | `aieng.read_audit_log` | Recent agent/user actions on this project |
 | `aieng.validate` | Schema + rule validation report (no mutation) |
 | `aieng.write_completeness_report` | What is missing before simulation |
-| `cae.prepare_solver_run` | Solver preflight — checks readiness, runs nothing |
+| `cae.prepare_solver_run` | Solver preflight — checks readiness, runs nothing. Returns `recommended_next_calls` — an array of actionable next steps for missing artifacts (see **Guided workflow** below) |
 | `cad.get_source` | Accumulated build123d source + `{named_parts, has_base}` — call before an incremental edit |
 | `cad.list_editable_parameters` | List the parameters editable fast via `cad.edit_parameter` (the "point" of point-and-shoot): per-parameter `featureId`/`parameterName`/`cad_parameter_name`/current/min-max + `scope` (`local`/`global`/`unscoped`) + a summary. Answers "what can I change here?" |
 | `cad.critique` | Deterministic engineering audit (min wall, hole sizes, floating components) — call after building an engineering part |
@@ -955,6 +955,50 @@ is possible).
 | `cae.generate_solver_input` | Generate CalculiX `.inp` deck from setup artifacts |
 | `cae.write_mesh_handoff` | Write mesh handoff contract for external Gmsh |
 | `cae.import_solver_evidence` | Import an external solver result file as evidence |
+
+### Guided workflow — `recommended_next_calls`
+
+`cae.prepare_solver_run` returns a `recommended_next_calls` field — an ordered
+list of actionable next steps for any missing artifacts. Each entry is one of:
+
+- **Tool entry** — `{"tool": "cae.xxx", "input": {...}, "reason": "..."}`
+  A concrete MCP tool call with its input payload and a human-readable reason.
+- **Environment entry** — `{"action": "...", "reason": "..."}`
+  A non-tool step (e.g. install CalculiX) that cannot be expressed as an MCP call.
+
+**Pattern:** after calling `cae.prepare_solver_run`, parse `recommended_next_calls`
+and execute each tool entry in order until the solver is ready. Never skip a
+recommended step or claim the solver ran without `cae.run_solver` completing.
+Solver execution stays **approval-gated** — presenting `recommended_next_calls`
+to the user is not approval.
+
+Example output when mesh, solver settings, and load case are all missing:
+```json
+"recommended_next_calls": [
+  {
+    "tool": "cae.write_mesh_handoff",
+    "input": {"project_id": "...", "handoff_id": "mesh_handoff_001"},
+    "reason": "No mesh files found in package. Write a mesh handoff contract or import a meshed CalculiX deck before generating solver input."
+  },
+  {
+    "tool": "cae.apply_setup_patch",
+    "input": {"project_id": "...", "patches": [...]},
+    "reason": "Missing solver settings. Create simulation/solver_settings.json ..."
+  },
+  {
+    "tool": "cae.generate_solver_input",
+    "input": {"project_id": "..."},
+    "reason": "Generate the CalculiX .inp deck once setup artifacts are in place."
+  },
+  {
+    "action": "Install CalculiX (ccx) on this machine",
+    "reason": "Solver executable not found; cae.run_solver will fail without it."
+  }
+]
+```
+
+When **all** artifacts are present and `ccx` is available, the final entry is
+`{"tool": "cae.run_solver", "input": {...}, "reason": "All preflight checks passed. Run the solver."}` — and `ready_to_run` is `true`.
 
 ### Simulation execution (requires approval — runs external CalculiX)
 
