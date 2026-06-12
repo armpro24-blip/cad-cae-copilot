@@ -896,7 +896,7 @@ fixture and load on flat interfaces.
 | `aieng.read_audit_log` | Recent agent/user actions on this project |
 | `aieng.validate` | Schema + rule validation report (no mutation) |
 | `aieng.write_completeness_report` | What is missing before simulation |
-| `cae.prepare_solver_run` | Solver preflight — checks readiness, runs nothing |
+| `cae.prepare_solver_run` | Solver preflight — checks readiness, runs nothing, and returns guided `recommended_next_calls` follow-ups |
 | `cad.get_source` | Accumulated build123d source + `{named_parts, has_base}` — call before an incremental edit |
 | `cad.list_editable_parameters` | List the parameters editable fast via `cad.edit_parameter` (the "point" of point-and-shoot): per-parameter `featureId`/`parameterName`/`cad_parameter_name`/current/min-max + `scope` (`local`/`global`/`unscoped`) + a summary. Answers "what can I change here?" |
 | `cad.critique` | Deterministic engineering audit (min wall, hole sizes, floating components) — call after building an engineering part |
@@ -1060,6 +1060,22 @@ whole script each time.
 7. cae.extract_field_regions  { project_id }
 8. postprocess.refresh_cae_summary { project_id }
 ```
+Interpret step 3 as a guided-workflow checkpoint, not just a boolean readiness
+probe. `cae.prepare_solver_run` returns `recommended_next_calls`, a list of
+actionable next steps that external agents should surface directly to the user
+or execute in order when approval allows:
+
+- Tool-backed follow-ups use `{tool, input, reason}`. These are concrete MCP
+  calls such as `cae.apply_setup_patch`, `cae.write_mesh_handoff`,
+  `cae.generate_solver_input`, or, when everything is ready, `cae.run_solver`.
+- Environment/setup follow-ups use `{action, reason}` when the next step is not
+  an MCP tool call, such as installing CalculiX or setting `AIENG_CCX_CMD`.
+
+Treat these recommendations as the canonical next-step contract for the CAE
+flow. Present them honestly as pending work, keep solver execution
+approval-gated, and do not claim a solver run, mesh, deck, or results exist
+until the corresponding tool has actually completed and evidence artifacts are
+present.
 
 ### D — Inspect results and explain findings
 ```
