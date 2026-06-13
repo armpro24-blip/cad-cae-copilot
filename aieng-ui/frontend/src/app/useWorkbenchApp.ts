@@ -99,10 +99,9 @@ export function useWorkbenchApp() {
     cadPreviewFormat,
     cadGenerationProgress,
     setCadGenerationProgress,
-    heatmapActive,
     refreshViewerAsset,
     resetProjectDerivedState,
-  } = useEngineeringActions({ selectedId });
+  } = useEngineeringActions();
   const {
     pickedFaces,
     highlightedFaceIds,
@@ -125,17 +124,15 @@ export function useWorkbenchApp() {
   const { optimizationConvergence } = useOptimizationConvergence({ selectedId, geometryVersion });
 
   const fallbackViewerUrl = useMemo(() => projectViewerUrl(selectedProject), [selectedProject]);
-  const heatmapUrl = heatmapActive && selectedId ? `/api/projects/${selectedId}/stress-heatmap` : null;
-  const rawViewerUrl = heatmapUrl ?? cadPreviewUrl ?? summary?.viewer_url ?? fallbackViewerUrl;
+  const rawViewerUrl = cadPreviewUrl ?? summary?.viewer_url ?? fallbackViewerUrl;
   const viewerVersion = summary?.project?.updated_at ?? selectedProject?.updated_at ?? null;
   const effectiveViewerUrl = useMemo(
-    () => heatmapUrl ?? withAssetVersion(rawViewerUrl, viewerVersion),
-    [heatmapUrl, rawViewerUrl, viewerVersion],
+    () => withAssetVersion(rawViewerUrl, viewerVersion),
+    [rawViewerUrl, viewerVersion],
   );
   const summaryViewerFormat = typeof summary?.viewer?.asset_format === "string" ? summary.viewer.asset_format : null;
-  const effectiveViewerFormat = heatmapActive
-    ? "glb"
-    : (cadPreviewUrl ? cadPreviewFormat : null) ?? resolveAssetFormat(rawViewerUrl, summaryViewerFormat ?? selectedProject?.web_asset_format ?? null);
+  const effectiveViewerFormat =
+    (cadPreviewUrl ? cadPreviewFormat : null) ?? resolveAssetFormat(rawViewerUrl, summaryViewerFormat ?? selectedProject?.web_asset_format ?? null);
 
   const {
     liveSyncStatus,
@@ -385,7 +382,6 @@ export function useWorkbenchApp() {
     highlightedFaceIds,
     brepSnapshot,
     clearHighlightedFaces,
-    heatmapActive,
     settingsOpen,
     runtime,
     runtimeDraft,

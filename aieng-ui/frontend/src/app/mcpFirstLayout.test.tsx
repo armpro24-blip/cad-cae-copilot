@@ -84,7 +84,6 @@ function createMockApp(): Parameters<typeof AppChrome>[0]["app"] {
     highlightedFaceIds: new Set<string>(),
     brepSnapshot: null,
     clearHighlightedFaces: vi.fn(),
-    heatmapActive: false,
     settingsOpen: false,
     runtime: null,
     runtimeDraft: null,
