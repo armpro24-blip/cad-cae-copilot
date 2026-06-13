@@ -251,8 +251,14 @@ def test_agents_md_documents_prepare_solver_run_guided_workflow() -> None:
     assert "recommended_next_calls" in text
     assert "{tool, input, reason}" in text
     assert "{action, reason}" in text
-    assert "approval-gated" in lower
-    assert "evidence artifacts" in lower
+    anchor = lower.find("### c — cad → cae simulation pipeline")
+    assert anchor != -1
+    next_section = lower.find("\n### ", anchor + 1)
+    if next_section == -1:
+        next_section = len(lower)
+    prepare_solver_section = lower[anchor:next_section]
+    assert "approval-gated" in prepare_solver_section
+    assert "evidence artifacts" in prepare_solver_section
 
 
 # ---------------------------------------------------------------------------
