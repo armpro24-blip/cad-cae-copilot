@@ -19,8 +19,8 @@
   "surfaces": {
     "artifact_schemas": {
       "policy": "unstable",
-      "sha256": "ea9f409f9f334c7af098917960617d7617c4c59d6f9c7be00bd69566213684fe",
-      "version": "0.1.0-alpha.1"
+      "sha256": "08a7da338857aafecf85629df12cddd05c27c730f397a51c9a446853e1724f66",
+      "version": "0.1.0-alpha.2"
     },
     "mcp_tool_surface": {
       "policy": "unstable",
@@ -29,9 +29,9 @@
     },
     "skill_prompts": {
       "policy": "unstable",
-      "sha256": "dd61f3c819c538db13916ae4fb3f9dd9bd2f623447186e1e954a47cb43d6267b",
-      "version": "0.1.0-alpha.1"
+      "sha256": "4e324a4bc4388fdccf62a12b02464e8d9504f8a733937c63a43857e0813b4b0e",
+      "version": "0.1.0-alpha.2"
     }
   },
-  "version": "0.1.0-alpha.1"
+  "version": "0.1.0-alpha.2"
 }

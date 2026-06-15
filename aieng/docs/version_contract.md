@@ -79,6 +79,9 @@ After changing any tool schema, artifact schema, or skill prompt, run:
 python scripts/update_version_surface.py
 ```
 
+Text artifacts are normalized to LF line endings before hashing so the stored
+surface hashes are deterministic across Windows and Unix checkouts.
+
 If the change is breaking, manually bump the affected surface `version` in
 `aieng/src/aieng/schemas/version_surface.json` before committing. The
 anti-drift gate (`pytest aieng/tests/test_backend_stability_gate.py`) will fail

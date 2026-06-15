@@ -28,7 +28,9 @@ def _canonical_json_sha256(obj: object) -> str:
 
 
 def _hash_text(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    text = path.read_text(encoding="utf-8")
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def _hash_directory_texts(pattern: str) -> str:

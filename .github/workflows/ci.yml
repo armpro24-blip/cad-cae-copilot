@@ -64,6 +64,9 @@ jobs:
           pip install -e ../../aieng
           pip install -e .[dev]
 
+      - name: Version surface anti-drift
+        run: python ../../scripts/update_version_surface.py --check
+
       - name: Autopilot / adapter tests
         # Adapter tests mock the CLI subprocess (no real Claude/Codex needed);
         # autopilot tests use the deterministic fake adapter (no LLM/network).
