@@ -20,6 +20,15 @@ def load_manifest(run_dir: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def format_pct(value: float | str | None) -> str:
+    """Format a percentage value for the diff report."""
+    if value is None:
+        return "0.0%"
+    if isinstance(value, str):
+        return value
+    return f"{value:+.1f}%"
+
+
 def metric_delta(baseline: dict[str, Any], current: dict[str, Any], key: str) -> dict[str, Any] | None:
     """Compute a simple numeric delta for a scalar metric."""
     b = baseline.get(key)
@@ -30,8 +39,11 @@ def metric_delta(baseline: dict[str, Any], current: dict[str, Any], key: str) ->
         b_val = float(b)
         c_val = float(c)
         delta = c_val - b_val
-        pct = (delta / b_val * 100) if b_val != 0 else 0.0
-        return {"baseline": b_val, "current": c_val, "delta": delta, "delta_pct": pct}
+        if b_val == 0:
+            delta_pct = None if c_val == 0 else "∞"
+        else:
+            delta_pct = delta / b_val * 100
+        return {"baseline": b_val, "current": c_val, "delta": delta, "delta_pct": delta_pct}
     except (TypeError, ValueError):
         return None
 
@@ -41,7 +53,7 @@ def build_diff(baseline_dir: Path, current_dir: Path) -> str:
     current = load_manifest(current_dir)
 
     lines = [
-        f"# Regression Diff Report",
+        "# Regression Diff Report",
         "",
         f"- Baseline: `{baseline.get('run_id')}`",
         f"- Current: `{current.get('run_id')}`",
@@ -94,7 +106,7 @@ def build_diff(baseline_dir: Path, current_dir: Path) -> str:
                 d = metric_delta(b_volumes, c_volumes, part)
                 if d:
                     lines.append(
-                        f"| volume_{part} | {d['baseline']:.2f} | {d['current']:.2f} | {d['delta']:+.2f} ({d['delta_pct']:+.1f}%) |"
+                        f"| volume_{part} | {d['baseline']:.2f} | {d['current']:.2f} | {d['delta']:+.2f} ({format_pct(d['delta_pct'])}) |"
                     )
                 else:
                     lines.append(f"| volume_{part} | {b_volumes.get(part, '-')} | {c_volumes.get(part, '-')} | - |")

@@ -35,10 +35,12 @@ def test_runner_core_prompts(clean_runs: Path) -> None:
     assert manifest_path.exists()
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert not any(p["status"] == "failed" for p in manifest["prompts"])
-    assert any(p["status"] == "passed" for p in manifest["prompts"])
+    passed = [p for p in manifest["prompts"] if p["status"] == "passed"]
+    assert len(passed) >= 3, f"expected at least 3 passed core prompts, got {len(passed)}"
 
 
 def test_runner_all_prompts_load(clean_runs: Path) -> None:
+    expected_count = len(list((REGRESSION_DIR / "prompts").glob("*.md")))
     result = subprocess.run(
         [sys.executable, str(RUNNER), "--tags", "all", "--output", str(clean_runs / "run2")],
         capture_output=True,
@@ -47,11 +49,11 @@ def test_runner_all_prompts_load(clean_runs: Path) -> None:
     )
     assert result.returncode == 0, result.stderr
     manifest = json.loads((clean_runs / "run2" / "manifest.json").read_text(encoding="utf-8"))
-    assert len(manifest["prompts"]) == 22
+    assert len(manifest["prompts"]) == expected_count
     passed = sum(1 for p in manifest["prompts"] if p["status"] == "passed")
     skipped = sum(1 for p in manifest["prompts"] if p["status"] == "skipped")
     assert passed == 5
-    assert skipped == 17
+    assert skipped == expected_count - passed
 
 
 def test_compare_runs(clean_runs: Path) -> None:

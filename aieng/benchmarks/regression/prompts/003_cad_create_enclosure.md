@@ -1,6 +1,6 @@
 ---
 id: 003_cad_create_enclosure
-tags: [cad_create, mechanical]
+tags: [core, cad_create, mechanical]
 ---
 
 Create a rectangular electronics enclosure: 100mm x 60mm x 40mm with 2mm wall thickness.

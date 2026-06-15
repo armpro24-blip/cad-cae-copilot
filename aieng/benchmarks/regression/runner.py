@@ -22,7 +22,12 @@ import yaml
 
 
 PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
-FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
+
+# Ensure the aieng source package is importable for STEP import.
+_SRC_PATH = str(Path(__file__).resolve().parents[3] / "src")
+if _SRC_PATH not in sys.path:
+    sys.path.insert(0, _SRC_PATH)
+from aieng.geometry.step_importer import import_step_package
 
 # Minimal deterministic build123d scripts for the CAD-create prompts.
 CAD_CREATE_SCRIPTS: dict[str, str] = {
@@ -63,15 +68,11 @@ CUT_W, CUT_H = 20.0, 10.0
 with BuildPart() as enclosure:
     Box(W, H, D)
     fillet(enclosure.edges(), FILLET)
-    faces = enclosure.faces().sort_by(Axis.X)
-    offset_amount = -WALL
-    with BuildPart(mode=Mode.SUBTRACT) as shell:
-        with Locations((0, 0, 0)):
-            Box(W - 2 * WALL, H - 2 * WALL, D - 2 * WALL)
-    front = enclosure.faces().sort_by(Axis.X)[-1]
     with BuildPart(mode=Mode.SUBTRACT):
-        with Locations(front):
-            Box(CUT_W, CUT_H, WALL + 0.1, rotation=(0, 90, 0))
+        Box(W - 2 * WALL, H - 2 * WALL, D - 2 * WALL)
+    front = enclosure.faces().sort_by(Axis.X)[-1]
+    with Locations(front):
+        Box(CUT_W, CUT_H, WALL + 0.1)
 enclosure.part.label = "enclosure"
 result = enclosure.part
 ''',
@@ -90,10 +91,10 @@ result = tee
     "005_cad_create_mini_assembly": '''
 from build123d import *
 base = Box(80, 40, 5); base.label = "base_plate"; base.color = Color(0.8, 0.2, 0.2)
-pillar_l = Cylinder(5, 30); pillar_l.label = "pillar_left"; pillar_l.color = Color(0.2, 0.4, 0.8)
-pillar_l.position = (-30, 0, 2.5)
-pillar_r = Cylinder(5, 30); pillar_r.label = "pillar_right"; pillar_r.color = Color(0.2, 0.6, 0.4)
-pillar_r.position = (30, 0, 2.5)
+with Locations((-30, 0, 17.5)):
+    pillar_l = Cylinder(5, 30); pillar_l.label = "pillar_left"; pillar_l.color = Color(0.2, 0.4, 0.8)
+with Locations((30, 0, 17.5)):
+    pillar_r = Cylinder(5, 30); pillar_r.label = "pillar_right"; pillar_r.color = Color(0.2, 0.6, 0.4)
 result = Compound(children=[base, pillar_l, pillar_r])
 ''',
 }
@@ -151,9 +152,6 @@ export_step(result, r"{step_path.resolve().as_posix()}")
 
     # Import STEP into a minimal .aieng package.
     try:
-        sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "src"))
-        from aieng.geometry.step_importer import import_step_package
-
         import_step_package(step_path, package_path, overwrite=True)
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": f"STEP import failed: {exc}"}
@@ -167,7 +165,7 @@ export_step(result, r"{step_path.resolve().as_posix()}")
 def compute_step_metrics(step_path: Path) -> dict[str, Any]:
     """Use build123d to compute volumes and bounding boxes from a STEP file."""
     script = f"""
-import pickle
+import json
 from pathlib import Path
 from build123d import import_step, Compound
 shape = import_step(r"{step_path.resolve().as_posix()}")
@@ -183,7 +181,7 @@ for child in children:
     bboxes[label] = {{
         "x": float(bbox.size.X), "y": float(bbox.size.Y), "z": float(bbox.size.Z)
     }}
-pickle.dump({{"volumes": volumes, "bounding_boxes": bboxes, "part_count": len(volumes)}}, open("metrics.pkl", "wb"))
+Path("metrics.json").write_text(json.dumps({{"volumes": volumes, "bounding_boxes": bboxes, "part_count": len(volumes)}}))
 """
     with tempfile.TemporaryDirectory() as tmpdir:
         script_path = Path(tmpdir) / "metrics.py"
@@ -197,9 +195,7 @@ pickle.dump({{"volumes": volumes, "bounding_boxes": bboxes, "part_count": len(vo
         )
         if proc.returncode != 0:
             return {"error": proc.stderr or "metrics computation failed"}
-        import pickle
-
-        return pickle.loads((Path(tmpdir) / "metrics.pkl").read_bytes())
+        return json.loads((Path(tmpdir) / "metrics.json").read_text(encoding="utf-8"))
 
 
 def enrich_package_with_metrics(package_path: Path, metrics: dict[str, Any]) -> None:
