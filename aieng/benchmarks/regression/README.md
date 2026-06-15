@@ -1,77 +1,67 @@
 # Workbench Regression Benchmark
 
-A lightweight, fixed-prompt regression suite for the CAD/CAE workbench. It runs a
-collection of representative prompts, captures the resulting artifacts, and can
-diff two runs to spot regressions.
+A regression benchmark kit for the CAD/CAE workbench. Unlike a self-contained
+script that calls an LLM internally, this kit is designed to be executed by an
+external AI agent (Claude Code, Codex, etc.) through its own MCP connection.
+This makes the benchmark test the real agent path: tool choice, intent routing,
+approval handling, and final artifacts.
 
-## Quick start
+## For agents
+
+Start here: [`AGENT_BENCHMARK_RUNBOOK.md`](AGENT_BENCHMARK_RUNBOOK.md)
+
+## For humans
+
+### What is included
+
+- `prompts/` — ~22 fixed Markdown prompts with YAML front-matter (`id`, `tags`, optional `seed_package`).
+- `AGENT_BENCHMARK_RUNBOOK.md` — step-by-step guide for an AI agent.
+- `init_run.py` — creates a run directory with one subdirectory per prompt.
+- `record.py` — records the result of a single prompt after the agent executes it.
+- `compare.py` — diffs two runs and emits a Markdown report.
+- `tests/test_regression.py` — smoke tests for the kit plumbing.
+
+### Typical workflow
+
+1. An agent initializes a run:
+   ```bash
+   cd aieng/benchmarks/regression
+   python init_run.py --tags core --output runs/run_$(date -u +%Y%m%dT%H%M%SZ)
+   ```
+
+2. The agent reads `AGENT_BENCHMARK_RUNBOOK.md` and executes each prompt through MCP.
+
+3. After each prompt, the agent records the result:
+   ```bash
+   python record.py \
+     --run runs/run_20260615T083000Z \
+     --prompt 001_cad_create_bracket \
+     --status passed \
+     --metrics runs/run_20260615T083000Z/001_cad_create_bracket/metrics.json \
+     --artifacts package.aieng,generated.step
+   ```
+
+4. Compare against a baseline:
+   ```bash
+   python compare.py \
+     --baseline runs/run_20260610T000000Z \
+     --current runs/run_20260615T083000Z
+   ```
+
+5. Review `runs/run_20260615T083000Z/diff_against_baseline.md`.
+
+### Tags
+
+- `core` — fastest, most stable prompts (run these first)
+- `cad_create`, `cad_modify`, `cae`, `optimization`, `critique`, `intent` — capability groups
+- `mechanical` — mechanical engineering prompts
+
+### Local smoke tests
 
 ```bash
-# Run the core subset (fastest path)
-python aieng/benchmarks/regression/runner.py --tags core
-
-# Run all prompts
-python aieng/benchmarks/regression/runner.py --tags all
-
-# Run only CAE prompts
-python aieng/benchmarks/regression/runner.py --tags cae
+cd aieng
+python -m pytest benchmarks/regression/tests/test_regression.py -v
 ```
 
-Each run creates a directory under `runs/`:
-
-```
-runs/run_20260615T083000Z/
-├── manifest.json
-├── 001_cad_create_bracket/
-│   ├── prompt.md
-│   ├── generated.step
-│   ├── package.aieng
-│   └── metrics.json
-└── ...
-```
-
-## Compare two runs
-
-```bash
-python aieng/benchmarks/regression/compare.py \
-  --baseline runs/run_20260610T000000Z \
-  --current runs/run_20260615T083000Z
-```
-
-The diff report is written to `runs/run_20260615T083000Z/diff_against_baseline.md`.
-
-## Prompts
-
-Prompts live in `prompts/` as Markdown files with a small YAML front-matter block:
-
-```markdown
----
-id: 001_cad_create_bracket
-tags: [core, cad_create, mechanical]
----
-
-Create an aluminum L-bracket...
-```
-
-| Category | Count | IDs |
-|---|---|---|
-| CAD create | 5 | 001-005 |
-| CAD modify | 3 | 006-008 |
-| CAE | 4 | 009-012 |
-| Optimization / design study | 3 | 013-015 |
-| Critique | 2 | 016-017 |
-| Autopilot intent | 5 | 018-022 |
-
-## Current runner coverage
-
-The initial `runner.py` focuses on the CAD-create prompts because they can be
-executed deterministically without an LLM. Other prompts are loaded and reported
-as `skipped` until the backend adapter is extended to handle modify, CAE,
-optimization, critique, and intent-routing workflows.
-
-Run `runner.py --tags core` to exercise only the implemented CAD-create prompts.
-
-## Exit codes
-
-- `0`: no prompts failed
-- `1`: at least one prompt failed, or no prompts matched the requested tags
+The tests verify `init_run.py`, `record.py`, and `compare.py` plumbing without
+requiring a live MCP connection or LLM.
