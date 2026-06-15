@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from types import ModuleType
+
+import pytest
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCRIPT_PATH = _REPO_ROOT / "scripts" / "update_version_surface.py"
 
 
-def _load_script_module():
+def _load_script_module() -> ModuleType:
+    """Load the version-surface script as an importable test module."""
     spec = importlib.util.spec_from_file_location("update_version_surface", _SCRIPT_PATH)
     assert spec is not None
     assert spec.loader is not None
@@ -19,8 +23,9 @@ def _load_script_module():
 
 def test_directory_text_hash_is_independent_of_checkout_line_endings(
     tmp_path: Path,
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Text directory hashes must match for equivalent LF and CRLF files."""
     module = _load_script_module()
     schema = tmp_path / "schemas" / "example.schema.json"
     schema.parent.mkdir()
