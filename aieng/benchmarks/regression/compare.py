@@ -111,6 +111,17 @@ def build_diff(baseline_dir: Path, current_dir: Path) -> str:
                 else:
                     lines.append(f"| volume_{part} | {b_volumes.get(part, '-')} | {c_volumes.get(part, '-')} | - |")
 
+            # Bounding boxes per named part
+            b_bboxes = b_metrics.get("bounding_boxes", {})
+            c_bboxes = c_metrics.get("bounding_boxes", {})
+            for part in sorted(set(b_bboxes) | set(c_bboxes)):
+                for axis in ("x", "y", "z"):
+                    d = metric_delta(b_bboxes.get(part, {}), c_bboxes.get(part, {}), axis)
+                    if d:
+                        lines.append(
+                            f"| bbox_{part}_{axis} | {d['baseline']:.2f} | {d['current']:.2f} | {d['delta']:+.2f} ({format_pct(d['delta_pct'])}) |"
+                        )
+
             # Part count
             d = metric_delta(b_metrics, c_metrics, "part_count")
             if d:

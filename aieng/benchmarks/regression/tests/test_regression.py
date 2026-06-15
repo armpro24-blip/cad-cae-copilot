@@ -117,4 +117,7 @@ def test_compare_two_runs(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stderr
     diff = (tmp_path / "diff.md").read_text(encoding="utf-8")
-    assert "Delta" in diff or "baseline" in diff
+    assert "Baseline" in diff
+    assert "volume_bracket" in diff
+    # Verify the delta between 10000 and 12000 is rendered.
+    assert any(token in diff for token in ("+2000", "2000.00", "20.0%"))
