@@ -1,4 +1,4 @@
-﻿# Python
+# Python
 __pycache__/
 *.py[cod]
 *.pyo
@@ -41,3 +41,6 @@ benchmarks/llm_engineering_usefulness/scenarios/*/fixture.aieng
 
 # Local scratch notes
 tmp/
+
+# Regression benchmark run artifacts
+benchmarks/regression/runs/
