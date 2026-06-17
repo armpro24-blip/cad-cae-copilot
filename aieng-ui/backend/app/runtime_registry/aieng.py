@@ -425,11 +425,10 @@ def register_aieng_tools(rt: Any, active_settings: Any, app_context: Any, _schem
                     }
                     raise _ShapeIRRepresentationHandled()
 
-                step_bytes, stl_bytes, glb_bytes, topo = _cad_generation._execute_build123d_code(
+                step_bytes, stl_bytes, glb_bytes, topo, mesh_meta = _cad_generation._execute_build123d_code(
                     source_code,
                     timeout=int(inp.get("timeout") or 60),
                 )
-                mesh_meta = topo.pop("_mesh_meta", None) if isinstance(topo, dict) else None
                 feature_graph = _cad_generation._topology_to_feature_graph(
                     topo,
                     source_code=source_code,

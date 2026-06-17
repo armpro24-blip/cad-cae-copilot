@@ -156,7 +156,7 @@ def _fake_stream(code, timeout=60):
     yield {"kind": "heartbeat", "elapsed_s": 0}
     yield {"kind": "heartbeat", "elapsed_s": 2}
     yield {"kind": "result", "step_bytes": _FAKE_STEP, "stl_bytes": _FAKE_STL,
-           "glb_bytes": _FAKE_GLB, "topo": _FAKE_TOPO}
+           "glb_bytes": _FAKE_GLB, "topo": _FAKE_TOPO, "mesh_meta": None}
 
 
 def test_invoke_cad_execute_publishes_build_progress(tmp_path: Path) -> None:

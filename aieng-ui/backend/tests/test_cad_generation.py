@@ -315,7 +315,7 @@ def test_execute_build123d_code_success(tmp_path: Path) -> None:
         return result_mock
 
     with patch("app.cad_generation.subprocess.run", side_effect=_fake_run):
-        step_bytes, stl_bytes, glb_bytes, topo = _execute_build123d_code("result = Box(10, 10, 10)")
+        step_bytes, stl_bytes, glb_bytes, topo, _mesh_meta = _execute_build123d_code("result = Box(10, 10, 10)")
 
     assert step_bytes == fake_step
     assert stl_bytes == fake_stl
@@ -467,7 +467,7 @@ def test_execute_build123d_code_with_bd_warehouse_fastener() -> None:
         "screw.label = 'mounting_bolt_M6'\n"
         "result = screw\n"
     )
-    step_bytes, stl_bytes, _glb_bytes, topo = _execute_build123d_code(code)
+    step_bytes, stl_bytes, _glb_bytes, topo, _mesh_meta = _execute_build123d_code(code)
     assert step_bytes[:13] == b"ISO-10303-21;"
     assert stl_bytes
     assert isinstance(topo, dict) and topo.get("entities")
@@ -516,7 +516,7 @@ def test_execute_build123d_bd_warehouse_clearance_hole_bolt_pattern() -> None:
         "    screws.append(s)\n"
         "result = Compound(children=[plate] + screws)\n"
     )
-    step_bytes, stl_bytes, _glb_bytes, topo = _execute_build123d_code(code)
+    step_bytes, stl_bytes, _glb_bytes, topo, _mesh_meta = _execute_build123d_code(code)
     # the build succeeds (this is the core #35 regression — no AttributeError)
     assert step_bytes[:13] == b"ISO-10303-21;"
     assert stl_bytes
@@ -549,7 +549,7 @@ def test_execute_build123d_freeform_faces_get_rich_surface_metadata() -> None:
 body = lofted_stack([(0, 20, 10), (15, 26, 14), (30, 12, 8)], label="shell")
 result = body
 """
-    _step, _stl, _glb, topo = _execute_build123d_code(code, timeout=60)
+    _step, _stl, _glb, topo, _mesh_meta = _execute_build123d_code(code, timeout=60)
     freeform_faces = [
         entity for entity in topo.get("entities", [])
         if entity.get("type") == "face" and entity.get("freeform") is True
@@ -775,6 +775,11 @@ def test_execute_build123d_append_three_times_preserves_parts(tmp_path: Path) ->
         assert out["status"] == "ok"
 
     assert sorted(out["named_parts"]) == ["fuselage", "motor_pod_FL", "motor_pod_FR"]
+    assert out["mesh_meta"] is not None
+    body_colors = {b["name"]: b["color"] for b in out["mesh_meta"]["bodies"] if b.get("name")}
+    assert body_colors.get("fuselage") == [1.0, 0.0, 0.0]
+    assert body_colors.get("motor_pod_FL") == [0.0, 1.0, 0.0]
+    assert body_colors.get("motor_pod_FR") == [0.0, 0.0, 1.0]
 
 
 def test_execute_build123d_replace_summary_fields(tmp_path: Path) -> None:
@@ -878,7 +883,7 @@ _FAKE_GLB = b"glTF\x02\x00\x00\x00"  # minimal GLB magic
 
 
 def _fake_execute_ok(code, timeout=60):
-    return _FAKE_STEP, _FAKE_STL, _FAKE_GLB, _SAMPLE_TOPOLOGY
+    return _FAKE_STEP, _FAKE_STL, _FAKE_GLB, _SAMPLE_TOPOLOGY, None
 
 
 def test_generate_cad_endpoint_dry_run(tmp_path: Path) -> None:
@@ -1160,7 +1165,7 @@ def test_cad_refine_tool_uses_server_env_key_and_mocked_refinement(
     with (
         patch("app.cad_generation.Build123dBackend.can_generate", return_value=True),
         patch("app.cad_generation.call_claude_for_build123d_refinement", return_value=refined_code) as refine_mock,
-        patch("app.cad_generation._execute_build123d_code", return_value=(_FAKE_STEP, _FAKE_STL, _FAKE_GLB, topo)),
+        patch("app.cad_generation._execute_build123d_code", return_value=(_FAKE_STEP, _FAKE_STL, _FAKE_GLB, topo, None)),
     ):
         out = _rt.invoke_tool(
             "cad.refine",
@@ -1205,6 +1210,7 @@ def _fake_stream_ok(code, timeout=60):
         "stl_bytes": _FAKE_STL,
         "glb_bytes": _FAKE_GLB,
         "topo": _SAMPLE_TOPOLOGY,
+        "mesh_meta": None,
     }
 
 
@@ -1894,7 +1900,7 @@ def test_cylinder_face_carries_axis_for_mate_predicates(tmp_path: Path) -> None:
     from app.cad_generation import _execute_build123d_code
 
     # the concentric/tangent mate predicates need cylinder faces to carry an axis
-    _s, _st, _g, topo = _execute_build123d_code("from build123d import *\nresult = Cylinder(6, 40)\n")
+    _s, _st, _g, topo, _mesh_meta = _execute_build123d_code("from build123d import *\nresult = Cylinder(6, 40)\n")
     cyls = [e for e in topo.get("entities", []) if e.get("type") == "face" and e.get("surface_type") == "cylinder"]
     assert cyls, "expected at least one cylindrical face"
     assert any(isinstance(c.get("axis"), list) and len(c["axis"]) == 3 for c in cyls)
@@ -1908,7 +1914,7 @@ def test_topology_extracts_edges_resolvable_in_brep_graph(tmp_path: Path) -> Non
     from app.brep_graph import build_brep_graph_from_topology
     from app.cad_generation import _execute_build123d_code
 
-    _s, _st, _g, topo = _execute_build123d_code("from build123d import *\nresult = Box(10, 10, 10)\n")
+    _s, _st, _g, topo, _mesh_meta = _execute_build123d_code("from build123d import *\nresult = Box(10, 10, 10)\n")
     raw_edges = [e for e in topo["entities"] if e.get("type") == "edge"]
     assert len(raw_edges) == 12, "a box has 12 edges"  # deduped, not 24 (per-face)
     assert all(len(e.get("adjacent_faces", [])) == 2 for e in raw_edges)  # each shared by 2 faces
@@ -1996,7 +2002,7 @@ def test_positioning_helpers_place_parts_relative(tmp_path: Path) -> None:
         "shaft = coaxial(Cylinder(3, 60), ref, axis='Z', label='shaft')\n"  # X,Y → ref center (10,20)
         "result = Compound(children=[plate, pin, shaft])\n"
     )
-    _s, _st, _g, topo = _execute_build123d_code(code)
+    _s, _st, _g, topo, _mesh_meta = _execute_build123d_code(code)
     bb = {e["name"]: e["bounding_box"] for e in topo["entities"] if e.get("type") == "solid"}
 
     def cx(b):
@@ -2067,7 +2073,7 @@ def test_large_bores_are_bores_not_mounting_holes(tmp_path: Path) -> None:
         "        Cylinder(11, 30, mode=Mode.SUBTRACT)\n"     # 2 bearing bores (r=11)
         "result = bp.part\n"
     )
-    _s, _st, _g, topo = _execute_build123d_code(code)
+    _s, _st, _g, topo, _mesh_meta = _execute_build123d_code(code)
     fg = _topology_to_feature_graph(topo, source_code=code, model_kind="mechanical")
     types = [f["type"] for f in fg["features"]]
     assert "mounting_hole_pattern" in types          # the 4 small holes
@@ -2440,7 +2446,7 @@ def test_freeform_faces_get_proxy_normal(tmp_path: Path) -> None:
     from app.cad_generation import _execute_build123d_code
 
     # capsule = sphere caps + cylinder → all free-form / curved faces
-    _step, _stl, _glb, topo = _execute_build123d_code(
+    _step, _stl, _glb, topo, _mesh_meta = _execute_build123d_code(
         "arm = capsule(20, 80, label='arm')\nresult = Compound(children=[arm])\n"
     )
     freeform_faces = [
@@ -2649,7 +2655,7 @@ def test_execute_nurbs_source_builds_brep_face() -> None:
         ]},
     ]}
     src = compile_shape_ir_to_nurbs_source(payload)
-    step, stl, glb, topo = _execute_build123d_code(src, timeout=120)
+    step, stl, glb, topo, _mesh_meta = _execute_build123d_code(src, timeout=120)
     assert len(step) > 0
     faces = [e for e in topo.get("entities", []) if e.get("type") == "face"]
     assert faces, "NURBS surface must yield at least one B-Rep face"
@@ -3101,7 +3107,7 @@ def test_concurrent_cache_writes_produce_one_valid_entry(tmp_path: Path) -> None
     def _counting_executor(c, timeout=60):
         nonlocal calls
         calls += 1
-        return _FAKE_STEP, _FAKE_STL, _FAKE_GLB, dict(_SAMPLE_TOPOLOGY)
+        return _FAKE_STEP, _FAKE_STL, _FAKE_GLB, dict(_SAMPLE_TOPOLOGY), None
 
     def _write_once():
         with patch("app.cad_generation._execute_build123d_code", side_effect=_counting_executor):
@@ -3212,7 +3218,7 @@ def test_mutation_path_uses_shared_cache(tmp_path: Path) -> None:
     def _counting_executor(c, timeout=60):
         nonlocal calls
         calls += 1
-        return _FAKE_STEP, _FAKE_STL, _FAKE_GLB, dict(_SAMPLE_TOPOLOGY)
+        return _FAKE_STEP, _FAKE_STL, _FAKE_GLB, dict(_SAMPLE_TOPOLOGY), None
 
     with patch("app.cad_generation._execute_build123d_code", side_effect=_counting_executor):
         r1 = cad_generation._execute_build123d_cached(settings, code)
@@ -3235,7 +3241,7 @@ def test_remove_part_cache_hit_on_repeated_identical_remove(tmp_path: Path) -> N
     def _counting_executor(c, timeout=60):
         nonlocal calls
         calls += 1
-        return _FAKE_STEP, _FAKE_STL, _FAKE_GLB, dict(_SAMPLE_TOPOLOGY)
+        return _FAKE_STEP, _FAKE_STL, _FAKE_GLB, dict(_SAMPLE_TOPOLOGY), None
 
     with patch("app.cad_generation._execute_build123d_code", side_effect=_counting_executor):
         r1 = cad_generation._execute_build123d_cached(settings, modified)
@@ -3273,7 +3279,7 @@ def test_build_face_colors_from_mesh_meta_fallback() -> None:
     colors = _build_face_colors_from_mesh_meta(mesh_meta)
     assert colors is not None
     assert colors.shape == (10, 3)
-    np.testing.assert_allclose(colors[0], [1.0, 0.0, 0.0])
+    np.testing.assert_allclose(colors, np.tile([1.0, 0.0, 0.0], (10, 1)))
 
     # No available color → no fallback array.
     mesh_meta_no_color = {

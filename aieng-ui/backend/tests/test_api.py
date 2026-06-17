@@ -3573,7 +3573,7 @@ def test_aieng_convert_shape_ir_executes_and_publishes_glb(monkeypatch, tmp_path
     try:
         monkeypatch.setattr(
             "app.cad_generation._execute_build123d_code",
-            lambda *_args, **_kwargs: (b"ISO-10303-21;", b"solid\nendsolid\n", b"glTF\x02\x00\x00\x00", fake_topology),
+            lambda *_args, **_kwargs: (b"ISO-10303-21;", b"solid\nendsolid\n", b"glTF\x02\x00\x00\x00", fake_topology, None),
         )
         resp = client.post("/api/runtime/runs", json={
             "message": "convert shape ir",
