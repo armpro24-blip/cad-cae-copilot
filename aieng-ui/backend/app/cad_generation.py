@@ -1342,9 +1342,26 @@ if _aieng_use_combined and _aieng_combined_count > 0:
     out_stl.write_bytes(_aieng_hdr + _aieng_struct.pack("<I", _aieng_combined_count) + b"".join(_aieng_combined_tris))
 else:
     # Per-body path failed for at least one part — write whole-result STL and
-    # invalidate mesh_meta so the renderer falls back to default coloring.
+    # fall back to a single body colored with the top-level result color, so
+    # the thumbnail still shows a reasonable color instead of the default
+    # palette.
     _export("stl", result, out_stl)
-    _aieng_mesh_meta = {"bodies": []}
+    _aieng_fallback_raw = out_stl.read_bytes()
+    _aieng_fallback_tris = 0
+    if len(_aieng_fallback_raw) >= 84:
+        _aieng_fallback_tris = _aieng_struct.unpack("<I", _aieng_fallback_raw[80:84])[0]
+    _aieng_fallback_name = getattr(result, "label", None) or "result"
+    _aieng_fallback_col = _aieng_extract_color(result)
+    _aieng_mesh_meta = {
+        "bodies": [
+            {
+                "body_id": "body_fallback",
+                "name": _aieng_fallback_name,
+                "color": _aieng_fallback_col,
+                "triangle_count": _aieng_fallback_tris,
+            }
+        ]
+    }
 
 (out_stl.with_name("mesh_meta.json")).write_text(json.dumps(_aieng_mesh_meta, indent=2))
 
