@@ -759,6 +759,7 @@ def test_execute_build123d_boolean_preserves_part_labels_and_colors(tmp_path: Pa
         if evt.get("kind") == "result":
             result_evt = evt
     assert result_evt is not None
+    assert "_mesh_meta" in result_evt["topo"], "topo should include _mesh_meta with per-body colors"
     bodies = result_evt["topo"]["_mesh_meta"]["bodies"]
     by_name = {b["name"]: b for b in bodies}
     assert set(by_name) == {"left_block", "right_block"}
@@ -787,6 +788,7 @@ def test_execute_build123d_shapelist_preserves_part_labels_and_colors(tmp_path: 
         if evt.get("kind") == "result":
             result_evt = evt
     assert result_evt is not None
+    assert "_mesh_meta" in result_evt["topo"], "topo should include _mesh_meta with per-body colors"
     bodies = result_evt["topo"]["_mesh_meta"]["bodies"]
     by_name = {b["name"]: b for b in bodies}
     assert set(by_name) == {"red_box", "green_box"}
@@ -809,7 +811,8 @@ def test_execute_build123d_append_preserves_prior_part_colors(tmp_path: Path) ->
     )
     out1 = execute_build123d_code(settings, pid, {"code": base, "thumbnail": False})
     assert out1["status"] == "ok"
-    base_colors = {b["name"]: b["color"] for b in (out1["mesh_meta"] or {}).get("bodies", [])}
+    assert out1.get("mesh_meta") is not None, "execute_build123d_code should expose mesh_meta"
+    base_colors = {b["name"]: b["color"] for b in out1["mesh_meta"].get("bodies", [])}
     assert base_colors.get("fuselage") == [1.0, 0.0, 0.0]
 
     add = (
@@ -821,7 +824,8 @@ def test_execute_build123d_append_preserves_prior_part_colors(tmp_path: Path) ->
     )
     out2 = execute_build123d_code(settings, pid, {"code": add, "mode": "append", "thumbnail": False})
     assert out2["status"] == "ok"
-    colors = {b["name"]: b["color"] for b in (out2["mesh_meta"] or {}).get("bodies", [])}
+    assert out2.get("mesh_meta") is not None, "execute_build123d_code should expose mesh_meta"
+    colors = {b["name"]: b["color"] for b in out2["mesh_meta"].get("bodies", [])}
     assert colors.get("fuselage") == [1.0, 0.0, 0.0]
     assert colors.get("motor_pod_FL") == [0.0, 0.0, 1.0]
 

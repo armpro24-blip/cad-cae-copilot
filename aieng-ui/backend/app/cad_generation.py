@@ -916,14 +916,37 @@ def _aieng_recover_labels_and_colors(result, recovery):
         if b.get("name") and b.get("color")
     }
 
+    def _aieng_set_color(shape, color):
+        # Normalize to a build123d Color object for shape.color assignments.
+        if color is None:
+            return
+        try:
+            if isinstance(color, Color):
+                shape.color = color
+            elif isinstance(color, (list, tuple)) and len(color) >= 3:
+                shape.color = Color(float(color[0]), float(color[1]), float(color[2]))
+            elif hasattr(color, "r") and hasattr(color, "g") and hasattr(color, "b"):
+                shape.color = Color(float(color.r), float(color.g), float(color.b))
+        except Exception:
+            pass
+
     # Collect every labeled/colored shape from the executed script's globals.
+    # Use items() so we can also look up source_labels by the original variable name
+    # in case build123d dropped the metadata but the object itself is still there.
     candidates = []
-    for _aieng_obj in list(globals().values()):
+    for _aieng_name, _aieng_obj in list(globals().items()):
         try:
             if not isinstance(_aieng_obj, _aieng_build123d.Shape):
                 continue
             _aieng_label = getattr(_aieng_obj, "label", "") or ""
             _aieng_color = _aieng_extract_color(_aieng_obj)
+            # Merge in source-level label/color for this variable when the runtime
+            # value lost them (e.g. a boolean assigned back to the same name).
+            _src = source_labels.get(_aieng_name, {})
+            if not _aieng_label and _src.get("label"):
+                _aieng_label = _src["label"]
+            if not _aieng_color and _src.get("color"):
+                _aieng_color = _src["color"]
             if _aieng_label or _aieng_color:
                 candidates.append(
                     (_aieng_obj, _aieng_label, _aieng_color, _bbox_list(_aieng_obj.bounding_box()))
@@ -955,10 +978,7 @@ def _aieng_recover_labels_and_colors(result, recovery):
 
         # Append-mode color restoration: STEP import keeps labels but drops colors.
         if label and not color and label in name_to_color:
-            try:
-                shape.color = tuple(name_to_color[label])
-            except Exception:
-                pass
+            _aieng_set_color(shape, name_to_color[label])
 
         if not label or not color:
             matched_label, matched_color = _match_candidate(shape)
@@ -968,10 +988,7 @@ def _aieng_recover_labels_and_colors(result, recovery):
                 except Exception:
                     pass
             if matched_color and not color:
-                try:
-                    shape.color = tuple(matched_color)
-                except Exception:
-                    pass
+                _aieng_set_color(shape, matched_color)
 
         # Final fallback: source-level result.label / result.color assignment.
         if not getattr(shape, "label", "") and "result" in source_labels:
@@ -980,10 +997,7 @@ def _aieng_recover_labels_and_colors(result, recovery):
             except Exception:
                 pass
         if _aieng_extract_color(shape) is None and "result" in source_labels:
-            try:
-                shape.color = tuple(source_labels["result"]["color"])
-            except Exception:
-                pass
+            _aieng_set_color(shape, source_labels["result"]["color"])
 
     try:
         _aieng_solids = list(result.solids())
@@ -2589,11 +2603,27 @@ def _step_roundtrip_preserves_labels() -> bool:
                 "aieng_probe_left",
                 "aieng_probe_right",
             }.issubset(imported_labels)
-            colors_ok = all(
-                getattr(child, "color", None) is not None
-                for child in imported_children
-                if getattr(child, "label", "") in ("aieng_probe_left", "aieng_probe_right")
-            )
+            def _color_matches(child, expected):
+                c = getattr(child, "color", None)
+                if c is None:
+                    return False
+                if hasattr(c, "to_tuple"):
+                    t = c.to_tuple()
+                elif isinstance(c, (list, tuple)) and len(c) >= 3:
+                    t = c
+                elif hasattr(c, "r") and hasattr(c, "g") and hasattr(c, "b"):
+                    t = (c.r, c.g, c.b)
+                else:
+                    return False
+                return all(round(float(t[i]), 3) == round(float(expected[i]), 3) for i in range(3))
+
+            colors_ok = True
+            for child in imported_children:
+                label = getattr(child, "label", "")
+                if label == "aieng_probe_left":
+                    colors_ok = colors_ok and _color_matches(child, (1, 0, 0))
+                elif label == "aieng_probe_right":
+                    colors_ok = colors_ok and _color_matches(child, (0, 1, 0))
             _STEP_LABELS_SURVIVE_ROUNDTRIP = labels_ok and colors_ok
     except Exception:
         _STEP_LABELS_SURVIVE_ROUNDTRIP = False
@@ -2894,7 +2924,10 @@ def _execute_build123d_cached(
                 "cache_hit": True,
             }
 
-        step_bytes, stl_bytes, glb_bytes, topo = _execute_build123d_code(code, timeout=timeout)
+        recovery = {"source_labels": _extract_source_label_map(code)}
+        step_bytes, stl_bytes, glb_bytes, topo = _execute_build123d_code(
+            code, timeout=timeout, recovery=recovery
+        )
         mesh_meta = topo.pop("_mesh_meta", None) if isinstance(topo, dict) else None
         feature_graph = _topology_to_feature_graph(
             topo, source_code=code, model_kind=model_kind,
@@ -3808,6 +3841,8 @@ def _extract_design_rule_violation(stderr_text: str | None) -> str | None:
 def _execute_build123d_code(
     code: str,
     timeout: int = 60,
+    *,
+    recovery: dict[str, Any] | None = None,
 ) -> tuple[bytes, bytes, bytes, dict[str, Any]]:
     """Execute build123d code in a subprocess (blocking).
 
@@ -3829,6 +3864,14 @@ def _execute_build123d_code(
         out_topo = tmp / "topology.json"
         out_stl = tmp / "result.stl"
         out_glb = tmp / "result.glb"
+        recovery_path = tmp / "aieng_recovery.json"
+
+        env: dict[str, str] | None = None
+        if recovery:
+            recovery_path.write_text(
+                json.dumps(recovery, indent=2, default=str), encoding="utf-8"
+            )
+            env = {**os.environ, "AIENG_RECOVERY_PATH": str(recovery_path)}
 
         try:
             proc = subprocess.run(
@@ -3836,6 +3879,7 @@ def _execute_build123d_code(
                 capture_output=True,
                 text=True,
                 timeout=timeout,
+                env=env,
             )
         except subprocess.TimeoutExpired as exc:
             # Match the streaming path's failure mode: surface a clean RuntimeError
@@ -3903,7 +3947,9 @@ def validate_subpart(settings: Any, inp: dict[str, Any]) -> dict[str, Any]:
     timeout = max(1, min(timeout, 600))
 
     try:
-        _step, _stl, _glb, topo = _execute_build123d_code(code, timeout=timeout)
+        _step, _stl, _glb, topo = _execute_build123d_code(
+            code, timeout=timeout, recovery={"source_labels": _extract_source_label_map(code)}
+        )
     except DesignRuleViolation as exc:
         return {
             "status": "invalid",
@@ -5408,7 +5454,9 @@ def recompile_shape_ir_package(package_path: Path, *, timeout: int = 120, use_ca
     summary: dict[str, Any] = {"representation": representation, "runtime": runtime, "executed": False}
     try:
         if runtime == "build123d":
-            step, stl, glb, topo = _execute_build123d_code(source, timeout=timeout)
+            step, stl, glb, topo = _execute_build123d_code(
+                source, timeout=timeout, recovery={"source_labels": _extract_source_label_map(source)}
+            )
             if isinstance(topo, dict):
                 topo.pop("_mesh_meta", None)
             fg = _topology_to_feature_graph(topo, source_code=source, model_kind=str(payload.get("model_kind") or "auto"))
@@ -5748,7 +5796,9 @@ class Build123dBackend:
         for attempt in range(max_retries + 1):
             try:
                 step_bytes, stl_bytes, glb_bytes, topo = _execute_build123d_code(
-                    generated_code, timeout=timeout
+                    generated_code,
+                    timeout=timeout,
+                    recovery={"source_labels": _extract_source_label_map(generated_code)},
                 )
                 feature_graph = _topology_to_feature_graph(topo, source_code=generated_code)
                 face_count = sum(
@@ -6649,7 +6699,11 @@ def refine_cad_generation(
     )
 
     try:
-        step_bytes, stl_bytes, glb_bytes, topo = _execute_build123d_code(refined_code, timeout=timeout)
+        step_bytes, stl_bytes, glb_bytes, topo = _execute_build123d_code(
+            refined_code,
+            timeout=timeout,
+            recovery={"source_labels": _extract_source_label_map(refined_code)},
+        )
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"Refined CAD execution failed: {exc}")
 
