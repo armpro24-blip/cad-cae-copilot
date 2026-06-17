@@ -997,7 +997,10 @@ def _aieng_recover_labels_and_colors(result, recovery):
             except Exception:
                 pass
         if _aieng_extract_color(shape) is None and "result" in source_labels:
-            _aieng_set_color(shape, source_labels["result"]["color"])
+            try:
+                _aieng_set_color(shape, source_labels["result"]["color"])
+            except Exception:
+                pass
 
     try:
         _aieng_solids = list(result.solids())

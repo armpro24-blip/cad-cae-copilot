@@ -930,7 +930,7 @@ _FAKE_STL = b"solid result\nendsolid result"
 _FAKE_GLB = b"glTF\x02\x00\x00\x00"  # minimal GLB magic
 
 
-def _fake_execute_ok(code, timeout=60):
+def _fake_execute_ok(code, timeout=60, **kwargs):
     return _FAKE_STEP, _FAKE_STL, _FAKE_GLB, _SAMPLE_TOPOLOGY
 
 
@@ -3151,7 +3151,7 @@ def test_concurrent_cache_writes_produce_one_valid_entry(tmp_path: Path) -> None
     )
     calls = 0
 
-    def _counting_executor(c, timeout=60):
+    def _counting_executor(c, timeout=60, **kwargs):
         nonlocal calls
         calls += 1
         return _FAKE_STEP, _FAKE_STL, _FAKE_GLB, dict(_SAMPLE_TOPOLOGY)
@@ -3262,7 +3262,7 @@ def test_mutation_path_uses_shared_cache(tmp_path: Path) -> None:
     code = "from build123d import *\nresult = Box(1,1,1)"
     calls = 0
 
-    def _counting_executor(c, timeout=60):
+    def _counting_executor(c, timeout=60, **kwargs):
         nonlocal calls
         calls += 1
         return _FAKE_STEP, _FAKE_STL, _FAKE_GLB, dict(_SAMPLE_TOPOLOGY)
@@ -3285,7 +3285,7 @@ def test_remove_part_cache_hit_on_repeated_identical_remove(tmp_path: Path) -> N
     modified = code + cad_generation._REMOVE_PART_SNIPPET.format(label="body")
     calls = 0
 
-    def _counting_executor(c, timeout=60):
+    def _counting_executor(c, timeout=60, **kwargs):
         nonlocal calls
         calls += 1
         return _FAKE_STEP, _FAKE_STL, _FAKE_GLB, dict(_SAMPLE_TOPOLOGY)
