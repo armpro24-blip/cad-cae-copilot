@@ -707,6 +707,76 @@ def test_execute_build123d_append_preserves_prior_parts(tmp_path: Path) -> None:
     assert out["critique_diff"]["delta"]["high"] <= 0
 
 
+def test_execute_build123d_boolean_preserves_part_labels_and_colors(tmp_path: Path) -> None:
+    pytest.importorskip("build123d")
+    from app.cad_generation import execute_build123d_code
+
+    settings = _make_settings(tmp_path)
+    pid = _make_project(settings, "boolean-labels")
+    code = (
+        "from build123d import *\n"
+        "a = Box(10, 10, 10); a.label = 'part_a'; a.color = Color(1, 0, 0)\n"
+        "b = Box(10, 10, 10).moved(Location((20, 0, 0))); b.label = 'part_b'; b.color = Color(0, 1, 0)\n"
+        "result = a + b\n"
+    )
+    out = execute_build123d_code(settings, pid, {"code": code, "thumbnail": False})
+    assert out["status"] == "ok"
+    assert sorted(out["named_parts"]) == ["part_a", "part_b"]
+    assert out["mesh_meta"] is not None
+    body_colors = {b["name"]: b["color"] for b in out["mesh_meta"]["bodies"] if b["name"]}
+    assert body_colors.get("part_a") == [1.0, 0.0, 0.0]
+    assert body_colors.get("part_b") == [0.0, 1.0, 0.0]
+
+
+def test_execute_build123d_subtraction_preserves_part_label_and_color(tmp_path: Path) -> None:
+    pytest.importorskip("build123d")
+    from app.cad_generation import execute_build123d_code
+
+    settings = _make_settings(tmp_path)
+    pid = _make_project(settings, "subtraction-labels")
+    code = (
+        "from build123d import *\n"
+        "block = Box(20, 20, 20); block.label = 'block'; block.color = Color(1, 0, 0)\n"
+        "cutter = Box(5, 5, 30); cutter.label = 'cutter'; cutter.color = Color(0, 1, 0)\n"
+        "result = block - cutter\n"
+    )
+    out = execute_build123d_code(settings, pid, {"code": code, "thumbnail": False})
+    assert out["status"] == "ok"
+    assert out["named_parts"] == ["block"]
+    body = next((b for b in out["mesh_meta"]["bodies"] if b["name"] == "block"), None)
+    assert body is not None
+    assert body["color"] == [1.0, 0.0, 0.0]
+
+
+def test_execute_build123d_append_three_times_preserves_parts(tmp_path: Path) -> None:
+    pytest.importorskip("build123d")
+    from app.cad_generation import execute_build123d_code
+
+    settings = _make_settings(tmp_path)
+    pid = _make_project(settings, "append-three")
+    base = (
+        "from build123d import *\n"
+        "body = Box(40, 40, 10); body.label = 'fuselage'; body.color = Color(1, 0, 0)\n"
+        "result = Compound(children=[body])\n"
+    )
+    assert execute_build123d_code(settings, pid, {"code": base, "thumbnail": False})["status"] == "ok"
+
+    additions = [
+        ("motor_pod_FL", "Color(0, 1, 0)", "(-25, 0, 0)"),
+        ("motor_pod_FR", "Color(0, 0, 1)", "(25, 0, 0)"),
+    ]
+    for label, color, pos in additions:
+        add = (
+            f"from build123d import *\n"
+            f"arm = Cylinder(3, 30).moved(Location({pos})); arm.label = '{label}'; arm.color = {color}\n"
+            f"result = Compound(children=[previous_result, arm])\n"
+        )
+        out = execute_build123d_code(settings, pid, {"code": add, "mode": "append", "thumbnail": False})
+        assert out["status"] == "ok"
+
+    assert sorted(out["named_parts"]) == ["fuselage", "motor_pod_FL", "motor_pod_FR"]
+
+
 def test_execute_build123d_replace_summary_fields(tmp_path: Path) -> None:
     pytest.importorskip("build123d")
     from app.cad_generation import execute_build123d_code
@@ -3185,6 +3255,33 @@ def test_step_roundtrip_preserves_labels() -> None:
 
     result = _step_roundtrip_preserves_labels()
     assert isinstance(result, bool)
+
+
+def test_build_face_colors_from_mesh_meta_fallback() -> None:
+    """Fallback mesh_meta tints the whole mesh with the first available body color."""
+    import numpy as np
+    from app.cad_generation import _build_face_colors_from_mesh_meta
+
+    mesh_meta = {
+        "fallback": True,
+        "total_triangles": 10,
+        "bodies": [
+            {"body_id": "body_001", "name": "block", "color": [1.0, 0.0, 0.0], "triangle_count": 0},
+            {"body_id": "body_002", "name": "pin", "color": None, "triangle_count": 0},
+        ],
+    }
+    colors = _build_face_colors_from_mesh_meta(mesh_meta)
+    assert colors is not None
+    assert colors.shape == (10, 3)
+    np.testing.assert_allclose(colors[0], [1.0, 0.0, 0.0])
+
+    # No available color → no fallback array.
+    mesh_meta_no_color = {
+        "fallback": True,
+        "total_triangles": 10,
+        "bodies": [{"body_id": "body_001", "name": "block", "color": None, "triangle_count": 0}],
+    }
+    assert _build_face_colors_from_mesh_meta(mesh_meta_no_color) is None
 
 
 def test_execute_build123d_append_step_cache_mocked(tmp_path: Path) -> None:

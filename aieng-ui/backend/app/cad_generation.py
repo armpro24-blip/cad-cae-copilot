@@ -853,6 +853,108 @@ if isinstance(result, (list, tuple)) or type(result).__name__ == "ShapeList":
         result = Compound(children=_items)
 
 
+def _aieng_bbox_contains(outer, inner, tol=1e-4):
+    \"\"\"Return True if ``inner`` bounding box is contained within ``outer``.\"\"\"
+    return (
+        outer.min.X <= inner.min.X + tol
+        and outer.min.Y <= inner.min.Y + tol
+        and outer.min.Z <= inner.min.Z + tol
+        and outer.max.X >= inner.max.X - tol
+        and outer.max.Y >= inner.max.Y - tol
+        and outer.max.Z >= inner.max.Z - tol
+    )
+
+
+def _aieng_extract_color_local(part):
+    \"\"\"Normalize a build123d color attribute to an RGB float triplet.\"\"\"
+    try:
+        c = getattr(part, "color", None)
+        if c is None:
+            return None
+        if isinstance(c, (tuple, list)) and len(c) >= 3:
+            return [float(c[0]), float(c[1]), float(c[2])]
+        # Prefer tuple() over the deprecated to_tuple() for build123d Color.
+        try:
+            t = tuple(c)
+            if len(t) >= 3:
+                return [float(t[0]), float(t[1]), float(t[2])]
+        except Exception:
+            pass
+        if hasattr(c, "r") and hasattr(c, "g") and hasattr(c, "b"):
+            return [float(c.r), float(c.g), float(c.b)]
+        return None
+    except Exception:
+        return None
+
+
+def _aieng_recover_boolean_labels(result):
+    \"\"\"Recover labels/colors lost by build123d boolean or list-like results.
+
+    When ``result`` is a Compound with no accessible children but contains
+    multiple unlabeled solids, attempt to match each solid to a labeled operand
+    still present in ``globals()`` by bounding-box containment. Matched solids
+    are re-wrapped into a new Compound with labeled children so
+    ``_collect_parts`` can enumerate them by name.
+    \"\"\"
+    try:
+        # Collect labeled candidate operands from the user's namespace.
+        _candidates = []
+        for _name, _value in list(globals().items()):
+            if _name.startswith("_") or _name in ("result", "build123d", "__builtins__"):
+                continue
+            _label = getattr(_value, "label", "") or ""
+            if not _label:
+                continue
+            try:
+                _bbox = _value.bounding_box()
+            except Exception:
+                continue
+            if _bbox is None:
+                continue
+            _color = _aieng_extract_color_local(_value)
+            _candidates.append((_name, _value, _label, _bbox, _color))
+        if not _candidates:
+            return result
+
+        _children = list(getattr(result, "children", None) or [])
+        if _children:
+            return result
+
+        _solids = list(result.solids()) if hasattr(result, "solids") else []
+        if len(_solids) < 2:
+            return result
+
+        _labeled_solids = []
+        _child_labels = set()
+        for _solid in _solids:
+            _sbbox = _solid.bounding_box()
+            for _cname, _cval, _clabel, _cbbox, _ccolor in _candidates:
+                if _aieng_bbox_contains(_cbbox, _sbbox):
+                    if not (getattr(_solid, "label", "") or ""):
+                        _solid.label = _clabel
+                        if _ccolor is not None:
+                            _solid.color = Color(float(_ccolor[0]), float(_ccolor[1]), float(_ccolor[2]))
+                    break
+            _labeled_solids.append(_solid)
+            _l = getattr(_solid, "label", "") or ""
+            if _l:
+                _child_labels.add(_l)
+
+        if not _labeled_solids:
+            return result
+
+        _new_result = Compound(children=_labeled_solids)
+        _top_label = getattr(result, "label", "") or ""
+        if _top_label and _top_label not in _child_labels:
+            _new_result.label = _top_label
+        return _new_result
+    except Exception:
+        return result
+
+
+result = _aieng_recover_boolean_labels(result)
+
+
 def _bbox_list(bb):
     return [
         round(bb.min.X, 4), round(bb.min.Y, 4), round(bb.min.Z, 4),
@@ -1128,14 +1230,16 @@ def _aieng_extract_color(part):
             return None
         if isinstance(c, (tuple, list)) and len(c) >= 3:
             return [float(c[0]), float(c[1]), float(c[2])]
-        if hasattr(c, "to_tuple"):
-            t = c.to_tuple()
-            return [float(t[0]), float(t[1]), float(t[2])]
+        # Prefer tuple() over the deprecated to_tuple() for build123d Color.
+        try:
+            t = tuple(c)
+            if len(t) >= 3:
+                return [float(t[0]), float(t[1]), float(t[2])]
+        except Exception:
+            pass
         if hasattr(c, "r") and hasattr(c, "g") and hasattr(c, "b"):
             return [float(c.r), float(c.g), float(c.b)]
-        # Last resort: iterable of floats
-        t = tuple(c)
-        return [float(t[0]), float(t[1]), float(t[2])]
+        return None
     except Exception:
         return None
 
@@ -1167,9 +1271,29 @@ if _aieng_use_combined and _aieng_combined_count > 0:
     out_stl.write_bytes(_aieng_hdr + _aieng_struct.pack("<I", _aieng_combined_count) + b"".join(_aieng_combined_tris))
 else:
     # Per-body path failed for at least one part — write whole-result STL and
-    # invalidate mesh_meta so the renderer falls back to default coloring.
+    # keep a fallback mesh_meta with body names/colors so the thumbnail can still
+    # pick a reasonable tint instead of falling back to the generic palette.
     _export("stl", result, out_stl)
-    _aieng_mesh_meta = {"bodies": []}
+    _aieng_fallback_bodies = []
+    for _aieng_fbi, (_aieng_fpname, _aieng_fpart, _aieng_fisasm) in enumerate(_aieng_collected):
+        _aieng_fallback_bodies.append({
+            "body_id": f"body_{_aieng_fbi + 1:03d}",
+            "name": _aieng_fpname,
+            "color": _aieng_extract_color(_aieng_fpart),
+            "triangle_count": 0,
+        })
+    _aieng_total_tris = 0
+    try:
+        _aieng_fallback_raw = out_stl.read_bytes()
+        if len(_aieng_fallback_raw) >= 84:
+            _aieng_total_tris = _aieng_struct.unpack("<I", _aieng_fallback_raw[80:84])[0]
+    except Exception:
+        pass
+    _aieng_mesh_meta = {
+        "bodies": _aieng_fallback_bodies,
+        "fallback": True,
+        "total_triangles": _aieng_total_tris,
+    }
 
 (out_stl.with_name("mesh_meta.json")).write_text(json.dumps(_aieng_mesh_meta, indent=2))
 
@@ -1414,6 +1538,9 @@ def _build_face_colors_from_mesh_meta(mesh_meta: Any) -> Any:
 
     Bodies that supplied an explicit `.color` use that RGB; bodies without a
     color get a cycling palette entry so part boundaries are still visible.
+    When ``mesh_meta`` carries a fallback marker (per-body STL export failed),
+    the whole mesh is tinted with the first available body color instead of
+    defaulting to the generic palette.
     Returns None when mesh_meta is missing or invalid — caller then falls back
     to the default uniform tint inside render_mesh_thumbnail.
     """
@@ -1424,6 +1551,22 @@ def _build_face_colors_from_mesh_meta(mesh_meta: Any) -> Any:
         return None
     try:
         import numpy as np
+
+        # Fallback path: per-body STL export failed, but we still have body colors.
+        if mesh_meta.get("fallback"):
+            total_tris = int(mesh_meta.get("total_triangles", 0) or 0)
+            if total_tris <= 0:
+                return None
+            for body in bodies:
+                raw_color = body.get("color")
+                if (
+                    isinstance(raw_color, (list, tuple))
+                    and len(raw_color) >= 3
+                    and all(isinstance(x, (int, float)) for x in raw_color[:3])
+                ):
+                    color = [float(raw_color[0]), float(raw_color[1]), float(raw_color[2])]
+                    return np.asarray([color] * total_tris, dtype=float)
+            return None
 
         rows: list[list[float]] = []
         palette_idx = 0
@@ -2400,10 +2543,11 @@ _STEP_LABELS_SURVIVE_ROUNDTRIP: bool | None = None
 
 
 def _step_roundtrip_preserves_labels() -> bool:
-    """Check whether build123d preserves part labels through STEP export/import.
+    """Check whether build123d preserves part labels and colors through STEP export/import.
 
     Cached per-process so the probe runs at most once. Returns ``False`` when
-    build123d is unavailable or the roundtrip drops the label.
+    build123d is unavailable or the roundtrip drops either labels or colors,
+    because append-mode STEP prefix-reuse must not silently lose per-body color.
     """
     global _STEP_LABELS_SURVIVE_ROUNDTRIP
     if _STEP_LABELS_SURVIVE_ROUNDTRIP is not None:
@@ -2417,18 +2561,44 @@ def _step_roundtrip_preserves_labels() -> bool:
             path = Path(td) / "probe.step"
             left = b3d.Box(10, 10, 10)
             left.label = "aieng_probe_left"
+            left.color = b3d.Color(1, 0, 0)
             right = b3d.Box(10, 10, 10)
             right = right.translate((20, 0, 0))
             right.label = "aieng_probe_right"
+            right.color = b3d.Color(0, 1, 0)
             probe = b3d.Compound(children=[left, right])
             b3d.export_step(probe, str(path))
             imported = b3d.import_step(str(path))
             imported_children = list(getattr(imported, "children", None) or [])
             imported_labels = {getattr(child, "label", "") for child in imported_children}
-            _STEP_LABELS_SURVIVE_ROUNDTRIP = {
+            labels_ok = {
                 "aieng_probe_left",
                 "aieng_probe_right",
             }.issubset(imported_labels)
+
+            def _color_of(part):
+                c = getattr(part, "color", None)
+                if c is None:
+                    return None
+                if isinstance(c, (tuple, list)) and len(c) >= 3:
+                    return tuple(round(float(c[i]), 3) for i in range(3))
+                try:
+                    t = tuple(c)
+                    if len(t) >= 3:
+                        return tuple(round(float(t[i]), 3) for i in range(3))
+                except Exception:
+                    pass
+                return None
+
+            imported_colors = {
+                getattr(child, "label", ""): _color_of(child)
+                for child in imported_children
+            }
+            colors_ok = (
+                imported_colors.get("aieng_probe_left") == (1.0, 0.0, 0.0)
+                and imported_colors.get("aieng_probe_right") == (0.0, 1.0, 0.0)
+            )
+            _STEP_LABELS_SURVIVE_ROUNDTRIP = labels_ok and colors_ok
     except Exception:
         _STEP_LABELS_SURVIVE_ROUNDTRIP = False
     return _STEP_LABELS_SURVIVE_ROUNDTRIP
@@ -2812,6 +2982,7 @@ def _finish_execute_build123d_response(
         "write_files": write_files,
         "preview_url": f"/api/projects/{project_id}/cad-preview",
         "preview_format": "glb" if glb_bytes else "stl",
+        "mesh_meta": mesh_meta,
     }
     if critique_diff is not None:
         result["critique_diff"] = critique_diff
@@ -6190,6 +6361,7 @@ def execute_build123d_code(
         "write_files": write_files,
         "preview_url": f"/api/projects/{project_id}/cad-preview",
         "preview_format": "glb" if glb_bytes else "stl",
+        "mesh_meta": mesh_meta,
     }
 
     # Append-mode engineering-diagnostics diff (#216 follow-up): flag when this
