@@ -2537,7 +2537,7 @@ def _geometry_report_for_response(report: dict[str, Any], response_detail: str) 
     return report
 
 
-_BUILD123D_CACHE_FORMAT_VERSION = "1"
+_BUILD123D_CACHE_FORMAT_VERSION = "2"
 def _parse_cache_env(key: str, default: int) -> int:
     try:
         return int(os.environ[key])
@@ -4501,6 +4501,10 @@ def _write_cad_artifacts(
     generated_code: str,
     glb_bytes: bytes | None = None,
 ) -> None:
+    # _mesh_meta is a transient carrier for per-body colors; don't serialize it
+    # into the persisted topology_map.json artifact.
+    if isinstance(topology_map, dict) and "_mesh_meta" in topology_map:
+        topology_map = {k: v for k, v in topology_map.items() if k != "_mesh_meta"}
     artifacts: dict[str, bytes] = {
         "geometry/generated.step": step_bytes,
         "geometry/preview.stl": stl_bytes,
