@@ -3058,6 +3058,7 @@ def _finish_execute_build123d_response(
         "geometry_report": _geometry_report_for_response(geometry_report_full, response_detail),
         "geometry_report_summary": _geometry_report_summary(geometry_report_full),
         "modeling_fidelity": _fidelity_brief(topo, feature_graph),
+        "mesh_meta": mesh_meta,
         "written_artifacts": written,
         "write_files": write_files,
         "preview_url": f"/api/projects/{project_id}/cad-preview",

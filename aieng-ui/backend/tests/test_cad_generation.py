@@ -830,6 +830,51 @@ def test_execute_build123d_append_preserves_prior_part_colors(tmp_path: Path) ->
     assert colors.get("motor_pod_FL") == [0.0, 0.0, 1.0]
 
 
+def test_execute_build123d_three_appends_keep_named_parts_addressable(tmp_path: Path) -> None:
+    pytest.importorskip("build123d")
+    from app.cad_generation import execute_build123d_code
+
+    settings = _make_settings(tmp_path)
+    pid = _make_project(settings, "append-stack")
+    base = (
+        "from build123d import *\n"
+        "body = Box(40, 40, 10)\n"
+        "body.label = 'fuselage'\n"
+        "body.color = (1.0, 0.0, 0.0)\n"
+        "result = Compound(children=[body])\n"
+    )
+    out1 = execute_build123d_code(settings, pid, {"code": base, "thumbnail": False})
+    assert out1["status"] == "ok"
+
+    add1 = (
+        "from build123d import *\n"
+        "arm = Cylinder(3, 30)\n"
+        "arm.label = 'motor_pod_FL'\n"
+        "arm.color = (0.0, 0.0, 1.0)\n"
+        "result = Compound(children=[previous_result, arm])\n"
+    )
+    out2 = execute_build123d_code(settings, pid, {"code": add1, "mode": "append", "thumbnail": False})
+    assert out2["status"] == "ok"
+
+    add2 = (
+        "from build123d import *\n"
+        "pod = Sphere(5)\n"
+        "pod.label = 'sensor_pod'\n"
+        "pod.color = (0.0, 1.0, 0.0)\n"
+        "result = Compound(children=[previous_result, pod])\n"
+    )
+    out3 = execute_build123d_code(settings, pid, {"code": add2, "mode": "append", "thumbnail": False})
+    assert out3["status"] == "ok"
+    assert out3["mode"] == "append"
+    assert out3["used_base"] is True
+    named = {f["name"] for f in out3["feature_graph"]["features"] if f["type"] == "named_part"}
+    assert named == {"fuselage", "motor_pod_FL", "sensor_pod"}
+    colors = {b["name"]: b["color"] for b in out3["mesh_meta"].get("bodies", [])}
+    assert colors.get("fuselage") == [1.0, 0.0, 0.0]
+    assert colors.get("motor_pod_FL") == [0.0, 0.0, 1.0]
+    assert colors.get("sensor_pod") == [0.0, 1.0, 0.0]
+
+
 def test_execute_build123d_replace_summary_fields(tmp_path: Path) -> None:
     pytest.importorskip("build123d")
     from app.cad_generation import execute_build123d_code
