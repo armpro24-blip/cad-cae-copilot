@@ -181,6 +181,7 @@ def _build_resource_limit_preamble(limits: CadResourceLimits) -> str:
 # so all { } inside this string are literal Python syntax.
 
 _RUNNER_TEMPLATE = """\
+import os
 import sys
 import json
 import re
@@ -834,6 +835,26 @@ def _aieng_excepthook(_etype, _exc, _tb):
 sys.excepthook = _aieng_excepthook
 
 
+def _aieng_extract_color(part):
+    # Accept build123d Color, tuple/list, or anything exposing .r/.g/.b in 0..1.
+    try:
+        c = getattr(part, "color", None)
+        if c is None:
+            return None
+        if isinstance(c, (tuple, list)) and len(c) >= 3:
+            return [float(c[0]), float(c[1]), float(c[2])]
+        if hasattr(c, "to_tuple"):
+            t = c.to_tuple()
+            return [float(t[0]), float(t[1]), float(t[2])]
+        if hasattr(c, "r") and hasattr(c, "g") and hasattr(c, "b"):
+            return [float(c.r), float(c.g), float(c.b)]
+        # Last resort: iterable of floats
+        t = tuple(c)
+        return [float(t[0]), float(t[1]), float(t[2])]
+    except Exception:
+        return None
+
+
 # ---- aieng generated code ----
 __AIENG_GENERATED_CODE__
 # ---- end generated code ----
@@ -851,6 +872,162 @@ if isinstance(result, (list, tuple)) or type(result).__name__ == "ShapeList":
         result = _items[0]
     elif _items:
         result = Compound(children=_items)
+
+
+def _aieng_recover_labels_and_colors(result, recovery):
+    # Recover part labels/colors lost by build123d booleans/ShapeList/STEP import.
+    # Uses three sources of ground truth:
+    #   1. Labeled shapes still present in the runner's globals() (the original
+    #      operands before a boolean are usually still there).
+    #   2. A source-code label map produced by the parent from explicit
+    #      .label = ... / .color = ... assignments.
+    #   3. The previous run's mesh_meta, used in append mode to restore colors
+    #      that STEP import drops.
+    # If result is a Compound with multiple solids but no accessible children,
+    # the solids are re-wrapped into a Compound(children=[...]) so downstream
+    # _collect_parts can address each one by name.
+
+    def _bbox_list(bb):
+        return [
+            round(bb.min.X, 4), round(bb.min.Y, 4), round(bb.min.Z, 4),
+            round(bb.max.X, 4), round(bb.max.Y, 4), round(bb.max.Z, 4),
+        ]
+
+    def _bbox_contains(outer, inner, tol=1e-3):
+        if len(outer) != 6 or len(inner) != 6:
+            return False
+        return (
+            outer[0] - tol <= inner[0] and outer[3] + tol >= inner[3]
+            and outer[1] - tol <= inner[1] and outer[4] + tol >= inner[4]
+            and outer[2] - tol <= inner[2] and outer[5] + tol >= inner[5]
+        )
+
+    def _bbox_volume(bb):
+        if len(bb) != 6:
+            return 0.0
+        return max(0.0, bb[3] - bb[0]) * max(0.0, bb[4] - bb[1]) * max(0.0, bb[5] - bb[2])
+
+    source_labels = recovery.get("source_labels", {}) if isinstance(recovery, dict) else {}
+    prior_meta = recovery.get("prior_mesh_meta", {}) if isinstance(recovery, dict) else {}
+    _prior_bodies = (prior_meta.get("bodies") if isinstance(prior_meta, dict) else []) or []
+    name_to_color = {
+        b.get("name"): b.get("color")
+        for b in _prior_bodies
+        if b.get("name") and b.get("color")
+    }
+
+    # Collect every labeled/colored shape from the executed script's globals.
+    candidates = []
+    for _aieng_obj in list(globals().values()):
+        try:
+            if not isinstance(_aieng_obj, _aieng_build123d.Shape):
+                continue
+            _aieng_label = getattr(_aieng_obj, "label", "") or ""
+            _aieng_color = _aieng_extract_color(_aieng_obj)
+            if _aieng_label or _aieng_color:
+                candidates.append(
+                    (_aieng_obj, _aieng_label, _aieng_color, _bbox_list(_aieng_obj.bounding_box()))
+                )
+        except Exception:
+            pass
+
+    def _match_candidate(shape):
+        # Find the smallest labeled candidate whose bbox contains shape's bbox.
+        try:
+            sbb = _bbox_list(shape.bounding_box())
+        except Exception:
+            return None, None
+        matches = []
+        for _obj, label, color, cbb in candidates:
+            if not label and not color:
+                continue
+            if _bbox_contains(cbb, sbb):
+                matches.append((label, color, _bbox_volume(cbb)))
+        if not matches:
+            return None, None
+        # Prefer the smallest container to disambiguate e.g. an operand inside a helper.
+        matches.sort(key=lambda x: x[2])
+        return matches[0][0], matches[0][1]
+
+    def _apply(shape):
+        label = getattr(shape, "label", "") or ""
+        color = _aieng_extract_color(shape)
+
+        # Append-mode color restoration: STEP import keeps labels but drops colors.
+        if label and not color and label in name_to_color:
+            try:
+                shape.color = tuple(name_to_color[label])
+            except Exception:
+                pass
+
+        if not label or not color:
+            matched_label, matched_color = _match_candidate(shape)
+            if matched_label and not label:
+                try:
+                    shape.label = matched_label
+                except Exception:
+                    pass
+            if matched_color and not color:
+                try:
+                    shape.color = tuple(matched_color)
+                except Exception:
+                    pass
+
+        # Final fallback: source-level result.label / result.color assignment.
+        if not getattr(shape, "label", "") and "result" in source_labels:
+            try:
+                shape.label = source_labels["result"]["label"]
+            except Exception:
+                pass
+        if _aieng_extract_color(shape) is None and "result" in source_labels:
+            try:
+                shape.color = tuple(source_labels["result"]["color"])
+            except Exception:
+                pass
+
+    try:
+        _aieng_solids = list(result.solids())
+    except Exception:
+        _aieng_solids = []
+    try:
+        _aieng_children = list(getattr(result, "children", None) or [])
+    except Exception:
+        _aieng_children = []
+
+    if len(_aieng_solids) >= 2 and not _aieng_children:
+        # Boolean of separate solids produced a Compound with no children.
+        # Re-wrap the recovered solids so _collect_parts can enumerate them.
+        for s in _aieng_solids:
+            _apply(s)
+        if any(getattr(s, "label", "") for s in _aieng_solids):
+            try:
+                result = Compound(children=_aieng_solids)
+            except Exception:
+                pass
+    elif not _aieng_children:
+        # Single-solid result (possibly after a boolean fuse): recover any
+        # source-level label/color for the top-level shape.
+        _apply(result)
+    else:
+        # The result already exposes children (Compound/ShapeList). Trust those
+        # labels/colors to avoid duplicating names when a child is itself a
+        # labelled sub-assembly; only recover the top-level label if the source
+        # assigned one explicitly.
+        if "result" in source_labels:
+            _apply(result)
+
+    return result
+
+
+# Recover labels/colors that booleans, ShapeList, or STEP round-trip may drop.
+_recovery_path = os.environ.get("AIENG_RECOVERY_PATH")
+_recovery = {}
+if _recovery_path and Path(_recovery_path).exists():
+    try:
+        _recovery = json.loads(Path(_recovery_path).read_text(encoding="utf-8"))
+    except Exception:
+        _recovery = {}
+result = _aieng_recover_labels_and_colors(result, _recovery)
 
 
 def _bbox_list(bb):
@@ -1119,25 +1296,6 @@ _aieng_mesh_meta = {"bodies": []}
 _aieng_combined_tris: list[bytes] = []
 _aieng_combined_count = 0
 _aieng_use_combined = True
-
-def _aieng_extract_color(part):
-    # Accept build123d Color, tuple/list, or anything exposing .r/.g/.b in 0..1.
-    try:
-        c = getattr(part, "color", None)
-        if c is None:
-            return None
-        if isinstance(c, (tuple, list)) and len(c) >= 3:
-            return [float(c[0]), float(c[1]), float(c[2])]
-        if hasattr(c, "to_tuple"):
-            t = c.to_tuple()
-            return [float(t[0]), float(t[1]), float(t[2])]
-        if hasattr(c, "r") and hasattr(c, "g") and hasattr(c, "b"):
-            return [float(c.r), float(c.g), float(c.b)]
-        # Last resort: iterable of floats
-        t = tuple(c)
-        return [float(t[0]), float(t[1]), float(t[2])]
-    except Exception:
-        return None
 
 with _aieng_tempfile.TemporaryDirectory() as _aieng_td:
     for _aieng_bi, (_aieng_pname, _aieng_ppart, _aieng_is_assembly) in enumerate(_aieng_collected):
@@ -2400,10 +2558,10 @@ _STEP_LABELS_SURVIVE_ROUNDTRIP: bool | None = None
 
 
 def _step_roundtrip_preserves_labels() -> bool:
-    """Check whether build123d preserves part labels through STEP export/import.
+    """Check whether build123d preserves part labels and colors through STEP export/import.
 
     Cached per-process so the probe runs at most once. Returns ``False`` when
-    build123d is unavailable or the roundtrip drops the label.
+    build123d is unavailable or the roundtrip drops the label or color.
     """
     global _STEP_LABELS_SURVIVE_ROUNDTRIP
     if _STEP_LABELS_SURVIVE_ROUNDTRIP is not None:
@@ -2417,21 +2575,77 @@ def _step_roundtrip_preserves_labels() -> bool:
             path = Path(td) / "probe.step"
             left = b3d.Box(10, 10, 10)
             left.label = "aieng_probe_left"
+            left.color = b3d.Color(1, 0, 0)
             right = b3d.Box(10, 10, 10)
             right = right.translate((20, 0, 0))
             right.label = "aieng_probe_right"
+            right.color = b3d.Color(0, 1, 0)
             probe = b3d.Compound(children=[left, right])
             b3d.export_step(probe, str(path))
             imported = b3d.import_step(str(path))
             imported_children = list(getattr(imported, "children", None) or [])
             imported_labels = {getattr(child, "label", "") for child in imported_children}
-            _STEP_LABELS_SURVIVE_ROUNDTRIP = {
+            labels_ok = {
                 "aieng_probe_left",
                 "aieng_probe_right",
             }.issubset(imported_labels)
+            colors_ok = all(
+                getattr(child, "color", None) is not None
+                for child in imported_children
+                if getattr(child, "label", "") in ("aieng_probe_left", "aieng_probe_right")
+            )
+            _STEP_LABELS_SURVIVE_ROUNDTRIP = labels_ok and colors_ok
     except Exception:
         _STEP_LABELS_SURVIVE_ROUNDTRIP = False
     return _STEP_LABELS_SURVIVE_ROUNDTRIP
+
+
+_SOURCE_LABEL_RE = re.compile(
+    r"^(\w+)\s*\.\s*label\s*=\s*['\"]([^'\"]+)['\"]",
+    re.MULTILINE,
+)
+_SOURCE_COLOR_TUPLE_RE = re.compile(
+    r"^(\w+)\s*\.\s*color\s*=\s*(\([^)]+\)|\[[^\]]+\])",
+    re.MULTILINE,
+)
+_SOURCE_COLOR_CTOR_RE = re.compile(
+    r"^(\w+)\s*\.\s*color\s*=\s*Color\s*\(([^)]+)\)",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+
+def _extract_source_label_map(source_code: str) -> dict[str, dict[str, Any]]:
+    """Parse source.py for explicit `.label` / `.color` assignments.
+
+    Returns a mapping of variable name -> {"label": ..., "color": [r,g,b]}.
+    This is used by the runner as a fallback when build123d operations drop
+    labels/colors on the final result shape.
+    """
+    import ast
+
+    result: dict[str, dict[str, Any]] = {}
+    for m in _SOURCE_LABEL_RE.finditer(source_code):
+        var, label = m.group(1), m.group(2)
+        result.setdefault(var, {})["label"] = label
+    for m in _SOURCE_COLOR_TUPLE_RE.finditer(source_code):
+        var, expr = m.group(1), m.group(2)
+        try:
+            vals = ast.literal_eval(expr)
+            if isinstance(vals, (list, tuple)) and len(vals) >= 3:
+                result.setdefault(var, {})["color"] = [
+                    float(vals[0]), float(vals[1]), float(vals[2])
+                ]
+        except Exception:
+            pass
+    for m in _SOURCE_COLOR_CTOR_RE.finditer(source_code):
+        var, args = m.group(1), m.group(2)
+        try:
+            nums = [float(x.strip()) for x in args.split(",") if x.strip()]
+            if len(nums) >= 3:
+                result.setdefault(var, {})["color"] = nums[:3]
+        except Exception:
+            pass
+    return result
 
 
 def _build123d_cache_key(*, code: str, mode: str, model_kind: str) -> tuple[str, dict[str, Any]]:
@@ -4101,6 +4315,8 @@ def _execute_build123d_code_streaming(
     code: str,
     timeout: int = 60,
     heartbeat_interval_s: float = 2.0,
+    *,
+    recovery: dict[str, Any] | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Execute build123d code as a subprocess, yielding heartbeat dicts while it runs.
 
@@ -4112,6 +4328,12 @@ def _execute_build123d_code_streaming(
 
     The subprocess is always reaped before the generator returns, even when the
     caller stops consuming early (e.g. client disconnect).
+
+    Args:
+        recovery: optional hints for the runner to recover labels/colors that
+            build123d dropped during booleans/ShapeList/STEP import. Keys:
+            ``source_labels`` (var-name -> label/color map) and/or
+            ``prior_mesh_meta`` (previous run's mesh_meta for append mode).
     """
     runner_script = _build_resource_limit_preamble(
         _resource_limits_from_env(timeout)
@@ -4125,6 +4347,14 @@ def _execute_build123d_code_streaming(
         out_topo = tmp / "topology.json"
         out_stl = tmp / "result.stl"
         out_glb = tmp / "result.glb"
+        recovery_path = tmp / "aieng_recovery.json"
+
+        env: dict[str, str] | None = None
+        if recovery:
+            recovery_path.write_text(
+                json.dumps(recovery, indent=2, default=str), encoding="utf-8"
+            )
+            env = {**os.environ, "AIENG_RECOVERY_PATH": str(recovery_path)}
 
         proc = subprocess.Popen(
             [
@@ -4138,6 +4368,7 @@ def _execute_build123d_code_streaming(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            env=env,
         )
         start = time.monotonic()
         timed_out = False
@@ -5899,7 +6130,8 @@ def execute_build123d_code(
     last_error: str | None = None
     design_rule_message: str | None = None
     result_evt: dict[str, Any] | None = None
-    for evt in _execute_build123d_code_streaming(execution_code, timeout=timeout):
+    recovery = {"source_labels": _extract_source_label_map(storage_code)}
+    for evt in _execute_build123d_code_streaming(execution_code, timeout=timeout, recovery=recovery):
         kind = evt.get("kind")
         if kind == "heartbeat":
             _emit({"phase": "building", "elapsed_s": evt.get("elapsed_s", 0)})
@@ -6044,6 +6276,7 @@ def execute_build123d_code(
         "geometry_report": _geometry_report_for_response(geometry_report_full, response_detail),
         "geometry_report_summary": _geometry_report_summary(geometry_report_full),
         "modeling_fidelity": _fidelity_brief(topo, feature_graph),
+        "mesh_meta": mesh_meta,
         "written_artifacts": written,
         "write_files": write_files,
         "preview_url": f"/api/projects/{project_id}/cad-preview",
@@ -6170,7 +6403,8 @@ def run_cad_generation_stream(
     for attempt in range(max_retries + 1):
         attempt_error: str | None = None
         attempt_result: dict[str, Any] | None = None
-        for evt in _execute_build123d_code_streaming(generated_code, timeout=timeout):
+        recovery = {"source_labels": _extract_source_label_map(generated_code)}
+        for evt in _execute_build123d_code_streaming(generated_code, timeout=timeout, recovery=recovery):
             kind = evt.get("kind")
             if kind == "heartbeat":
                 elapsed_s = evt.get("elapsed_s", 0)

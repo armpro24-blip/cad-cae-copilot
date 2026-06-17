@@ -707,6 +707,125 @@ def test_execute_build123d_append_preserves_prior_parts(tmp_path: Path) -> None:
     assert out["critique_diff"]["delta"]["high"] <= 0
 
 
+def test_step_roundtrip_drops_colors() -> None:
+    pytest.importorskip("build123d")
+    from app.cad_generation import _step_roundtrip_preserves_labels
+
+    # build123d's import_step currently preserves labels but loses colors, so the
+    # append-mode prefix-reuse optimization must be disabled to avoid silent
+    # color loss.
+    assert _step_roundtrip_preserves_labels() is False
+
+
+def test_extract_source_label_map_parses_labels_and_colors() -> None:
+    from app.cad_generation import _extract_source_label_map
+
+    code = (
+        "from build123d import *\n"
+        "body = Box(10, 10, 10)\n"
+        "body.label = 'chassis'\n"
+        "body.color = (0.1, 0.2, 0.3)\n"
+        "pin = Cylinder(1, 5)\n"
+        "pin.color = Color(0.9, 0.8, 0.7)\n"
+        "result = Compound(children=[body, pin])\n"
+        "result.label = 'assembly'\n"
+    )
+    mapping = _extract_source_label_map(code)
+    assert mapping["body"]["label"] == "chassis"
+    assert mapping["body"]["color"] == [0.1, 0.2, 0.3]
+    assert "label" not in mapping["pin"]
+    assert mapping["pin"]["color"] == [0.9, 0.8, 0.7]
+    assert mapping["result"]["label"] == "assembly"
+
+
+def test_execute_build123d_boolean_preserves_part_labels_and_colors(tmp_path: Path) -> None:
+    pytest.importorskip("build123d")
+    from app.cad_generation import _execute_build123d_code_streaming, _extract_source_label_map
+
+    code = (
+        "from build123d import *\n"
+        "left = Box(10, 10, 10)\n"
+        "left.label = 'left_block'\n"
+        "left.color = (1.0, 0.0, 0.0)\n"
+        "right = Box(10, 10, 10)\n"
+        "right = right.translate((20, 0, 0))\n"
+        "right.label = 'right_block'\n"
+        "right.color = (0.0, 1.0, 0.0)\n"
+        "result = left + right\n"
+    )
+    recovery = {"source_labels": _extract_source_label_map(code)}
+    result_evt: dict[str, Any] | None = None
+    for evt in _execute_build123d_code_streaming(code, timeout=60, recovery=recovery):
+        if evt.get("kind") == "result":
+            result_evt = evt
+    assert result_evt is not None
+    bodies = result_evt["topo"]["_mesh_meta"]["bodies"]
+    by_name = {b["name"]: b for b in bodies}
+    assert set(by_name) == {"left_block", "right_block"}
+    assert by_name["left_block"]["color"] == [1.0, 0.0, 0.0]
+    assert by_name["right_block"]["color"] == [0.0, 1.0, 0.0]
+
+
+def test_execute_build123d_shapelist_preserves_part_labels_and_colors(tmp_path: Path) -> None:
+    pytest.importorskip("build123d")
+    from app.cad_generation import _execute_build123d_code_streaming, _extract_source_label_map
+
+    code = (
+        "from build123d import *\n"
+        "a = Box(10, 10, 10)\n"
+        "a.label = 'red_box'\n"
+        "a.color = (1.0, 0.0, 0.0)\n"
+        "b = Box(10, 10, 10)\n"
+        "b = b.translate((20, 0, 0))\n"
+        "b.label = 'green_box'\n"
+        "b.color = (0.0, 1.0, 0.0)\n"
+        "result = ShapeList([a, b])\n"
+    )
+    recovery = {"source_labels": _extract_source_label_map(code)}
+    result_evt: dict[str, Any] | None = None
+    for evt in _execute_build123d_code_streaming(code, timeout=60, recovery=recovery):
+        if evt.get("kind") == "result":
+            result_evt = evt
+    assert result_evt is not None
+    bodies = result_evt["topo"]["_mesh_meta"]["bodies"]
+    by_name = {b["name"]: b for b in bodies}
+    assert set(by_name) == {"red_box", "green_box"}
+    assert by_name["red_box"]["color"] == [1.0, 0.0, 0.0]
+    assert by_name["green_box"]["color"] == [0.0, 1.0, 0.0]
+
+
+def test_execute_build123d_append_preserves_prior_part_colors(tmp_path: Path) -> None:
+    pytest.importorskip("build123d")
+    from app.cad_generation import execute_build123d_code
+
+    settings = _make_settings(tmp_path)
+    pid = _make_project(settings, "append-colors")
+    base = (
+        "from build123d import *\n"
+        "body = Box(40, 40, 10)\n"
+        "body.label = 'fuselage'\n"
+        "body.color = (1.0, 0.0, 0.0)\n"
+        "result = Compound(children=[body])\n"
+    )
+    out1 = execute_build123d_code(settings, pid, {"code": base, "thumbnail": False})
+    assert out1["status"] == "ok"
+    base_colors = {b["name"]: b["color"] for b in (out1["mesh_meta"] or {}).get("bodies", [])}
+    assert base_colors.get("fuselage") == [1.0, 0.0, 0.0]
+
+    add = (
+        "from build123d import *\n"
+        "arm = Cylinder(3, 30)\n"
+        "arm.label = 'motor_pod_FL'\n"
+        "arm.color = (0.0, 0.0, 1.0)\n"
+        "result = Compound(children=[previous_result, arm])\n"
+    )
+    out2 = execute_build123d_code(settings, pid, {"code": add, "mode": "append", "thumbnail": False})
+    assert out2["status"] == "ok"
+    colors = {b["name"]: b["color"] for b in (out2["mesh_meta"] or {}).get("bodies", [])}
+    assert colors.get("fuselage") == [1.0, 0.0, 0.0]
+    assert colors.get("motor_pod_FL") == [0.0, 0.0, 1.0]
+
+
 def test_execute_build123d_replace_summary_fields(tmp_path: Path) -> None:
     pytest.importorskip("build123d")
     from app.cad_generation import execute_build123d_code
@@ -1126,7 +1245,7 @@ def test_cad_refine_tool_requires_server_env_key(tmp_path: Path, monkeypatch: py
 
 # ── execute_build123d_code (agent-supplied code, no LLM) ──────────────────────
 
-def _fake_stream_ok(code, timeout=60):
+def _fake_stream_ok(code, timeout=60, **kwargs):
     """Mimic _execute_build123d_code_streaming: a heartbeat then a result."""
     yield {"kind": "heartbeat", "elapsed_s": 0}
     yield {
@@ -1138,7 +1257,7 @@ def _fake_stream_ok(code, timeout=60):
     }
 
 
-def _fake_stream_error(code, timeout=60):
+def _fake_stream_error(code, timeout=60, **kwargs):
     yield {"kind": "heartbeat", "elapsed_s": 0}
     yield {"kind": "error", "error": "NameError: name 'Bx' is not defined"}
 
@@ -1249,10 +1368,10 @@ def test_execute_build123d_code_exact_cache_hit_skips_executor(tmp_path: Path) -
     project_id = _make_project(settings, "agent-cad-cache")
     calls = 0
 
-    def _fake_stream_counted(code: str, timeout: int = 60):
+    def _fake_stream_counted(code: str, timeout: int = 60, **kwargs):
         nonlocal calls
         calls += 1
-        yield from _fake_stream_ok(code, timeout=timeout)
+        yield from _fake_stream_ok(code, timeout=timeout, **kwargs)
 
     payload = {
         "code": "from build123d import *\nresult = Box(20, 10, 5)",
@@ -3206,10 +3325,10 @@ def test_execute_build123d_append_step_cache_mocked(tmp_path: Path) -> None:
 
     captured_code: str | None = None
 
-    def _capture_stream(code: str, timeout: int = 60):
+    def _capture_stream(code: str, timeout: int = 60, **kwargs):
         nonlocal captured_code
         captured_code = code
-        yield from _fake_stream_ok(code, timeout)
+        yield from _fake_stream_ok(code, timeout, **kwargs)
 
     add = "result = previous_result + Cylinder(3, 30)\n"
     with (
