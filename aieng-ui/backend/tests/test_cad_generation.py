@@ -2655,7 +2655,7 @@ def test_execute_nurbs_source_builds_brep_face() -> None:
         ]},
     ]}
     src = compile_shape_ir_to_nurbs_source(payload)
-    step, stl, glb, topo, _mesh_meta = _execute_build123d_code(src, timeout=120)
+    step, _stl, _glb, topo, _mesh_meta = _execute_build123d_code(src, timeout=120)
     assert len(step) > 0
     faces = [e for e in topo.get("entities", []) if e.get("type") == "face"]
     assert faces, "NURBS surface must yield at least one B-Rep face"
