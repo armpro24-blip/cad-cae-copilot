@@ -86,6 +86,40 @@ def test_nonstandard_hole_is_low_severity():
     assert finding["severity"] == "low"
 
 
+def test_nonstandard_hole_detected_with_core_recognizer_diameter_field():
+    """The core RuleBasedFeatureRecognizer emits hole diameter as `diameter_mm`
+    (the runtime path uses `hole_diameter_mm`). The standard-hole DfM check must
+    read either, so it fires on imported / CLI-recognized geometry too."""
+    topo = _topo(_body("b1", "base_plate", [0, 0, 0, 50, 50, 5]))
+    fg = _feature_graph(
+        _named_part("base_plate", "b1"),
+        {"id": "mh1", "type": "mounting_hole", "name": "hole_1",
+         "parameters": {"diameter_mm": 7.3, "radius_mm": 3.65},
+         "geometry_refs": {"faces": ["f_hole_1"]}},
+    )
+    result = critique_geometry(topo, fg, mode="engineering")
+    finding = next(f for f in result["findings"] if f["rule"] == "standard_hole_size")
+    assert finding["severity"] == "low"
+
+
+def test_tapped_hole_at_tap_drill_diameter_is_not_flagged_nonstandard():
+    """A hole recognized as a thread (tap-drill diameter) is intentionally a
+    non-standard *final* diameter — flagging it 'non-standard hole' is a false
+    positive, so the standard-hole check must skip threaded holes."""
+    topo = _topo(_body("b1", "base_plate", [0, 0, 0, 50, 50, 5]))
+    fg = _feature_graph(
+        _named_part("base_plate", "b1"),
+        # 6.8mm == M8 coarse tap-drill: non-standard as a final drill size.
+        {"id": "mh1", "type": "mounting_hole", "name": "hole_1",
+         "parameters": {"diameter_mm": 6.8, "radius_mm": 3.4},
+         "geometry_refs": {"faces": ["f_hole_1"]}},
+        {"id": "th1", "type": "thread", "name": "Thread candidate (M8)",
+         "parameters": {"nominal_size": "M8"}, "geometry_refs": {"faces": ["f_hole_1"]}},
+    )
+    result = critique_geometry(topo, fg, mode="engineering")
+    assert not any(f["rule"] == "standard_hole_size" for f in result["findings"])
+
+
 def test_bracket_without_mounting_warns():
     topo = _topo(_body("b1", "bracket", [0, 0, 0, 50, 50, 5]))
     fg = _feature_graph(_named_part("bracket", "b1"))
