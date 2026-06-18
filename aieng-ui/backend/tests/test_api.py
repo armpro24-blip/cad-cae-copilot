@@ -167,6 +167,59 @@ def test_field_descriptor_endpoint_returns_synthetic_contract(tmp_path: Path) ->
     assert missing.status_code == 404
 
 
+def test_bom_endpoint_returns_frontend_payload(tmp_path: Path) -> None:
+    """GET /api/projects/{id}/bom returns the camelCase BOMData the BOM panel expects."""
+    from app.main import create_app, default_project, project_dir, save_project
+    from starlette.testclient import TestClient
+
+    settings = _make_patch_settings(tmp_path)
+    client = TestClient(create_app(settings))
+
+    project = save_project(settings, default_project("bom-ep"))
+    project_id = project["id"]
+    pkg_path = project_dir(settings, project_id) / "bom.aieng"
+    pkg_path.parent.mkdir(parents=True, exist_ok=True)
+    feature_graph = {
+        "format_version": "0.1.0",
+        "features": [
+            {"id": "b1", "type": "standard_part", "name": "bolt_M6", "canonical_type": "screw",
+             "designation": "M6-1", "source_library": "bd_warehouse", "parameters": {}},
+            {"id": "p1", "type": "named_part", "name": "base_plate", "parameters": {"material": "Al6061-T6"}},
+        ],
+    }
+    with zipfile.ZipFile(pkg_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("manifest.json", json.dumps({"model_id": "bom-ep", "resources": {}}))
+        zf.writestr("graph/feature_graph.json", json.dumps(feature_graph))
+    project["aieng_file"] = "bom.aieng"
+    save_project(settings, project)
+
+    resp = client.get(f"/api/projects/{project_id}/bom")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["projectId"] == project_id
+    assert data["totalCount"] == 2
+    assert data["standardPartCount"] == 1
+    assert data["customPartCount"] == 1
+    assert {i["name"] for i in data["items"]} >= {"bolt_M6", "base_plate"}
+    assert "generatedAt" in data
+    bolt = next(i for i in data["items"] if i["name"] == "bolt_M6")
+    assert bolt["isStandardPart"] is True
+    assert bolt["standardPartType"] == "screw"
+
+
+def test_bom_endpoint_404_when_package_missing(tmp_path: Path) -> None:
+    """GET /bom returns 404 when the project has no .aieng package."""
+    from app.main import create_app, default_project, save_project
+    from starlette.testclient import TestClient
+
+    settings = _make_patch_settings(tmp_path)
+    client = TestClient(create_app(settings))
+    project = save_project(settings, default_project("bom-empty"))
+
+    resp = client.get(f"/api/projects/{project['id']}/bom")
+    assert resp.status_code == 404
+
+
 def test_field_descriptor_returns_real_frd_data(tmp_path: Path) -> None:
     """GET /fields/{name} returns real FRD data when result.frd exists in package."""
     from app.main import create_app, default_project, project_dir, save_project

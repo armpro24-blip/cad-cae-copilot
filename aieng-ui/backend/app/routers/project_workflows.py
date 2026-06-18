@@ -1304,6 +1304,24 @@ def register_project_workflow_routes(
             },
         )
 
+    @app.get("/api/projects/{project_id}/bom")
+    def bom_endpoint(project_id: str) -> dict[str, Any]:
+        """Return the project's Bill of Materials in the frontend ``BOMData`` shape.
+
+        Backed by the shared ``generate_bom`` recognizer; the BOM panel renders
+        this and exports CSV/JSON client-side. 404 when the project has no
+        ``.aieng`` package.
+        """
+        from datetime import datetime, timezone
+        from .. import standards_bridge
+
+        result = standards_bridge.generate_bom(active_settings, project_id, None)
+        if result.get("status") != "ok":
+            status = 404 if result.get("code") == "missing_package" else 400
+            raise HTTPException(status_code=status, detail=result.get("message", "BOM generation failed"))
+        generated_at = datetime.now(timezone.utc).isoformat()
+        return standards_bridge.to_bom_frontend_payload(result, project_id, generated_at)
+
     @app.get("/api/projects/{project_id}/mesh-preview")
     def mesh_preview_endpoint(project_id: str) -> dict[str, Any]:
         """Return surface wireframe + element stats for the project's FE mesh.
