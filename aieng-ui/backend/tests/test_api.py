@@ -220,6 +220,45 @@ def test_bom_endpoint_404_when_package_missing(tmp_path: Path) -> None:
     assert resp.status_code == 404
 
 
+def test_field_descriptor_returns_vtu_data_when_no_frd(tmp_path: Path) -> None:
+    """GET /fields/{name} serves an external VTU result when no FRD is present (#279)."""
+    from app.main import create_app, default_project, project_dir, save_project
+    from starlette.testclient import TestClient
+
+    settings = _make_patch_settings(tmp_path)
+    client = TestClient(create_app(settings))
+
+    project = save_project(settings, default_project("vtu-field"))
+    project_id = project["id"]
+    pkg_path = project_dir(settings, project_id) / "vtu-field.aieng"
+    pkg_path.parent.mkdir(parents=True, exist_ok=True)
+    vtu = (
+        '<?xml version="1.0"?>\n'
+        '<VTKFile type="UnstructuredGrid" version="0.1">\n'
+        '  <UnstructuredGrid><Piece NumberOfPoints="3" NumberOfCells="0">\n'
+        '    <Points><DataArray NumberOfComponents="3" format="ascii">'
+        "0 0 0 1 0 0 0 1 0</DataArray></Points>\n"
+        '    <PointData><DataArray Name="von_mises" format="ascii">'
+        "100 150 250</DataArray></PointData>\n"
+        "  </Piece></UnstructuredGrid>\n</VTKFile>\n"
+    )
+    with zipfile.ZipFile(pkg_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("manifest.json", json.dumps({"model_id": "vtu-field", "resources": {}}))
+        zf.writestr("simulation/result.vtu", vtu)
+    project["aieng_file"] = "vtu-field.aieng"
+    save_project(settings, project)
+
+    resp = client.get(f"/api/projects/{project_id}/fields/von_mises")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["source"] == "vtu"
+    assert data["basis"] == "vtu_point_data"
+    assert data["values"] == [100.0, 150.0, 250.0]
+    assert data["min_value"] == 100.0
+    assert data["max_value"] == 250.0
+    assert len(data["node_coords"]) == 3
+
+
 def test_field_descriptor_returns_real_frd_data(tmp_path: Path) -> None:
     """GET /fields/{name} returns real FRD data when result.frd exists in package."""
     from app.main import create_app, default_project, project_dir, save_project

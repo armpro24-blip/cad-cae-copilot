@@ -141,6 +141,39 @@ def register_evidence_routes(app: FastAPI, *, active_settings: Any) -> None:
                 "credibility": _field_credibility("frd", active_settings.aieng_root),
             }
 
+        # No FRD — try an external VTU result (Code_Aster / ParaView / Elmer export).
+        # Additive: leaves the FRD path untouched and only runs when FRD is absent.
+        if pkg is not None and pkg.exists():
+            try:
+                from .. import vtu_importer
+
+                vtu_data = vtu_importer.extract_vtu_field(pkg, field_name)
+            except Exception:
+                log_exception(
+                    LOGGER,
+                    "Failed to extract VTU field data; using synthetic field descriptor fallback.",
+                    subsystem="app_factory.field_descriptor.read_vtu",
+                    context={"project_id": project_id, "field_name": field_name},
+                )
+                vtu_data = None
+            if vtu_data is not None:
+                return {
+                    "field_name": field_name,
+                    "project_id": project_id,
+                    "load_case_id": load_case_id or "load_case_001",
+                    "format": "vertex_json",
+                    "basis": "vtu_point_data",
+                    "min_value": vtu_data["min_value"],
+                    "max_value": vtu_data["max_value"],
+                    "unit": vtu_data["unit"] or meta["unit"],
+                    "colormap": meta["colormap"],
+                    "source": "vtu",
+                    "values": vtu_data["values"],
+                    "node_coords": vtu_data["node_coords"],
+                    "warnings": vtu_data["warnings"],
+                    "credibility": _field_credibility("frd", active_settings.aieng_root),
+                }
+
         # Fallback to synthetic
         return {
             "field_name": field_name,
