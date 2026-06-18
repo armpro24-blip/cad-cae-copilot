@@ -257,6 +257,9 @@ def test_field_descriptor_returns_vtu_data_when_no_frd(tmp_path: Path) -> None:
     assert data["min_value"] == 100.0
     assert data["max_value"] == 250.0
     assert len(data["node_coords"]) == 3
+    assert data["credibility"]["tier"] == "unverified"
+    assert data["credibility"]["signals"]["solver_executed"] is False
+    assert data["credibility"]["signals"]["is_solver_evidence"] is True
 
 
 def test_field_descriptor_returns_real_frd_data(tmp_path: Path) -> None:

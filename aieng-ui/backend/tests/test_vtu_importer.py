@@ -75,6 +75,21 @@ def test_parse_vtu_appended_binary_is_unavailable() -> None:
     assert "ascii" in (parsed.get("reason") or "").lower()
 
 
+def test_parse_vtu_malformed_component_count_skips_array() -> None:
+    from app.vtu_importer import parse_vtu
+
+    malformed = _ASCII_VTU.replace(
+        'Name="von_mises" format="ascii"',
+        'Name="von_mises" NumberOfComponents="many" format="ascii"',
+    )
+
+    parsed = parse_vtu(malformed)
+
+    assert parsed["available"] is True
+    assert "von_mises" not in parsed["point_data"]
+    assert parsed["point_data"]["displacement"]["num_components"] == 3
+
+
 def test_extract_vtu_field_scalar(tmp_path: Path) -> None:
     from app.vtu_importer import extract_vtu_field
 

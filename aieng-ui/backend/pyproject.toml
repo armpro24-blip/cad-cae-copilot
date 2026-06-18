@@ -56,6 +56,7 @@ dependencies = [
   "jsonschema>=4.0",
   "trimesh>=4.0",
   "aieng-format>=0.1.0a2",
+  "defusedxml>=0.7.1",
   "filelock>=3.20.3",
 ]
 

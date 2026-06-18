@@ -12,10 +12,14 @@ mis-parsed — never guessed.
 from __future__ import annotations
 
 import math
-import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 from typing import Any
+
+try:  # Packaged installs use the hardened parser declared in pyproject.toml.
+    import defusedxml.ElementTree as ET
+except ModuleNotFoundError:  # pragma: no cover - local dev env without optional reinstall
+    import xml.etree.ElementTree as ET  # type: ignore[no-redef]
 
 # Canonical field name -> candidate VTU PointData array names (case-insensitive).
 # Vector arrays (num_components == 3) are reduced to per-node magnitude for the
@@ -50,7 +54,7 @@ def parse_vtu(content: str | bytes) -> dict[str, Any]:
 
     try:
         root = ET.fromstring(content)
-    except ET.ParseError as exc:
+    except Exception as exc:
         return {"available": False, "reason": f"VTU XML parse error: {exc}"}
 
     grid = root.find(".//UnstructuredGrid")
@@ -80,7 +84,9 @@ def parse_vtu(content: str | bytes) -> dict[str, Any]:
         name = arr.get("Name")
         if not name or not _is_ascii_array(arr):
             continue
-        ncomp = int(arr.get("NumberOfComponents", "1") or "1")
+        ncomp = _parse_positive_int(arr.get("NumberOfComponents", "1") or "1")
+        if ncomp is None:
+            continue
         point_data[name] = {"values": _parse_floats(arr.text), "num_components": ncomp}
 
     return {"available": True, "points": points, "point_data": point_data}
@@ -101,6 +107,14 @@ def _parse_floats(text: str | None) -> list[float]:
         except ValueError:
             continue
     return out
+
+
+def _parse_positive_int(value: str) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
 
 
 def _resolve_field_array(

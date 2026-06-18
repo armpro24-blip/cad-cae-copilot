@@ -55,9 +55,9 @@ _FIELD_SYNTHETIC_DEFAULTS: dict[str, dict[str, Any]] = {
 def _field_credibility(source: str, aieng_root: Path) -> dict[str, Any]:
     """Return the V&V-40 credibility stamp for a field descriptor response.
 
-    FRD-backed fields are stamped as ``executed_solver_result``; synthetic
-    fallbacks are downgraded to ``unverified`` so they cannot be mistaken for
-    solver evidence.
+    FRD-backed fields are stamped as ``executed_solver_result``; imported VTU
+    fields are external result evidence but not proof that this workbench ran the
+    solver; synthetic fallbacks are downgraded to ``unverified``.
     """
     aieng_src = aieng_root / "src"
     injected = False
@@ -73,6 +73,13 @@ def _field_credibility(source: str, aieng_root: Path) -> dict[str, Any]:
                 solver_executed=True,
                 is_solver_evidence=True,
                 notes="Per-node FRD data extracted from an executed solver run.",
+            )
+        if source == "vtu":
+            return classify_credibility(
+                "solver",
+                solver_executed=False,
+                is_solver_evidence=True,
+                notes="Per-node VTU data imported from an external result; solver execution was not observed by this workbench.",
             )
         return classify_credibility(
             "solver",
@@ -171,7 +178,7 @@ def register_evidence_routes(app: FastAPI, *, active_settings: Any) -> None:
                     "values": vtu_data["values"],
                     "node_coords": vtu_data["node_coords"],
                     "warnings": vtu_data["warnings"],
-                    "credibility": _field_credibility("frd", active_settings.aieng_root),
+                    "credibility": _field_credibility("vtu", active_settings.aieng_root),
                 }
 
         # Fallback to synthetic
