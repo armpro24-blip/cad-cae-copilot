@@ -55,6 +55,11 @@ class RuleBasedFeatureRecognizer:
             features.append(pattern_feature)
             referenced_faces.update(pattern_feature["geometry_refs"].get("faces", []))
 
+        # Threads annotate holes whose diameter matches a standard tap-drill size.
+        # They are ADDITIVE — the underlying hole feature still owns the face — so
+        # thread faces are not added to ``referenced_faces``.
+        features.extend(self._thread_features(hole_features, recognition_context))
+
         slot_features, slot_faces = self._slot_features(
             faces, referenced_faces, aag_face_index, solid_bbox, recognition_context
         )
@@ -1264,3 +1269,86 @@ class RuleBasedFeatureRecognizer:
             consumed.add(fid)
             index += 1
         return features, consumed
+
+    # Standard ISO metric coarse-thread tap-drill diameters (mm). A hole drilled
+    # to one of these sizes is the pre-tap diameter for that thread.
+    _TAP_DRILL_DIAMETERS_MM: tuple[tuple[str, float], ...] = (
+        ("M2", 1.6),
+        ("M2.5", 2.05),
+        ("M3", 2.5),
+        ("M4", 3.3),
+        ("M5", 4.2),
+        ("M6", 5.0),
+        ("M8", 6.8),
+        ("M10", 8.5),
+        ("M12", 10.2),
+        ("M16", 14.0),
+        ("M20", 17.5),
+    )
+
+    def _thread_features(
+        self,
+        hole_features: list[dict[str, Any]],
+        recognition_context: dict[str, bool],
+    ) -> list[dict[str, Any]]:
+        """Flag holes whose diameter matches a standard tap-drill size as candidate threads.
+
+        Real helical thread geometry is rarely present in build123d models, so a
+        tapped hole is modelled as a plain cylinder drilled to the pre-tap
+        diameter. Matching that diameter to a standard tap-drill size is the best
+        topology-only signal. Candidate-level and explicitly low-confidence: the
+        same diameter can equally be a plain clearance hole.
+        """
+        features: list[dict[str, Any]] = []
+        index = 1
+        for hole in hole_features:
+            diameter = hole.get("parameters", {}).get("diameter_mm")
+            if not isinstance(diameter, NUMERIC_TYPES) or diameter <= 0:
+                continue
+            # A through hole at a round drill size reads as a clearance hole, not a
+            # tapped one. Tapped holes are typically blind; keep blind/unknown only.
+            hole_metadata = hole.get("hole_metadata")
+            if isinstance(hole_metadata, dict) and hole_metadata.get("hole_depth_kind") == "through":
+                continue
+            match = None
+            for nominal, tap_drill in self._TAP_DRILL_DIAMETERS_MM:
+                if abs(float(diameter) - tap_drill) <= max(0.05, tap_drill * 0.025):
+                    match = (nominal, tap_drill)
+                    break
+            if match is None:
+                continue
+            nominal, tap_drill = match
+            face_ids = list(hole.get("geometry_refs", {}).get("faces", []))
+            feature = {
+                "id": f"feat_thread_{index:03d}",
+                "type": "thread",
+                "name": f"Thread candidate ({nominal})",
+                "geometry_refs": {"faces": face_ids},
+                "parameters": {
+                    "nominal_size": nominal,
+                    "tap_drill_diameter_mm": tap_drill,
+                    "measured_diameter_mm": round(float(diameter), 3),
+                },
+                "parameter_source": "mock",
+                "parameter_confidence": "low",
+                "editable": False,
+                "editability": "not_editable",
+                "writeback_strategy": "none",
+                "editability_reason": "Thread is an inferred annotation on a hole, not an independently editable feature.",
+                "intent": {"role": "threaded_fastener_interface"},
+                "recognition": {
+                    "method": "rule_based_tap_drill_diameter_match",
+                    "confidence": "low",
+                    "uncertainty_notes": [
+                        f"Hole diameter matches the {nominal} tap-drill size; no helical thread geometry was detected.",
+                        "The same diameter may instead be a plain clearance/passage hole — verify against design intent.",
+                    ],
+                    "signals": {
+                        "real_topology": bool(recognition_context.get("real_topology")),
+                        "matched_hole_feature_id": hole.get("id"),
+                    },
+                },
+            }
+            features.append(feature)
+            index += 1
+        return features

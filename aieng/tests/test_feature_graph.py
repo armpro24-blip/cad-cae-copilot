@@ -808,3 +808,63 @@ def test_chamfer_recognition_from_diagonal_planar_bevel():
     assert len(chamfers) == 1
     assert chamfers[0]["geometry_refs"]["faces"] == ["face_chamfer"]
     assert chamfers[0]["intent"]["role"] == "edge_break"
+
+
+def test_thread_candidate_from_tap_drill_diameter_hole():
+    recognizer = RuleBasedFeatureRecognizer()
+    result = recognizer.recognize(
+        {
+            "format_version": "0.1.0",
+            "metadata": {"extraction_backend": "occ", "real_step_parsing": True},
+            "entities": [
+                {"id": "face_base_bottom", "type": "face", "surface_type": "plane", "area": 10000.0},
+                # 5.0mm-diameter hole == the M6 coarse tap-drill size.
+                {"id": "face_tapped_hole", "type": "face", "surface_type": "cylinder", "radius": 2.5, "axis": [0.0, 0.0, 1.0], "bounding_box": [10.0, 10.0, 0.0, 15.0, 15.0, 12.0]},
+            ],
+        }
+    )
+    # The hole itself is still recognized ...
+    holes = [f for f in result["features"] if f["type"] == "mounting_hole"]
+    assert len(holes) == 1
+    # ... and an additive thread candidate references the same face.
+    threads = [f for f in result["features"] if f["type"] == "thread"]
+    assert len(threads) == 1
+    assert threads[0]["geometry_refs"]["faces"] == ["face_tapped_hole"]
+    assert threads[0]["parameters"]["nominal_size"] == "M6"
+    assert threads[0]["recognition"]["method"] == "rule_based_tap_drill_diameter_match"
+
+
+def test_non_standard_hole_diameter_is_not_a_thread():
+    recognizer = RuleBasedFeatureRecognizer()
+    result = recognizer.recognize(
+        {
+            "format_version": "0.1.0",
+            "metadata": {"extraction_backend": "occ", "real_step_parsing": True},
+            "entities": [
+                {"id": "face_base_bottom", "type": "face", "surface_type": "plane", "area": 10000.0},
+                # 9.0mm diameter — not within tolerance of any standard tap-drill size.
+                {"id": "face_clearance_hole", "type": "face", "surface_type": "cylinder", "radius": 4.5, "axis": [0.0, 0.0, 1.0], "bounding_box": [10.0, 10.0, 0.0, 19.0, 19.0, 12.0]},
+            ],
+        }
+    )
+    assert any(f["type"] == "mounting_hole" for f in result["features"])
+    assert not any(f["type"] == "thread" for f in result["features"])
+
+
+def test_through_hole_at_tap_drill_diameter_is_not_a_thread():
+    """A through hole at a tap-drill diameter reads as a clearance hole, not a
+    tapped one — so it should not be flagged as a thread candidate."""
+    recognizer = RuleBasedFeatureRecognizer()
+    result = recognizer.recognize(
+        {
+            "format_version": "0.1.0",
+            "metadata": {"extraction_backend": "occ", "real_step_parsing": True},
+            "entities": [
+                {"id": "face_base_bottom", "type": "face", "surface_type": "plane", "area": 10000.0},
+                # 5.0mm-diameter hole at the M6 tap-drill size, but explicitly through.
+                {"id": "face_through_hole", "type": "face", "surface_type": "cylinder", "radius": 2.5, "axis": [0.0, 0.0, 1.0], "through": True, "bounding_box": [10.0, 10.0, 0.0, 15.0, 15.0, 12.0]},
+            ],
+        }
+    )
+    assert any(f["type"] == "mounting_hole" for f in result["features"])
+    assert not any(f["type"] == "thread" for f in result["features"])
