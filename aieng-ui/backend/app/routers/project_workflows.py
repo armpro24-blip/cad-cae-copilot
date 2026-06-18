@@ -1255,55 +1255,6 @@ def register_project_workflow_routes(
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
-    @app.get("/api/projects/{project_id}/stress-heatmap")
-    def stress_heatmap_endpoint(project_id: str):
-        """Return a colored GLB with per-node Von Mises stress heatmap.
-
-        Requires simulation/mesh.inp and simulation/result.frd in the package
-        (written automatically after a successful simulation run).
-        Returns 409 if the package exists but those files are not yet present.
-        """
-        from fastapi.responses import Response
-        from ..project_io import get_project, resolve_project_path
-        from .. import simulation_runner, stress_heatmap
-
-        project = get_project(active_settings, project_id)
-        package_path = resolve_project_path(
-            active_settings, project_id, project.get("aieng_file")
-        )
-        if package_path is None or not package_path.exists():
-            raise HTTPException(status_code=404, detail=".aieng package not found")
-
-        inp_bytes = simulation_runner._read_member(package_path, "simulation/mesh.inp")
-        frd_bytes = simulation_runner._read_member(package_path, "simulation/result.frd")
-        if not inp_bytes or not frd_bytes:
-            raise HTTPException(
-                status_code=409,
-                detail="Simulation mesh and results not yet available — run simulation first",
-            )
-
-        result = stress_heatmap.generate_heatmap_glb(
-            inp_bytes.decode("utf-8", errors="replace"), frd_bytes
-        )
-        if result is None:
-            raise HTTPException(
-                status_code=409,
-                detail="Could not generate heatmap: no stress data found in FRD file",
-            )
-
-        glb, min_mpa, max_mpa = result
-        return Response(
-            content=glb,
-            media_type="model/gltf-binary",
-            headers={
-                "Content-Disposition": f'inline; filename="stress_heatmap_{project_id}.glb"',
-                "Cache-Control": "no-cache",
-                "Access-Control-Expose-Headers": "X-Stress-Min-Mpa, X-Stress-Max-Mpa",
-                "X-Stress-Min-Mpa": f"{min_mpa:.4f}",
-                "X-Stress-Max-Mpa": f"{max_mpa:.4f}",
-            },
-        )
-
     @app.get("/api/projects/{project_id}/mesh-preview")
     def mesh_preview_endpoint(project_id: str) -> dict[str, Any]:
         """Return surface wireframe + element stats for the project's FE mesh.
