@@ -1899,8 +1899,8 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "project_id": {"type": "string"},
             "format": {
                 "type": "string",
-                "enum": ["json", "markdown"],
-                "description": "Output format. json (default) returns structured data; markdown returns a table string.",
+                "enum": ["json", "markdown", "csv"],
+                "description": "Output format. Structured `items` are always returned; markdown adds a table string, csv adds an ERP-style line-item CSV (result.csv), and json adds a serialized ERP line-item document (result.json).",
             },
         },
         "additionalProperties": False,
