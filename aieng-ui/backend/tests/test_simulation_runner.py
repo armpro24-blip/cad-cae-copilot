@@ -859,6 +859,91 @@ def test_mesh_diagnostics_endpoint_no_mesh(tmp_path: Path) -> None:
     assert resp.json()["available"] is False
 
 
+# ── surface-set coverage (#279 D3, the set-mapping half) ──────────────────────
+
+def _coverage_topology():
+    return {"entities": [
+        {"id": "f_bottom", "type": "face", "surface_type": "plane",
+         "normal": [0.0, 0.0, -1.0], "bounding_box": [0.0, 0.0, 0.0, 10.0, 10.0, 0.0]},
+        {"id": "f_top", "type": "face", "surface_type": "plane",
+         "normal": [0.0, 0.0, 1.0], "bounding_box": [0.0, 0.0, 100.0, 10.0, 10.0, 100.0]},
+    ]}
+
+
+def test_compute_set_coverage_resolved_is_ok() -> None:
+    from app.simulation_runner import compute_set_coverage
+
+    nodes = {1: (1.0, 1.0, 0.0), 2: (9.0, 1.0, 0.0), 3: (1.0, 9.0, 0.0), 4: (9.0, 9.0, 0.0)}
+    cae_mapping = {"mappings": [{"cae_entity": "fixed_support", "face_ids": ["f_bottom"]}]}
+
+    cov = compute_set_coverage(nodes, _coverage_topology(), cae_mapping)
+    assert cov["verdict"] == "ok"
+    fs = next(s for s in cov["sets"] if s["cae_entity"] == "fixed_support")
+    assert fs["status"] == "ok"
+    assert fs["resolved_node_count"] == 4
+
+
+def test_compute_set_coverage_empty_set_fails() -> None:
+    from app.simulation_runner import compute_set_coverage
+
+    # All nodes are at z=0, but the load is bound to f_top (z=100) -> 0 nodes.
+    nodes = {1: (1.0, 1.0, 0.0), 2: (9.0, 1.0, 0.0), 3: (1.0, 9.0, 0.0)}
+    cae_mapping = {"mappings": [{"cae_entity": "pressure_load", "face_ids": ["f_top"]}]}
+
+    cov = compute_set_coverage(nodes, _coverage_topology(), cae_mapping)
+    assert cov["verdict"] == "fail"
+    load = next(s for s in cov["sets"] if s["cae_entity"] == "pressure_load")
+    assert load["status"] == "empty"
+    assert cov["empty_set_count"] == 1
+
+
+def test_compute_set_coverage_unresolved_face_fails() -> None:
+    from app.simulation_runner import compute_set_coverage
+
+    nodes = {1: (1.0, 1.0, 0.0), 2: (9.0, 1.0, 0.0), 3: (1.0, 9.0, 0.0)}
+    cae_mapping = {"mappings": [{"cae_entity": "bc", "face_ids": ["f_ghost"]}]}
+
+    cov = compute_set_coverage(nodes, _coverage_topology(), cae_mapping)
+    assert cov["verdict"] == "fail"
+    bc = next(s for s in cov["sets"] if s["cae_entity"] == "bc")
+    assert bc["status"] == "unresolved_face"
+    assert "f_ghost" in bc["missing_face_ids"]
+
+
+def test_compute_set_coverage_no_mappings_is_unknown() -> None:
+    from app.simulation_runner import compute_set_coverage
+
+    cov = compute_set_coverage({}, _coverage_topology(), {"mappings": []})
+    assert cov["verdict"] == "unknown"
+
+
+def test_mesh_diagnostics_endpoint_flags_broken_set_mapping(tmp_path: Path) -> None:
+    settings = _make_settings(tmp_path)
+    app = create_app(settings)
+    client = TestClient(app)
+
+    project_id, pkg_path = _make_project(settings, "mesh-diag-set", "mesh_diag_set.aieng")
+    _build_test_package(pkg_path)
+    # Mesh nodes are near the origin (from _TWO_TET_MESH_INP); bind a load to a
+    # face far away so it resolves to zero nodes -> broken surface-set mapping.
+    topology = {"entities": [
+        {"id": "f_far", "type": "face", "surface_type": "plane",
+         "normal": [0.0, 0.0, 1.0], "bounding_box": [1000.0, 1000.0, 1000.0, 1010.0, 1010.0, 1000.0]},
+    ]}
+    cae_mapping = {"mappings": [{"cae_entity": "load_1", "face_ids": ["f_far"]}]}
+    with zipfile.ZipFile(pkg_path, "a", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("simulation/mesh.inp", _TWO_TET_MESH_INP)
+        zf.writestr("geometry/topology_map.json", json.dumps(topology))
+        zf.writestr("simulation/cae_mapping.json", json.dumps(cae_mapping))
+
+    resp = client.get(f"/api/projects/{project_id}/mesh-diagnostics")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["available"] is True
+    assert data["set_coverage"]["verdict"] == "fail"
+    assert data["overall_verdict"] == "fail"
+
+
 # ── streaming endpoint (run_simulation_stream) ────────────────────────────────
 #
 # These pin the streaming path, which previously had no coverage and had

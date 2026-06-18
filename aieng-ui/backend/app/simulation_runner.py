@@ -525,7 +525,113 @@ def get_mesh_quality_diagnostics(package_path: Path) -> dict[str, Any]:
     diagnostics["available"] = True
     diagnostics["node_count"] = len(nodes)
     diagnostics["element_type"] = elements[0]["type"] if elements else None
+
+    # Surface-set coverage: does each CAE load/BC face actually catch mesh nodes?
+    cae_raw = _read_member(package_path, "simulation/cae_mapping.json")
+    topo_raw = _read_member(package_path, "geometry/topology_map.json")
+    cae_mapping = json.loads(cae_raw) if cae_raw else {"mappings": []}
+    topology = json.loads(topo_raw) if topo_raw else {}
+    set_coverage = compute_set_coverage(nodes, topology, cae_mapping)
+    diagnostics["set_coverage"] = set_coverage
+    diagnostics["overall_verdict"] = _combine_verdicts(
+        diagnostics.get("verdict"), set_coverage.get("verdict")
+    )
     return diagnostics
+
+
+_VERDICT_RANK = {"unknown": 0, "ok": 1, "warning": 2, "fail": 3}
+
+
+def _combine_verdicts(*verdicts: str | None) -> str:
+    """Return the most severe verdict (fail > warning > ok > unknown)."""
+    best = "unknown"
+    for v in verdicts:
+        if _VERDICT_RANK.get(str(v), 0) > _VERDICT_RANK[best]:
+            best = str(v)
+    return best
+
+
+# Minimum nodes for a surface set to define a meaningful boundary condition; a set
+# that catches 1-2 nodes is undersampled (sparse), 0 is broken (empty).
+_SPARSE_SET_MIN_NODES = 3
+
+
+def compute_set_coverage(
+    nodes: dict[int, tuple[float, float, float]],
+    topology: dict[str, Any],
+    cae_mapping: dict[str, Any],
+) -> dict[str, Any]:
+    """Validate that each CAE surface set resolves to actual mesh nodes (#279).
+
+    A load/BC bound to a face that catches **zero** mesh nodes (``empty``) or to a
+    ``@face`` id absent from the topology (``unresolved_face``) is silently dropped
+    by the deck builder, producing a wrong/singular solve — so both fail the
+    handoff. A set that catches only 1-2 nodes is ``sparse`` (warning). Reuses the
+    same node-mapping (:func:`_nodes_on_face`) as the deck builder. ``unknown`` when
+    no surface-set mappings exist (e.g. a pure-CAD project).
+    """
+    face_index: dict[str, dict[str, Any]] = {
+        e["id"]: e
+        for e in (topology.get("entities") or topology.get("faces") or [])
+        if isinstance(e, dict) and e.get("type") == "face" and "id" in e
+    }
+
+    sets: list[dict[str, Any]] = []
+    for mapping in cae_mapping.get("mappings") or []:
+        cae_entity = mapping.get("cae_entity") or ""
+        if not cae_entity:
+            continue
+        face_ids = [str(fid) for fid in (mapping.get("face_ids") or [])]
+        missing = [fid for fid in face_ids if fid not in face_index]
+        node_ids: set[int] = set()
+        for fid in face_ids:
+            entity = face_index.get(fid)
+            if entity:
+                node_ids.update(_nodes_on_face(nodes, entity))
+        count = len(node_ids)
+        if missing:
+            status = "unresolved_face"
+        elif count == 0:
+            status = "empty"
+        elif count < _SPARSE_SET_MIN_NODES:
+            status = "sparse"
+        else:
+            status = "ok"
+        sets.append({
+            "cae_entity": cae_entity,
+            "face_ids": face_ids,
+            "missing_face_ids": missing,
+            "resolved_node_count": count,
+            "status": status,
+        })
+
+    empty = sum(1 for s in sets if s["status"] == "empty")
+    unresolved = sum(1 for s in sets if s["status"] == "unresolved_face")
+    sparse = sum(1 for s in sets if s["status"] == "sparse")
+
+    if not sets:
+        verdict = "unknown"
+    elif empty or unresolved:
+        verdict = "fail"
+    elif sparse:
+        verdict = "warning"
+    else:
+        verdict = "ok"
+
+    return {
+        "verdict": verdict,
+        "set_count": len(sets),
+        "empty_set_count": empty,
+        "unresolved_set_count": unresolved,
+        "sparse_set_count": sparse,
+        "sparse_min_nodes": _SPARSE_SET_MIN_NODES,
+        "sets": sets,
+        "note": (
+            "Surface-set coverage reuses the deck builder's face->node mapping; an "
+            "empty/unresolved set would be silently dropped by the solver. Node "
+            "membership is a bounding-box/plane heuristic, not exact face meshing."
+        ),
+    }
 
 
 # ── Face → node mapping ───────────────────────────────────────────────────────
