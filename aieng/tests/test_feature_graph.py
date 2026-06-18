@@ -719,3 +719,92 @@ def test_solid_block_is_not_hollow_body():
         }
     )
     assert not any(f["type"] == "hollow_body" for f in result["features"])
+
+
+# ── Phase 2 feature-graph heuristics (#297): fillet, chamfer ──
+
+
+def test_fillet_recognition_from_quarter_round_cylinder():
+    recognizer = RuleBasedFeatureRecognizer()
+    result = recognizer.recognize(
+        {
+            "format_version": "0.1.0",
+            "metadata": {"extraction_backend": "occ", "real_step_parsing": True},
+            "entities": [
+                {"id": "body_001", "type": "solid", "bounding_box": [0.0, 0.0, 0.0, 100.0, 60.0, 40.0], "volume": 230000.0},
+                {"id": "face_side_x", "type": "face", "surface_type": "plane", "area": 4000.0, "normal": [1.0, 0.0, 0.0], "bounding_box": [100.0, 0.0, 0.0, 100.0, 60.0, 40.0], "adjacent_entity_ids": ["face_fillet_edge"]},
+                {"id": "face_side_y", "type": "face", "surface_type": "plane", "area": 6000.0, "normal": [0.0, 1.0, 0.0], "bounding_box": [0.0, 60.0, 0.0, 100.0, 60.0, 40.0], "adjacent_entity_ids": ["face_fillet_edge"]},
+                # Vertical-edge fillet: quarter cylinder r=8 with axis along Z; cross-section ~ 8 x 8.
+                {"id": "face_fillet_edge", "type": "face", "surface_type": "cylinder", "radius": 8.0, "axis": [0.0, 0.0, 1.0], "area": 502.0, "bounding_box": [92.0, 52.0, 0.0, 100.0, 60.0, 40.0], "adjacent_entity_ids": ["face_side_x", "face_side_y"]},
+            ],
+        }
+    )
+    fillets = [f for f in result["features"] if f["type"] == "fillet"]
+    assert len(fillets) == 1
+    assert fillets[0]["geometry_refs"]["faces"] == ["face_fillet_edge"]
+    assert fillets[0]["parameters"]["radius_mm"] == 8.0
+    assert fillets[0]["intent"]["role"] == "edge_blend"
+    # A fillet cylinder must NOT be double-counted as a mounting hole.
+    holes = [f for f in result["features"] if f["type"] == "mounting_hole"]
+    assert "face_fillet_edge" not in {ref for h in holes for ref in h["geometry_refs"]["faces"]}
+
+
+def test_through_hole_is_not_recognized_as_fillet():
+    recognizer = RuleBasedFeatureRecognizer()
+    result = recognizer.recognize(
+        {
+            "format_version": "0.1.0",
+            "metadata": {"extraction_backend": "occ", "real_step_parsing": True},
+            "entities": [
+                {"id": "body_001", "type": "solid", "bounding_box": [0.0, 0.0, 0.0, 100.0, 100.0, 20.0], "volume": 190000.0},
+                {"id": "face_base", "type": "face", "surface_type": "plane", "area": 10000.0, "normal": [0.0, 0.0, -1.0], "bounding_box": [0.0, 0.0, 0.0, 100.0, 100.0, 0.0]},
+                # Full-cylinder through-hole: cross-section ~ 2r (10 x 10), not a quarter round.
+                {"id": "face_hole_cyl", "type": "face", "surface_type": "cylinder", "radius": 5.0, "axis": [0.0, 0.0, 1.0], "area": 314.0, "bounding_box": [45.0, 45.0, 0.0, 55.0, 55.0, 20.0], "adjacent_entity_ids": ["face_base"]},
+            ],
+        }
+    )
+    assert not any(f["type"] == "fillet" for f in result["features"])
+    holes = [f for f in result["features"] if f["type"] == "mounting_hole"]
+    assert len(holes) == 1
+
+
+def test_torus_corner_is_recognized_as_fillet():
+    recognizer = RuleBasedFeatureRecognizer()
+    result = recognizer.recognize(
+        {
+            "format_version": "0.1.0",
+            "metadata": {"extraction_backend": "occ", "real_step_parsing": True},
+            "entities": [
+                {"id": "body_001", "type": "solid", "bounding_box": [0.0, 0.0, 0.0, 100.0, 60.0, 40.0], "volume": 230000.0},
+                {"id": "face_top", "type": "face", "surface_type": "plane", "area": 6000.0, "normal": [0.0, 0.0, 1.0], "bounding_box": [0.0, 0.0, 40.0, 100.0, 60.0, 40.0], "adjacent_entity_ids": ["face_corner"]},
+                {"id": "face_side", "type": "face", "surface_type": "plane", "area": 4000.0, "normal": [1.0, 0.0, 0.0], "bounding_box": [100.0, 0.0, 0.0, 100.0, 60.0, 40.0], "adjacent_entity_ids": ["face_corner"]},
+                # Corner blend: small toroidal patch at the box corner.
+                {"id": "face_corner", "type": "face", "surface_type": "torus", "area": 96.0, "bounding_box": [92.0, 52.0, 32.0, 100.0, 60.0, 40.0], "adjacent_entity_ids": ["face_top", "face_side"]},
+            ],
+        }
+    )
+    fillets = [f for f in result["features"] if f["type"] == "fillet"]
+    assert len(fillets) == 1
+    assert fillets[0]["geometry_refs"]["faces"] == ["face_corner"]
+    assert fillets[0]["recognition"]["method"] == "rule_based_toroidal_corner_blend"
+
+
+def test_chamfer_recognition_from_diagonal_planar_bevel():
+    recognizer = RuleBasedFeatureRecognizer()
+    result = recognizer.recognize(
+        {
+            "format_version": "0.1.0",
+            "metadata": {"extraction_backend": "occ", "real_step_parsing": True},
+            "entities": [
+                {"id": "body_001", "type": "solid", "bounding_box": [0.0, 0.0, 0.0, 100.0, 60.0, 40.0], "volume": 230000.0},
+                {"id": "face_top", "type": "face", "surface_type": "plane", "area": 6000.0, "normal": [0.0, 0.0, 1.0], "bounding_box": [0.0, 0.0, 40.0, 100.0, 60.0, 40.0], "adjacent_entity_ids": ["face_chamfer"]},
+                {"id": "face_side", "type": "face", "surface_type": "plane", "area": 4000.0, "normal": [1.0, 0.0, 0.0], "bounding_box": [100.0, 0.0, 0.0, 100.0, 60.0, 40.0], "adjacent_entity_ids": ["face_chamfer"]},
+                # 45-degree chamfer strip along the top-right edge (normal points diagonally +X/+Z).
+                {"id": "face_chamfer", "type": "face", "surface_type": "plane", "area": 300.0, "normal": [0.7071, 0.0, 0.7071], "bounding_box": [96.0, 0.0, 36.0, 100.0, 60.0, 40.0], "adjacent_entity_ids": ["face_top", "face_side"]},
+            ],
+        }
+    )
+    chamfers = [f for f in result["features"] if f["type"] == "chamfer"]
+    assert len(chamfers) == 1
+    assert chamfers[0]["geometry_refs"]["faces"] == ["face_chamfer"]
+    assert chamfers[0]["intent"]["role"] == "edge_break"
