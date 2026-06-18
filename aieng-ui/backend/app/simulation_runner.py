@@ -369,6 +369,165 @@ def get_mesh_preview(package_path: Path) -> dict[str, Any]:
     }
 
 
+# ── Mesh quality diagnostics (#279) ───────────────────────────────────────────
+
+_TET_TYPES = ("C3D4", "C3D10")
+# A tet is degenerate (flat/collapsed) when its volume is negligible relative to
+# its edge length; "poor" when it is a sliver or highly stretched. Thresholds are
+# scale-invariant (volume normalized by mean-edge cubed; aspect = max/min edge).
+_DEGENERATE_VOL_RATIO = 1e-4
+_POOR_VOL_RATIO = 0.02
+_POOR_ASPECT_RATIO = 10.0
+
+
+def _tet_aspect_and_volume_ratio(
+    pts: list[tuple[float, float, float]],
+) -> tuple[float, float]:
+    """Return (edge aspect ratio, normalized volume ratio) for a 4-node tet.
+
+    For a tetrahedron all six corner-pair distances are edges, so
+    ``max_edge / min_edge`` is a clean aspect metric. The volume ratio
+    ``vol / mean_edge**3`` is ~0.117 for a regular tet and → 0 for a flat one.
+    """
+    import itertools
+    import math
+
+    edges = [
+        math.dist(pts[i], pts[j]) for i, j in itertools.combinations(range(4), 2)
+    ]
+    min_edge, max_edge = min(edges), max(edges)
+    aspect = (max_edge / min_edge) if min_edge > 0 else float("inf")
+
+    (ax, ay, az), (bx, by, bz), (cx, cy, cz), (dx, dy, dz) = pts
+    u = (bx - ax, by - ay, bz - az)
+    v = (cx - ax, cy - ay, cz - az)
+    w = (dx - ax, dy - ay, dz - az)
+    cross = (
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    )
+    vol = abs(cross[0] * w[0] + cross[1] * w[1] + cross[2] * w[2]) / 6.0
+    mean_edge = sum(edges) / 6.0
+    vol_ratio = (vol / (mean_edge ** 3)) if mean_edge > 0 else 0.0
+    return aspect, vol_ratio
+
+
+def compute_mesh_quality(
+    nodes: dict[int, tuple[float, float, float]],
+    elements: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Deterministic element-quality verdict for a solid mesh (#279).
+
+    Scoped to tetrahedral elements (C3D4/C3D10 — the dominant Gmsh → CalculiX
+    output); other element types are counted and reported as ``quality_not_computed``.
+    Honest boundary: this is an edge-ratio + normalized-volume heuristic, not a
+    Jacobian/shape-function quality measure, and it does not validate surface-set
+    coverage. ``verdict`` is ``fail`` (degenerate or broken elements present),
+    ``warning`` (slivers / high aspect ratio), ``ok``, or ``unknown`` (no tets).
+    """
+    tets = [e for e in elements if str(e.get("type")) in _TET_TYPES]
+    others = [e for e in elements if str(e.get("type")) not in _TET_TYPES]
+    unsupported_types = sorted({str(e.get("type")) for e in others})
+
+    base = {
+        "element_count": len(elements),
+        "tet_count": len(tets),
+        "unsupported_element_count": len(others),
+        "unsupported_element_types": unsupported_types,
+        "thresholds": {
+            "degenerate_volume_ratio": _DEGENERATE_VOL_RATIO,
+            "poor_volume_ratio": _POOR_VOL_RATIO,
+            "poor_aspect_ratio": _POOR_ASPECT_RATIO,
+        },
+        "metric": "tet edge-ratio aspect + normalized volume (heuristic)",
+        "note": (
+            "Element-quality heuristic for tetrahedra only; not a Jacobian quality "
+            "measure and surface-set coverage is not validated."
+        ),
+    }
+
+    if not tets:
+        base.update({
+            "verdict": "unknown",
+            "degenerate_element_count": 0,
+            "poor_element_count": 0,
+            "broken_element_count": 0,
+            "degenerate_element_ids": [],
+            "max_aspect_ratio": None,
+            "mean_aspect_ratio": None,
+            "worst_element_id": None,
+        })
+        return base
+
+    aspects: list[float] = []
+    degenerate_ids: list[int] = []
+    poor_ids: list[int] = []
+    broken_ids: list[int] = []
+    worst_id: int | None = None
+    worst_aspect = -1.0
+
+    for elem in tets:
+        node_ids = elem.get("nodes") or []
+        pts = [nodes.get(nid) for nid in node_ids[:4]]
+        if len(pts) < 4 or any(p is None for p in pts):
+            broken_ids.append(elem.get("id"))
+            continue
+        aspect, vol_ratio = _tet_aspect_and_volume_ratio(pts)  # type: ignore[arg-type]
+        aspects.append(aspect)
+        if vol_ratio < _DEGENERATE_VOL_RATIO:
+            degenerate_ids.append(elem.get("id"))
+        elif vol_ratio < _POOR_VOL_RATIO or aspect > _POOR_ASPECT_RATIO:
+            poor_ids.append(elem.get("id"))
+        if aspect > worst_aspect:
+            worst_aspect = aspect
+            worst_id = elem.get("id")
+
+    if degenerate_ids or broken_ids:
+        verdict = "fail"
+    elif poor_ids:
+        verdict = "warning"
+    else:
+        verdict = "ok"
+
+    base.update({
+        "verdict": verdict,
+        "degenerate_element_count": len(degenerate_ids),
+        "poor_element_count": len(poor_ids),
+        "broken_element_count": len(broken_ids),
+        "degenerate_element_ids": degenerate_ids[:50],
+        "broken_element_ids": broken_ids[:50],
+        "max_aspect_ratio": round(max(aspects), 4) if aspects else None,
+        "mean_aspect_ratio": round(sum(aspects) / len(aspects), 4) if aspects else None,
+        "worst_element_id": worst_id,
+    })
+    return base
+
+
+def get_mesh_quality_diagnostics(package_path: Path) -> dict[str, Any]:
+    """Read ``simulation/mesh.inp`` and return an element-quality verdict.
+
+    ``{"available": False}`` when no mesh is present so callers can degrade
+    cleanly (mirrors :func:`get_mesh_preview`).
+    """
+    package_path = Path(package_path)
+    inp_bytes = _read_member(package_path, "simulation/mesh.inp")
+    if not inp_bytes:
+        return {"available": False}
+
+    with tempfile.TemporaryDirectory(prefix="aieng_mesh_quality_") as tmp_str:
+        inp_path = Path(tmp_str) / "mesh.inp"
+        inp_path.write_bytes(inp_bytes)
+        nodes = _parse_inp_nodes(inp_path)
+        elements = _parse_inp_elements(inp_path)
+
+    diagnostics = compute_mesh_quality(nodes, elements)
+    diagnostics["available"] = True
+    diagnostics["node_count"] = len(nodes)
+    diagnostics["element_type"] = elements[0]["type"] if elements else None
+    return diagnostics
+
+
 # ── Face → node mapping ───────────────────────────────────────────────────────
 
 def _nodes_on_face(

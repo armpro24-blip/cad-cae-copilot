@@ -776,6 +776,89 @@ def test_mesh_preview_endpoint_with_mesh(tmp_path: Path) -> None:
     assert len(data["edges"]) == 9
 
 
+# ── mesh quality diagnostics (#279) ──────────────────────────────────────────
+
+def test_compute_mesh_quality_good_tet_is_ok() -> None:
+    from app.simulation_runner import compute_mesh_quality
+
+    nodes = {1: (0.0, 0.0, 0.0), 2: (1.0, 0.0, 0.0), 3: (0.0, 1.0, 0.0), 4: (0.0, 0.0, 1.0)}
+    elements = [{"id": 1, "type": "C3D4", "nodes": [1, 2, 3, 4]}]
+
+    q = compute_mesh_quality(nodes, elements)
+    assert q["verdict"] == "ok"
+    assert q["tet_count"] == 1
+    assert q["degenerate_element_count"] == 0
+    assert q["poor_element_count"] == 0
+    assert q["max_aspect_ratio"] < 2.0
+
+
+def test_compute_mesh_quality_degenerate_tet_fails() -> None:
+    from app.simulation_runner import compute_mesh_quality
+
+    # Four coplanar nodes (z=0) → zero volume → degenerate element.
+    nodes = {1: (0.0, 0.0, 0.0), 2: (1.0, 0.0, 0.0), 3: (0.0, 1.0, 0.0), 4: (1.0, 1.0, 0.0)}
+    elements = [{"id": 7, "type": "C3D4", "nodes": [1, 2, 3, 4]}]
+
+    q = compute_mesh_quality(nodes, elements)
+    assert q["verdict"] == "fail"
+    assert q["degenerate_element_count"] == 1
+    assert 7 in q["degenerate_element_ids"]
+
+
+def test_compute_mesh_quality_missing_node_is_broken() -> None:
+    from app.simulation_runner import compute_mesh_quality
+
+    nodes = {1: (0.0, 0.0, 0.0), 2: (1.0, 0.0, 0.0), 3: (0.0, 1.0, 0.0)}  # node 4 absent
+    elements = [{"id": 3, "type": "C3D4", "nodes": [1, 2, 3, 4]}]
+
+    q = compute_mesh_quality(nodes, elements)
+    assert q["verdict"] == "fail"
+    assert q["broken_element_count"] == 1
+
+
+def test_compute_mesh_quality_non_tet_is_unknown() -> None:
+    from app.simulation_runner import compute_mesh_quality
+
+    nodes = {i: (float(i), 0.0, 0.0) for i in range(1, 9)}
+    elements = [{"id": 1, "type": "C3D8", "nodes": list(range(1, 9))}]
+
+    q = compute_mesh_quality(nodes, elements)
+    assert q["verdict"] == "unknown"
+    assert q["tet_count"] == 0
+    assert "C3D8" in q["unsupported_element_types"]
+
+
+def test_mesh_diagnostics_endpoint_with_mesh(tmp_path: Path) -> None:
+    settings = _make_settings(tmp_path)
+    app = create_app(settings)
+    client = TestClient(app)
+
+    project_id, pkg_path = _make_project(settings, "mesh-diag", "mesh_diag.aieng")
+    _build_test_package(pkg_path)
+    with zipfile.ZipFile(pkg_path, "a", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("simulation/mesh.inp", _TWO_TET_MESH_INP)
+
+    resp = client.get(f"/api/projects/{project_id}/mesh-diagnostics")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["available"] is True
+    assert data["verdict"] in {"ok", "warning", "fail"}
+    assert data["tet_count"] == 2
+
+
+def test_mesh_diagnostics_endpoint_no_mesh(tmp_path: Path) -> None:
+    settings = _make_settings(tmp_path)
+    app = create_app(settings)
+    client = TestClient(app)
+
+    project_id, pkg_path = _make_project(settings, "mesh-diag-no-mesh", "mesh_diag_none.aieng")
+    _build_test_package(pkg_path)
+
+    resp = client.get(f"/api/projects/{project_id}/mesh-diagnostics")
+    assert resp.status_code == 200
+    assert resp.json()["available"] is False
+
+
 # ── streaming endpoint (run_simulation_stream) ────────────────────────────────
 #
 # These pin the streaming path, which previously had no coverage and had

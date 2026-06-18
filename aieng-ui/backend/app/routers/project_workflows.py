@@ -1293,6 +1293,26 @@ def register_project_workflow_routes(
 
         return simulation_runner.get_mesh_preview(package_path)
 
+    @app.get("/api/projects/{project_id}/mesh-diagnostics")
+    def mesh_diagnostics_endpoint(project_id: str) -> dict[str, Any]:
+        """Return an element-quality verdict for the project's FE mesh (#279).
+
+        Reads ``simulation/mesh.inp`` and reports degenerate / sliver / high-aspect
+        tetrahedra with an ok/warning/fail verdict. ``{available: false}`` when no
+        mesh exists. Honest boundary: heuristic tet quality, not a Jacobian measure.
+        """
+        from ..project_io import get_project, resolve_project_path
+        from .. import simulation_runner
+
+        project = get_project(active_settings, project_id)
+        package_path = resolve_project_path(
+            active_settings, project_id, project.get("aieng_file")
+        )
+        if package_path is None or not package_path.exists():
+            raise HTTPException(status_code=404, detail=".aieng package not found")
+
+        return simulation_runner.get_mesh_quality_diagnostics(package_path)
+
     @app.post("/api/projects/{project_id}/chat-set-target")
     def chat_set_target_endpoint(
         project_id: str,
