@@ -19,9 +19,11 @@ approval gating and solver-result honesty.
 - The **MCP `cae.run_solver` / `cae.prepare_solver_run`** pair is the **canonical,
   actively-wired** solver path for the MCP-first workbench.
 - `simulation_runner.py` (REST sync + SSE) is the **legacy embedded-agent path**.
-  It is still registered and the sync helpers (`_read_member`, meshing, NSET
-  building, deck generation) are reused by the stress-heatmap route
-  (`project_workflows.py:1085`), so the module stays. But:
+  It is still registered and its sync helpers (`_read_member`, meshing, NSET
+  building, deck generation) remain reused by other workflow routes, so the
+  module stays. (The dead `/stress-heatmap` GLB route that previously consumed
+  `_read_member` was retired in favor of the canonical `/fields/{name}` path — #246.)
+  But:
   - the **SSE endpoint has no live frontend consumer** (Finding 2), and
   - the two REST halves had **drifted** (Finding 1).
 

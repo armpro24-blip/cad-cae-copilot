@@ -2060,9 +2060,33 @@ def _topology_to_feature_graph(
     resolved_kind = model_kind if model_kind in ("organic", "mechanical") else _infer_model_kind(named_solids, source_code)
     run_mechanical_heuristics = resolved_kind != "organic"
 
+    # Run the core topology-only recognizer once up front so its edge-blend
+    # signals are available before the cylinder-grouping heuristic. A quarter-round
+    # fillet is a cylinder face; without this its faces would be swept into a
+    # mounting_hole/bore pattern (#297 Phase 2). Best-effort — never fail the build.
+    core_graph: dict[str, Any] = {}
+    core_blend_faces: set[str] = set()
+    try:
+        from aieng.graph.feature_recognition import RuleBasedFeatureRecognizer
+
+        core_graph = RuleBasedFeatureRecognizer().recognize(topo)
+        for core_feature in core_graph.get("features", []):
+            if core_feature.get("type") in {"fillet", "chamfer"}:
+                refs = core_feature.get("geometry_refs") or {}
+                core_blend_faces.update(refs.get("faces") or [])
+    except Exception:
+        core_graph = {}
+        core_blend_faces = set()
+
     if run_mechanical_heuristics:
-        # bolt pattern detection — group cylinders by radius (±8% tolerance)
-        cylinders = [f for f in faces if f.get("surface_type") == "cylinder" and f.get("radius")]
+        # bolt pattern detection — group cylinders by radius (±8% tolerance).
+        # Skip faces the core recognizer already classified as edge blends so a
+        # filleted edge is not mislabeled a hole/bore pattern.
+        cylinders = [
+            f for f in faces
+            if f.get("surface_type") == "cylinder" and f.get("radius")
+            and str(f.get("id")) not in core_blend_faces
+        ]
         radius_groups: dict[float, list[str]] = {}
         for face in cylinders:
             r = float(face["radius"])
@@ -2173,10 +2197,10 @@ def _topology_to_feature_graph(
                 },
             })
 
-    # ── Merge Phase 1 topology-only heuristics from the core recognizer (#297).
+    # ── Merge topology-only heuristics from the core recognizer (#297).
     # The workbench runtime already handles named parts, bolt patterns, base plate,
-    # and hollow_body; here we pull in slot / pocket / rib candidates that do not
-    # overlap with any of those existing features.
+    # and hollow_body; here we pull in slot / pocket / rib / fillet / chamfer
+    # candidates that do not overlap with any of those existing features.
     used_face_ids: set[str] = set()
     for feature in features:
         refs = feature.get("geometry_refs") or {}
@@ -2184,18 +2208,9 @@ def _topology_to_feature_graph(
             used_face_ids.update(refs.get("faces") or [])
 
     try:
-        from aieng.graph.feature_recognition import RuleBasedFeatureRecognizer
-
-        recognizer = RuleBasedFeatureRecognizer()
-        core_graph = recognizer.recognize(topo)
-        solid_bbox = None
-        if solid:
-            bb = solid.get("bounding_box")
-            if isinstance(bb, list) and len(bb) == 6:
-                solid_bbox = [float(v) for v in bb]
         for core_feature in core_graph.get("features", []):
             ftype = core_feature.get("type")
-            if ftype not in {"slot", "pocket", "rib"}:
+            if ftype not in {"slot", "pocket", "rib", "fillet", "chamfer"}:
                 continue
             refs = core_feature.get("geometry_refs") or {}
             face_ids = set(refs.get("faces") or [])

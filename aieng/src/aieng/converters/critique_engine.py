@@ -429,11 +429,30 @@ def critique_geometry(
                 )
 
         if standard_holes:
+            # Faces carried by recognized thread features: a tapped hole is drilled
+            # to a (non-standard) tap-drill diameter on purpose, so flagging it as a
+            # non-standard hole is a false positive. Skip those holes.
+            threaded_faces: set[str] = set()
+            for feat in features:
+                if feat.get("type") != "thread":
+                    continue
+                refs = feat.get("geometry_refs") or {}
+                if isinstance(refs, dict):
+                    threaded_faces.update(str(fid) for fid in (refs.get("faces") or []))
+
             for feat in features:
                 if feat.get("type") not in ("mounting_hole", "mounting_hole_pattern"):
                     continue
+                geo = feat.get("geometry_refs") or {}
+                hole_faces = {str(fid) for fid in (geo.get("faces") or [])} if isinstance(geo, dict) else set()
+                if hole_faces & threaded_faces:
+                    continue
                 params = feat.get("parameters") or {}
+                # Accept both the runtime (`hole_diameter_mm`) and the core
+                # RuleBasedFeatureRecognizer (`diameter_mm`) field names.
                 diameter = params.get("hole_diameter_mm")
+                if not isinstance(diameter, (int, float)):
+                    diameter = params.get("diameter_mm")
                 if isinstance(diameter, (int, float)):
                     nearest = min(standard_holes, key=lambda d: abs(d - float(diameter)))
                     if abs(float(diameter) - nearest) > 0.3:

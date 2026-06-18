@@ -21,12 +21,31 @@ class RuleBasedFeatureRecognizer:
         referenced_faces: set[str] = set()
         referenced_edges: set[str] = set()
 
+        solids = [entity for entity in entities if entity.get("type") == "solid"]
+        solid_bbox = self._bbox(solids[0].get("bounding_box")) if solids else None
+
         base_feature = self._base_plate_feature(faces, aag_face_index, recognition_context)
         if base_feature is not None:
             features.append(base_feature)
             referenced_faces.update(base_feature["geometry_refs"].get("faces", []))
 
-        hole_features = self._hole_features(faces, aag_face_index, recognition_context)
+        # Edge blends are recognized before holes so a quarter-round fillet face
+        # (a cylinder/torus) is not mis-claimed as a mounting-hole candidate.
+        fillet_features, fillet_faces = self._fillet_features(
+            faces, referenced_faces, aag_face_index, solid_bbox, recognition_context
+        )
+        features.extend(fillet_features)
+        referenced_faces.update(fillet_faces)
+
+        chamfer_features, chamfer_faces = self._chamfer_features(
+            faces, referenced_faces, aag_face_index, recognition_context
+        )
+        features.extend(chamfer_features)
+        referenced_faces.update(chamfer_faces)
+
+        hole_features = self._hole_features(
+            faces, aag_face_index, recognition_context, exclude_faces=referenced_faces
+        )
         features.extend(hole_features)
         for feature in hole_features:
             referenced_faces.update(feature["geometry_refs"].get("faces", []))
@@ -36,8 +55,10 @@ class RuleBasedFeatureRecognizer:
             features.append(pattern_feature)
             referenced_faces.update(pattern_feature["geometry_refs"].get("faces", []))
 
-        solids = [entity for entity in entities if entity.get("type") == "solid"]
-        solid_bbox = self._bbox(solids[0].get("bounding_box")) if solids else None
+        # Threads annotate holes whose diameter matches a standard tap-drill size.
+        # They are ADDITIVE — the underlying hole feature still owns the face — so
+        # thread faces are not added to ``referenced_faces``.
+        features.extend(self._thread_features(hole_features, recognition_context))
 
         slot_features, slot_faces = self._slot_features(
             faces, referenced_faces, aag_face_index, solid_bbox, recognition_context
@@ -148,11 +169,15 @@ class RuleBasedFeatureRecognizer:
         faces: list[dict[str, Any]],
         aag_face_index: dict[str, dict[str, Any]],
         recognition_context: dict[str, bool],
+        exclude_faces: set[str] | None = None,
     ) -> list[dict[str, Any]]:
+        excluded = exclude_faces or set()
         cylindrical_faces = sorted(
             [
                 face for face in faces
-                if face.get("surface_type") == "cylinder" and isinstance(face.get("radius"), NUMERIC_TYPES)
+                if face.get("surface_type") == "cylinder"
+                and isinstance(face.get("radius"), NUMERIC_TYPES)
+                and str(face.get("id")) not in excluded
             ],
             key=lambda face: str(face.get("id", "")),
         )
@@ -1024,3 +1049,306 @@ class RuleBasedFeatureRecognizer:
         }
         self._attach_aag_metadata(feature, body_faces[0] if body_faces else None, aag_face_index)
         return feature, set(body_faces)
+
+    # ── Phase 2 feature-graph heuristics (#297): fillet, chamfer ──
+
+    def _smallest_solid_dimension(self, solid_bbox: list[float] | None) -> float | None:
+        if solid_bbox is None:
+            return None
+        dims = [
+            abs(solid_bbox[3] - solid_bbox[0]),
+            abs(solid_bbox[4] - solid_bbox[1]),
+            abs(solid_bbox[5] - solid_bbox[2]),
+        ]
+        positive = [d for d in dims if d > 0]
+        return min(positive) if positive else None
+
+    def _fillet_features(
+        self,
+        faces: list[dict[str, Any]],
+        referenced_faces: set[str],
+        aag_face_index: dict[str, dict[str, Any]],
+        solid_bbox: list[float] | None,
+        recognition_context: dict[str, bool],
+    ) -> tuple[list[dict[str, Any]], set[str]]:
+        """Recognize edge/corner fillets from quarter-round cylinder or torus faces.
+
+        A fillet face is a constant-radius blend between two faces: an edge fillet
+        is a quarter cylinder (cross-section ~ 1 radius, while a hole spans ~2
+        radii), and a corner fillet is a small toroidal patch. Topology-only and
+        candidate-level — a recognized fillet is a geometric signal, not a
+        manufacturing-certified edge break.
+        """
+        face_by_id = {str(face["id"]): face for face in faces if isinstance(face.get("id"), str)}
+        adjacency = self._face_adjacency(faces, aag_face_index)
+        smallest_solid_dim = self._smallest_solid_dimension(solid_bbox)
+
+        features: list[dict[str, Any]] = []
+        consumed: set[str] = set()
+        index = 1
+        for fid in sorted(face_by_id):
+            if fid in referenced_faces or fid in consumed:
+                continue
+            face = face_by_id[fid]
+            surface_type = face.get("surface_type")
+            if surface_type not in ("cylinder", "torus"):
+                continue
+            bbox = self._bbox(face.get("bounding_box"))
+            if bbox is None:
+                continue
+            # A blend joins at least two other faces.
+            if len(adjacency.get(fid, set())) < 2:
+                continue
+            dims = [abs(bbox[3] - bbox[0]), abs(bbox[4] - bbox[1]), abs(bbox[5] - bbox[2])]
+
+            if surface_type == "cylinder":
+                radius = float(face["radius"]) if isinstance(face.get("radius"), NUMERIC_TYPES) else None
+                if radius is None or radius <= 0:
+                    continue
+                axis = self._vec3(face.get("axis"))
+                if axis is not None and max(abs(v) for v in axis) >= 0.5:
+                    axis_idx = max(range(3), key=lambda i: abs(axis[i]))
+                    length = dims[axis_idx]
+                    cross = [d for i, d in enumerate(dims) if i != axis_idx]
+                else:
+                    ordered = sorted(dims)
+                    cross = ordered[:2]
+                    length = ordered[2]
+                # Quarter-round signal: both cross extents ~ one radius. A through
+                # hole / boss spans ~2 radii and is intentionally NOT matched here.
+                if not all(0.4 * radius <= c <= 1.6 * radius for c in cross):
+                    continue
+                # Guard against labelling a large structural cylinder a fillet.
+                if smallest_solid_dim is not None and radius > 0.5 * smallest_solid_dim:
+                    continue
+                method = "rule_based_quarter_round_cylindrical_blend"
+                parameters: dict[str, Any] = {
+                    "radius_mm": round(radius, 3),
+                    "length_mm": round(length, 3),
+                    "face_count": 1,
+                }
+                blend_kind = "edge_fillet"
+            else:  # torus → corner blend
+                d_min, d_mid, d_max = self._bbox_dimensions(bbox)
+                if d_max <= 0:
+                    continue
+                # Corner blends are small compact patches, not elongated tubes.
+                if d_max / max(d_min, 1e-9) > 3.0:
+                    continue
+                if smallest_solid_dim is not None and d_max > 0.5 * smallest_solid_dim:
+                    continue
+                method = "rule_based_toroidal_corner_blend"
+                parameters = {
+                    "radius_mm": round(d_min, 3),
+                    "radius_source": "bbox_minor_extent_proxy",
+                    "face_count": 1,
+                }
+                blend_kind = "corner_fillet"
+
+            confidence = "medium" if recognition_context.get("real_topology") else "low"
+            feature = {
+                "id": f"feat_fillet_{index:03d}",
+                "type": "fillet",
+                "name": "Fillet candidate",
+                "geometry_refs": {"faces": [fid]},
+                "parameters": parameters,
+                "parameter_source": "mock",
+                "parameter_confidence": "low",
+                "editable": True,
+                "editability": "semantic_only",
+                "writeback_strategy": "semantic_parameter_update_only",
+                "editability_reason": "Fillet radius is a heuristic candidate; CAD write-back requires a parametric regeneration source.",
+                "intent": {"role": "edge_blend", "manufacturing_note": "stress_relief"},
+                "recognition": {
+                    "method": method,
+                    "confidence": confidence,
+                    "uncertainty_notes": [
+                        "Fillet recognition is a geometric blend signal, not a manufacturing-certified edge break.",
+                        "Radius/extent are derived from the bounding box and adjacency; verify against design intent.",
+                    ],
+                    "signals": {
+                        "real_topology": bool(recognition_context.get("real_topology")),
+                        "blend_kind": blend_kind,
+                        "surface_type": surface_type,
+                        "neighbor_count": len(adjacency.get(fid, set())),
+                    },
+                },
+            }
+            self._attach_aag_metadata(feature, fid, aag_face_index)
+            features.append(feature)
+            consumed.add(fid)
+            index += 1
+        return features, consumed
+
+    def _chamfer_features(
+        self,
+        faces: list[dict[str, Any]],
+        referenced_faces: set[str],
+        aag_face_index: dict[str, dict[str, Any]],
+        recognition_context: dict[str, bool],
+    ) -> tuple[list[dict[str, Any]], set[str]]:
+        """Recognize chamfers as narrow planar bevels with a diagonal normal.
+
+        A chamfer is a flat bevel that breaks the edge between two faces, so its
+        normal is not axis-aligned and it borders at least two larger,
+        more-axis-aligned planar faces. Conservative and candidate-level — a
+        diagonal design face may also match; confidence stays low/medium.
+        """
+        face_by_id = {str(face["id"]): face for face in faces if isinstance(face.get("id"), str)}
+        adjacency = self._face_adjacency(faces, aag_face_index)
+
+        features: list[dict[str, Any]] = []
+        consumed: set[str] = set()
+        index = 1
+        for fid in sorted(face_by_id):
+            if fid in referenced_faces or fid in consumed:
+                continue
+            face = face_by_id[fid]
+            if face.get("surface_type") != "plane":
+                continue
+            normal = self._vec3(face.get("normal"))
+            if normal is None:
+                continue
+            mags = sorted(abs(v) for v in normal)  # ascending
+            # Diagonal normal: dominant component not axis-aligned and a second
+            # component is significant (the bevel splits two directions).
+            if mags[2] >= 0.95 or mags[1] < 0.3:
+                continue
+            bbox = self._bbox(face.get("bounding_box"))
+            if bbox is None:
+                continue
+            this_area = float(face.get("area", 0.0))
+            larger_axis_aligned = 0
+            for neighbor in adjacency.get(fid, set()):
+                neighbor_face = face_by_id.get(neighbor)
+                if not neighbor_face or neighbor_face.get("surface_type") != "plane":
+                    continue
+                if float(neighbor_face.get("area", 0.0)) <= this_area:
+                    continue
+                neighbor_normal = self._vec3(neighbor_face.get("normal"))
+                if neighbor_normal is not None and max(abs(v) for v in neighbor_normal) >= 0.9:
+                    larger_axis_aligned += 1
+            if larger_axis_aligned < 2:
+                continue
+
+            dims = sorted([abs(bbox[3] - bbox[0]), abs(bbox[4] - bbox[1]), abs(bbox[5] - bbox[2])])
+            confidence = "medium" if recognition_context.get("real_topology") else "low"
+            feature = {
+                "id": f"feat_chamfer_{index:03d}",
+                "type": "chamfer",
+                "name": "Chamfer candidate",
+                "geometry_refs": {"faces": [fid]},
+                "parameters": {
+                    "width_mm": round(dims[1], 3),
+                    "length_mm": round(dims[2], 3),
+                    "face_count": 1,
+                },
+                "parameter_source": "mock",
+                "parameter_confidence": "low",
+                "editable": True,
+                "editability": "semantic_only",
+                "writeback_strategy": "semantic_parameter_update_only",
+                "editability_reason": "Chamfer dimensions are heuristic candidates; CAD write-back requires a parametric regeneration source.",
+                "intent": {"role": "edge_break", "manufacturing_note": "deburr_or_lead_in"},
+                "recognition": {
+                    "method": "rule_based_diagonal_planar_bevel",
+                    "confidence": confidence,
+                    "uncertainty_notes": [
+                        "Chamfer recognition relies on a diagonal planar normal bordering two larger faces; "
+                        "a sloped design face can also match. Verify against design intent.",
+                    ],
+                    "signals": {
+                        "real_topology": bool(recognition_context.get("real_topology")),
+                        "normal": normal,
+                        "larger_axis_aligned_neighbors": larger_axis_aligned,
+                    },
+                },
+            }
+            self._attach_aag_metadata(feature, fid, aag_face_index)
+            features.append(feature)
+            consumed.add(fid)
+            index += 1
+        return features, consumed
+
+    # Standard ISO metric coarse-thread tap-drill diameters (mm). A hole drilled
+    # to one of these sizes is the pre-tap diameter for that thread.
+    _TAP_DRILL_DIAMETERS_MM: tuple[tuple[str, float], ...] = (
+        ("M2", 1.6),
+        ("M2.5", 2.05),
+        ("M3", 2.5),
+        ("M4", 3.3),
+        ("M5", 4.2),
+        ("M6", 5.0),
+        ("M8", 6.8),
+        ("M10", 8.5),
+        ("M12", 10.2),
+        ("M16", 14.0),
+        ("M20", 17.5),
+    )
+
+    def _thread_features(
+        self,
+        hole_features: list[dict[str, Any]],
+        recognition_context: dict[str, bool],
+    ) -> list[dict[str, Any]]:
+        """Flag holes whose diameter matches a standard tap-drill size as candidate threads.
+
+        Real helical thread geometry is rarely present in build123d models, so a
+        tapped hole is modelled as a plain cylinder drilled to the pre-tap
+        diameter. Matching that diameter to a standard tap-drill size is the best
+        topology-only signal. Candidate-level and explicitly low-confidence: the
+        same diameter can equally be a plain clearance hole.
+        """
+        features: list[dict[str, Any]] = []
+        index = 1
+        for hole in hole_features:
+            diameter = hole.get("parameters", {}).get("diameter_mm")
+            if not isinstance(diameter, NUMERIC_TYPES) or diameter <= 0:
+                continue
+            # A through hole at a round drill size reads as a clearance hole, not a
+            # tapped one. Tapped holes are typically blind; keep blind/unknown only.
+            hole_metadata = hole.get("hole_metadata")
+            if isinstance(hole_metadata, dict) and hole_metadata.get("hole_depth_kind") == "through":
+                continue
+            match = None
+            for nominal, tap_drill in self._TAP_DRILL_DIAMETERS_MM:
+                if abs(float(diameter) - tap_drill) <= max(0.05, tap_drill * 0.025):
+                    match = (nominal, tap_drill)
+                    break
+            if match is None:
+                continue
+            nominal, tap_drill = match
+            face_ids = list(hole.get("geometry_refs", {}).get("faces", []))
+            feature = {
+                "id": f"feat_thread_{index:03d}",
+                "type": "thread",
+                "name": f"Thread candidate ({nominal})",
+                "geometry_refs": {"faces": face_ids},
+                "parameters": {
+                    "nominal_size": nominal,
+                    "tap_drill_diameter_mm": tap_drill,
+                    "measured_diameter_mm": round(float(diameter), 3),
+                },
+                "parameter_source": "mock",
+                "parameter_confidence": "low",
+                "editable": False,
+                "editability": "not_editable",
+                "writeback_strategy": "none",
+                "editability_reason": "Thread is an inferred annotation on a hole, not an independently editable feature.",
+                "intent": {"role": "threaded_fastener_interface"},
+                "recognition": {
+                    "method": "rule_based_tap_drill_diameter_match",
+                    "confidence": "low",
+                    "uncertainty_notes": [
+                        f"Hole diameter matches the {nominal} tap-drill size; no helical thread geometry was detected.",
+                        "The same diameter may instead be a plain clearance/passage hole — verify against design intent.",
+                    ],
+                    "signals": {
+                        "real_topology": bool(recognition_context.get("real_topology")),
+                        "matched_hole_feature_id": hole.get("id"),
+                    },
+                },
+            }
+            features.append(feature)
+            index += 1
+        return features

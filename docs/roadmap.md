@@ -1190,6 +1190,13 @@ real per-node Von Mises stress coloring from the CalculiX FRD file.
 - Falls back to displacement magnitude if no STRESS block is found.
 - Binary FRD format is not supported (text only).
 
+> **Retired (#246).** This `stress_heatmap.py` module and the
+> `GET /api/projects/{id}/stress-heatmap` GLB route were removed. The route was
+> never consumed by the frontend, and the canonical in-viewer path
+> (`GET /api/projects/{id}/fields/{name}` → per-vertex coloring with legend,
+> field picker, probe, and colormap controls) now owns stress/displacement
+> visualization — leaving a single stress-color code path.
+
 **Depends on:** Phase 42 (simulation runner writing mesh.inp and result.frd).
 
 ---

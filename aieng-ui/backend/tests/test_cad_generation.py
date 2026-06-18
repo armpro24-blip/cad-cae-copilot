@@ -198,6 +198,35 @@ def test_feature_graph_surfaces_named_parts() -> None:
     assert fuselage["geometry_refs"]["faces"] == ["face_001"]
 
 
+def test_feature_graph_recognizes_external_fillets_not_hole_pattern() -> None:
+    """A box with equal-radius quarter-round edge fillets must surface as `fillet`
+    features, not be swept into a mounting_hole/bore pattern by the cylinder
+    grouping heuristic (#297 Phase 2)."""
+    from app.cad_generation import _topology_to_feature_graph
+
+    topo = {
+        "entities": [
+            {"id": "body_001", "type": "solid", "bounding_box": [0, 0, 0, 100, 60, 40], "volume": 230000.0},
+            {"id": "face_side_x", "type": "face", "surface_type": "plane", "area": 4000.0, "normal": [1.0, 0.0, 0.0], "bounding_box": [100, 0, 0, 100, 60, 40], "adjacent_entity_ids": ["face_fil_1", "face_fil_2", "face_fil_3", "face_fil_4"]},
+            {"id": "face_side_y", "type": "face", "surface_type": "plane", "area": 6000.0, "normal": [0.0, 1.0, 0.0], "bounding_box": [0, 60, 0, 100, 60, 40], "adjacent_entity_ids": ["face_fil_1", "face_fil_2", "face_fil_3", "face_fil_4"]},
+            # Four identical vertical-edge fillets (quarter cylinders, cross ~ 6x6).
+            {"id": "face_fil_1", "type": "face", "surface_type": "cylinder", "radius": 6.0, "axis": [0, 0, 1], "area": 377.0, "bounding_box": [0, 0, 0, 6, 6, 40], "adjacent_entity_ids": ["face_side_x", "face_side_y"]},
+            {"id": "face_fil_2", "type": "face", "surface_type": "cylinder", "radius": 6.0, "axis": [0, 0, 1], "area": 377.0, "bounding_box": [94, 0, 0, 100, 6, 40], "adjacent_entity_ids": ["face_side_x", "face_side_y"]},
+            {"id": "face_fil_3", "type": "face", "surface_type": "cylinder", "radius": 6.0, "axis": [0, 0, 1], "area": 377.0, "bounding_box": [0, 54, 0, 6, 60, 40], "adjacent_entity_ids": ["face_side_x", "face_side_y"]},
+            {"id": "face_fil_4", "type": "face", "surface_type": "cylinder", "radius": 6.0, "axis": [0, 0, 1], "area": 377.0, "bounding_box": [94, 54, 0, 100, 60, 40], "adjacent_entity_ids": ["face_side_x", "face_side_y"]},
+        ]
+    }
+    fg = _topology_to_feature_graph(topo)
+    fillets = [f for f in fg["features"] if f["type"] == "fillet"]
+    assert len(fillets) == 4
+    fillet_faces = {ref for f in fillets for ref in f["geometry_refs"]["faces"]}
+    assert fillet_faces == {"face_fil_1", "face_fil_2", "face_fil_3", "face_fil_4"}
+    # The fillet cylinders must NOT be grouped as holes/bores.
+    for f in fg["features"]:
+        if f["type"] in {"mounting_hole_pattern", "mounting_hole", "bore"}:
+            assert not (set(f["geometry_refs"].get("faces", [])) & fillet_faces)
+
+
 def test_feature_graph_surfaces_standard_parts_with_provenance() -> None:
     from app.cad_generation import _named_parts_from_feature_graph, _topology_to_feature_graph
 
