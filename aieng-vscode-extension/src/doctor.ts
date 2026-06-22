@@ -1,19 +1,20 @@
 import * as vscode from "vscode";
 
 import { backendUrl } from "./livePreview";
+import { detectAgentMcp } from "./mcpStatus";
 
 const HEALTH_TIMEOUT_MS = 3000;
 
 type DoctorResult = {
   backendReachable: boolean;
-  backendIdentity?: string;
+  registryHash?: string;
   backendError?: string;
   hasMcpConfig: boolean;
   mcpSource?: string;
   workspaceFolder?: string;
 };
 
-async function fetchHealth(): Promise<{ ok: true; identity: string } | { ok: false; error: string }> {
+async function fetchHealth(): Promise<{ ok: true; registryHash: string } | { ok: false; error: string }> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
   try {
@@ -22,8 +23,8 @@ async function fetchHealth(): Promise<{ ok: true; identity: string } | { ok: fal
       return { ok: false, error: `HTTP ${response.status}` };
     }
     const data = (await response.json()) as Record<string, unknown>;
-    const identity = typeof data.registry_identity === "string" ? data.registry_identity : "unknown";
-    return { ok: true, identity };
+    const registryHash = typeof data.registry_hash === "string" ? data.registry_hash : "unknown";
+    return { ok: true, registryHash };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return { ok: false, error: message };
@@ -57,29 +58,28 @@ async function findMcpConfig(workspaceUri: vscode.Uri): Promise<{ hasConfig: boo
 export async function runDoctor(): Promise<DoctorResult> {
   const folder = vscode.workspace.workspaceFolders?.[0];
   const health = await fetchHealth();
-
-  let mcp: { hasConfig: boolean; source?: string } = { hasConfig: false };
-  if (folder) {
-    mcp = await findMcpConfig(folder.uri);
-  }
+  const agentMcp = detectAgentMcp();
+  const fallbackMcp = !agentMcp.configured && folder ? await findMcpConfig(folder.uri) : { hasConfig: false };
+  const hasMcpConfig = agentMcp.configured || fallbackMcp.hasConfig;
+  const mcpSource = agentMcp.configured ? agentMcp.sources.join(", ") : fallbackMcp.source;
 
   const result: DoctorResult = {
     backendReachable: health.ok,
-    backendIdentity: health.ok ? health.identity : undefined,
+    registryHash: health.ok ? health.registryHash : undefined,
     backendError: health.ok ? undefined : health.error,
-    hasMcpConfig: mcp.hasConfig,
-    mcpSource: mcp.source,
+    hasMcpConfig,
+    mcpSource,
     workspaceFolder: folder?.uri.fsPath,
   };
 
   const lines: string[] = [];
   lines.push(`Backend ${health.ok ? "reachable" : "not reachable"} at ${backendUrl()}`);
   if (health.ok) {
-    lines.push(`Registry identity: ${health.identity}`);
+    lines.push(`Registry hash: ${health.registryHash}`);
   } else {
     lines.push(`Error: ${health.error}`);
   }
-  lines.push(`MCP config: ${mcp.hasConfig ? (mcp.source ?? "found") : "not found in .vscode"}`);
+  lines.push(`MCP config: ${hasMcpConfig ? (mcpSource ?? "found") : "not found in this workspace"}`);
 
   const status = health.ok ? "info" : "warning";
   const message = lines.join("\n");

@@ -22,7 +22,8 @@
     "onCustomEditor:aieng.cadPreview",
     "onCommand:aieng.openHome",
     "onCommand:aieng.openLivePreview",
-    "onCommand:aieng.openPackagePreview"
+    "onCommand:aieng.openPackagePreview",
+    "onCommand:aieng.doctor"
   ],
   "main": "./out/extension.js",
   "contributes": {
