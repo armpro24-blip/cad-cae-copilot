@@ -22,7 +22,8 @@
     "onCustomEditor:aieng.cadPreview",
     "onCommand:aieng.openHome",
     "onCommand:aieng.openLivePreview",
-    "onCommand:aieng.openPackagePreview"
+    "onCommand:aieng.openPackagePreview",
+    "onCommand:aieng.doctor"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -40,6 +41,11 @@
       {
         "command": "aieng.openPackagePreview",
         "title": "AIENG: Open .aieng CAD Preview",
+        "category": "AIENG"
+      },
+      {
+        "command": "aieng.doctor",
+        "title": "AIENG: Doctor — Check Backend and MCP Readiness",
         "category": "AIENG"
       }
     ],
@@ -112,7 +118,9 @@
     "watch": "node scripts/build.mjs --watch",
     "check": "tsc --noEmit && node scripts/check-viewer.mjs",
     "package": "npm run check && npm run build",
-    "vsix": "npm run package && npx @vscode/vsce package --no-dependencies"
+    "vsix": "npm run package && npx @vscode/vsce package --no-dependencies",
+    "test": "node scripts/test.mjs && node --test out/test/*.test.mjs",
+    "smoke": "node scripts/smoke-test.mjs"
   },
   "dependencies": {
     "eventsource": "^4.0.0",

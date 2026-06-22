@@ -133,10 +133,12 @@ def register_tool(
 
 
 def registered_tool_names() -> list[str]:
+    """Return the list of currently registered tool names."""
     return list(_REGISTRY.keys())
 
 
 def registered_tools_info() -> list[dict[str, Any]]:
+    """Return a summary dict for each registered tool."""
     return [
         {
             "name": name,
@@ -147,6 +149,19 @@ def registered_tools_info() -> list[dict[str, Any]]:
         }
         for name, meta in _REGISTRY.items()
     ]
+
+
+def registered_tool_metadata(name: str) -> dict[str, Any] | None:
+    """Return metadata for a single registered tool, or None if unknown."""
+    meta = _REGISTRY.get(name)
+    if meta is None:
+        return None
+    return {
+        "requires_approval": bool(meta.get("requires_approval", False)),
+        "read_only": bool(meta.get("read_only", True)),
+        "destructive": bool(meta.get("destructive", False)),
+        "description": str(meta.get("description", "")),
+    }
 
 
 def list_tools_for_mcp() -> list[dict[str, Any]]:

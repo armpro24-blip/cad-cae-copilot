@@ -8,6 +8,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from .. import blocked_reason_codes as _blocked_reason_codes
+from .. import next_actions as _next_actions
+from .. import operation_receipt as _receipt
 from ..legacy_app_symbols import sync_main_symbols
 
 LOGGER = logging.getLogger("app.app_factory")
@@ -649,7 +652,32 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 ),
             })
 
-        return {
+        preflight["blocked_reason_codes"] = _blocked_reason_codes.codes_for_preflight(preflight)
+
+        next_actions_raw: list[dict[str, Any]] = list(recommendations)
+        if not ready_to_run:
+            next_actions_raw.insert(
+                0,
+                {
+                    "tool": "cae.run_solver",
+                    "input": {
+                        "project_id": project_id or "",
+                        "run_id": run_id,
+                        "load_case_id": load_case_id,
+                        "input_deck_path": f"simulation/runs/{run_id}/solver_input.inp",
+                    },
+                    "reason": "Run the solver once all preflight checks pass.",
+                    "available_now": False,
+                    "blocked_reason": "Run is not ready: missing required inputs or stale topology references.",
+                    "blocked_reason_codes": _blocked_reason_codes.codes_for_run_solver_action(preflight),
+                    "priority": "high",
+                },
+            )
+        next_actions = _next_actions.normalize_next_actions(
+            next_actions_raw, source="cae.prepare_solver_run"
+        )
+
+        result = {
             "ok": True,
             "tool": "cae.prepare_solver_run",
             "ready_to_run": ready_to_run,
@@ -661,8 +689,11 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             "preflight": preflight,
             "planned_artifacts": planned_artifacts,
             "warnings": warnings,
+            "blocked_reason_codes": preflight["blocked_reason_codes"],
             "recommended_next_calls": recommendations,
+            "next_actions": next_actions,
         }
+        return _receipt.receipt_from_prepare_solver_run(result)
 
     def _tool_cae_generate_solver_input(inp: dict[str, Any], _ctx: dict[str, Any]) -> dict[str, Any]:
         from .. import aieng_bridge
@@ -759,6 +790,11 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         timeout_seconds: int = int(inp.get("timeout_seconds", inp.get("timeoutSeconds", 120)))
         auto_import_evidence: bool = bool(inp.get("autoImportEvidence", inp.get("auto_import_evidence", True)))
 
+        def _with_run_solver_receipt(result: dict[str, Any]) -> dict[str, Any]:
+            result.setdefault("project_id", project_id)
+            result.setdefault("run_id", run_id)
+            return _receipt.receipt_from_run_solver(result)
+
         # Resolve package path
         if not package_path_str and project_id:
             proj = get_project(active_settings, project_id)
@@ -767,87 +803,87 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 package_path_str = str(pkg)
 
         if not package_path_str:
-            return {
+            return _with_run_solver_receipt({
                 "ok": False,
                 "tool": "cae.run_solver",
                 "status": "error",
                 "code": "missing_package_path",
                 "message": "No package path provided and no project_id could be resolved.",
                 "solver_execution_performed": False,
-            }
+            })
 
         package_path = _Path(package_path_str)
         if not package_path.exists():
-            return {
+            return _with_run_solver_receipt({
                 "ok": False,
                 "tool": "cae.run_solver",
                 "status": "error",
                 "code": "file_not_found",
                 "message": f"Package not found: {package_path_str}",
                 "solver_execution_performed": False,
-            }
+            })
 
         # Validate input_deck_path
         if not input_deck_path_str:
-            return {
+            return _with_run_solver_receipt({
                 "ok": False,
                 "tool": "cae.run_solver",
                 "status": "error",
                 "code": "missing_input_deck",
                 "message": "No input_deck_path provided. Pass the path to the CalculiX .inp file inside the package.",
                 "solver_execution_performed": False,
-            }
+            })
 
         # Reject absolute paths and path traversal
         normalized = input_deck_path_str.replace("\\", "/")
         if normalized.startswith("/") or ".." in normalized.split("/"):
-            return {
+            return _with_run_solver_receipt({
                 "ok": False,
                 "tool": "cae.run_solver",
                 "status": "error",
                 "code": "forbidden_path",
                 "message": "input_deck_path must be a relative path inside the package and must not contain '..' or start with a separator.",
                 "solver_execution_performed": False,
-            }
+            })
 
         if not input_deck_path_str.lower().endswith(".inp"):
-            return {
+            return _with_run_solver_receipt({
                 "ok": False,
                 "tool": "cae.run_solver",
                 "status": "error",
                 "code": "invalid_input_deck",
                 "message": "input_deck_path must end with .inp",
                 "solver_execution_performed": False,
-            }
+            })
 
         # Verify input deck exists in package
         try:
             with _zipfile.ZipFile(package_path, "r") as zf:
                 names = set(zf.namelist())
                 if input_deck_path_str not in names:
-                    return {
+                    return _with_run_solver_receipt({
                         "ok": False,
                         "tool": "cae.run_solver",
                         "status": "error",
                         "code": "input_deck_not_found",
                         "message": f"Input deck not found in package: {input_deck_path_str}",
                         "solver_execution_performed": False,
-                    }
+                    })
                 inp_data = zf.read(input_deck_path_str)
         except Exception as exc:
-            return {
+            return _with_run_solver_receipt({
                 "ok": False,
                 "tool": "cae.run_solver",
                 "status": "error",
                 "code": "package_read_error",
                 "message": f"Failed to read package: {exc}",
                 "solver_execution_performed": False,
-            }
+            })
 
         # Refuse to run if the face-scoped CAE references are stale.
         topology_validation = validate_cae_topology_references(package_path)
         if not topology_validation["valid"]:
-            return {
+            return _with_run_solver_receipt({
                 "ok": False,
                 "tool": "cae.run_solver",
                 "status": "error",
@@ -859,12 +895,12 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 ),
                 "topology_validation": topology_validation,
                 "solver_execution_performed": False,
-            }
+            })
 
         # Locate ccx (respects AIENG_CCX_CMD for cross-env launches)
         ccx_parts = _resolve_ccx_cmd()
         if not ccx_parts:
-            return {
+            return _with_run_solver_receipt({
                 "ok": False,
                 "tool": "cae.run_solver",
                 "status": "error",
@@ -874,7 +910,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                     "or ensure ccx is discoverable on PATH."
                 ),
                 "solver_execution_performed": False,
-            }
+            })
 
         # Run solver in a temp directory
         started_at = datetime.now(timezone.utc).isoformat()
@@ -913,14 +949,14 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 errors.append(f"Solver timed out after {timeout_seconds} seconds.")
                 warnings.append("Solver execution was terminated due to timeout.")
             except Exception as exc:
-                return {
+                return _with_run_solver_receipt({
                     "ok": False,
                     "tool": "cae.run_solver",
                     "status": "error",
                     "code": "solver_subprocess_error",
                     "message": f"Failed to run solver subprocess: {exc}",
                     "solver_execution_performed": False,
-                }
+                })
 
             finished_at = datetime.now(timezone.utc).isoformat()
             duration_seconds = round(_time.monotonic() - start_ts, 3)
@@ -1147,6 +1183,8 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 "status": "completed" if solved else "failed",
                 "solver_execution_performed": True,
                 "return_code": return_code,
+                "project_id": project_id,
+                "run_id": run_id,
                 "changed_artifacts": changed_artifacts,
                 "warnings": warnings,
                 "errors": errors,
@@ -1157,7 +1195,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 result["refreshed_summaries"] = refreshed_summaries
             if auto_import_result is not None:
                 result["auto_import"] = auto_import_result
-            return result
+            return _with_run_solver_receipt(result)
 
         finally:
             try:

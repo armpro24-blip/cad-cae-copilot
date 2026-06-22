@@ -114,8 +114,9 @@ If you already have a file such as `aieng-cad-preview-<version>.vsix`:
 4. Select the `.vsix` file.
 5. Reload VS Code if prompted.
 
-On GitHub, the `VS Code extension package` workflow also publishes a short-lived
-`aieng-cad-preview-vsix` artifact for each relevant `main`/PR run.
+On GitHub, the `VS Code extension (test + package + smoke)` CI job also
+publishes a short-lived `aieng-vscode-extension-vsix` artifact for each
+`main`/PR run.
 
 ### Option 2: Build and install from this repo
 
@@ -197,6 +198,11 @@ MCP-capable agent configured for `aieng-workbench`.
 
 ## Troubleshooting
 
+Run `AIENG: Doctor — Check Backend and MCP Readiness` at any time. It reports:
+
+- whether the configured backend is reachable and its registry identity,
+- whether an MCP config exists in `.vscode/mcp.json` or `.vscode/settings.json`.
+
 Common fixes:
 
 - `Backend not reachable`: start the AIENG backend, then click retry in AIENG
@@ -206,6 +212,9 @@ Common fixes:
   the agent generate the first model.
 - `Face pointers unavailable`: the preview is STL-only or the package does not
   include authoritative topology.
+- Approvals do not appear in VS Code: the backend must be in managed approval
+  mode (`--approval-mode managed`) and the extension must be able to connect to
+  it. Use the Doctor command to verify connectivity.
 
 ## Development
 

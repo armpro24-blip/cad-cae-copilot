@@ -3,6 +3,7 @@ node_modules/**
 src/**
 webview-src/**
 scripts/**
+out/test/**
 tsconfig.json
 package-lock.json
 **/*.map

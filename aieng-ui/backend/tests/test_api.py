@@ -4319,12 +4319,85 @@ def test_prepare_solver_run_reports_missing_artifacts(tmp_path: Path) -> None:
 
     assert result["ok"] is True
     assert result["ready_to_run"] is False
+
+    # Receipt is additive and describes the non-mutating preflight outcome.
+    receipt = result.get("receipt")
+    assert receipt is not None
+    assert receipt["format"] == "aieng.operation_receipt.v0"
+    assert receipt["operation"] == "cae.prepare_solver_run"
+    assert receipt["status"] == "warning"
+    assert receipt["mutated"] is False
+    assert receipt["approval_required"] is True
+    assert receipt["approval_used"] is None
+
+    # Standardized next_actions are exposed alongside the legacy recommended_next_calls.
+    assert "next_actions" in result
+    assert isinstance(result["next_actions"], list)
+    assert "recommended_next_calls" in result
+    run_action = next(a for a in result["next_actions"] if a["tool"] == "cae.run_solver")
+    assert run_action["available_now"] is False
+    assert run_action["blocked_reason"]
+    assert run_action["runs_solver"] is True
+    assert "id" in run_action
+    assert "label" in run_action
+    assert "priority" in run_action
+
     preflight = result["preflight"]
     assert preflight["has_mesh"] is False
     assert preflight["has_solver_settings"] is False
     assert preflight["has_load_case"] is False
     assert preflight["has_input_deck"] is False
     assert len(preflight["missing_items"]) >= 4
+
+
+def test_prepare_solver_run_blocked_reason_codes_are_stable(tmp_path: Path) -> None:
+    """cae.prepare_solver_run exposes stable blocked_reason_codes and preserves prose fields."""
+    from unittest.mock import patch
+    from app.main import create_app, default_project, project_dir, save_project
+    from starlette.testclient import TestClient
+
+    settings = _make_patch_settings(tmp_path)
+    app = create_app(settings)
+    client = TestClient(app)
+
+    project = save_project(settings, default_project("preflight-codes"))
+    project_id = project["id"]
+    pkg_path = project_dir(settings, project_id) / "preflight.aieng"
+    _make_preflight_package(pkg_path, mesh=False, solver_settings=False, load_case=False, input_deck=False)
+    project["aieng_file"] = "preflight.aieng"
+    save_project(settings, project)
+
+    with patch("app.main.shutil.which", return_value=None):
+        resp = client.post("/api/runtime/runs", json={
+            "message": "prepare solver run",
+            "project_id": project_id,
+            "tool_input": {"project_id": project_id},
+        })
+    assert resp.status_code == 200
+    result = resp.json()["tool_results"][0]["output"]
+    assert result["ok"] is True
+    assert result["ready_to_run"] is False
+
+    # Top-level codes mirror the preflight blockers.
+    codes = set(result["blocked_reason_codes"])
+    assert "missing_mesh" in codes
+    assert "missing_analysis_type" in codes
+    assert "missing_solver" in codes
+    assert "missing_loads" in codes
+    assert "deck_not_prepared" in codes
+    assert "solver_unavailable" in codes
+
+    # The blocked cae.run_solver action carries approval + technical codes.
+    run_action = next(a for a in result["next_actions"] if a["tool"] == "cae.run_solver")
+    assert run_action["available_now"] is False
+    action_codes = set(run_action["blocked_reason_codes"])
+    assert "approval_required" in action_codes
+    assert "missing_mesh" in action_codes
+    assert "deck_not_prepared" in action_codes
+
+    # Human-readable fields are still present.
+    assert run_action["blocked_reason"]
+    assert result["preflight"]["missing_items"]
 
 
 def test_prepare_solver_run_ready_to_run_false_when_ccx_unavailable(tmp_path: Path) -> None:
@@ -4739,6 +4812,14 @@ def test_run_solver_ccx_unavailable_returns_error(tmp_path: Path) -> None:
     assert result["code"] == "solver_not_found"
     assert result["solver_execution_performed"] is False
     assert "ccx" in result["message"].lower()
+    receipt = result.get("receipt")
+    assert receipt is not None
+    assert receipt["operation"] == "cae.run_solver"
+    assert receipt["status"] == "error"
+    assert receipt["mutated"] is False
+    assert receipt["approval_required"] is True
+    assert receipt["approval_used"] is None
+    assert receipt["next_actions"] == []
 
 
 def test_run_solver_uses_aieng_ccx_cmd_env_var(tmp_path: Path, monkeypatch) -> None:
@@ -4846,6 +4927,21 @@ def test_run_solver_mocked_subprocess_success(tmp_path: Path) -> None:
     assert result["solver_execution_performed"] is True
     assert result["return_code"] == 0
     assert result["status"] == "completed"
+
+    # Receipt is attached as additive metadata and preserves all original fields.
+    receipt = result.get("receipt")
+    assert receipt is not None
+    assert receipt["format"] == "aieng.operation_receipt.v0"
+    assert receipt["operation"] == "cae.run_solver"
+    assert receipt["status"] == "ok"
+    assert receipt["mutated"] is True
+    assert receipt["approval_required"] is True
+    assert receipt["approval_used"] is True
+    assert any(a["path"].endswith("result.frd") for a in receipt["artifacts_written"])
+    assert any(a["tool"] == "cae.extract_solver_results" for a in receipt["next_actions"])
+    extract_action = next(a for a in receipt["next_actions"] if a["tool"] == "cae.extract_solver_results")
+    assert extract_action["input"]["project_id"] == project_id
+    assert extract_action["input"]["run_id"] == "run_001"
 
     # Verify subprocess args
     assert len(mock_run.call_args_list) == 1
