@@ -23,7 +23,8 @@
     "onCommand:aieng.openHome",
     "onCommand:aieng.openLivePreview",
     "onCommand:aieng.openPackagePreview",
-    "onCommand:aieng.doctor"
+    "onCommand:aieng.doctor",
+    "onCommand:aieng.copyNextActions"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -46,6 +47,11 @@
       {
         "command": "aieng.doctor",
         "title": "AIENG: Doctor — Check Backend and MCP Readiness",
+        "category": "AIENG"
+      },
+      {
+        "command": "aieng.copyNextActions",
+        "title": "AIENG: Copy Next-Action Handoff",
         "category": "AIENG"
       }
     ],

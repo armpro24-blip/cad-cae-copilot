@@ -5,7 +5,8 @@ import { ApprovalCoordinator } from "./approvals";
 import { BackendManager } from "./backendManager";
 import { runDoctor } from "./doctor";
 import { HomePanel } from "./homePanel";
-import { backendUrl, chooseLiveProject, listProjects, type Project } from "./livePreview";
+import { backendUrl, chooseLiveProject, fetchAdvisoryNextActions, listProjects, type Project } from "./livePreview";
+import { formatActionDetail, parseNextActions, toHandoffPrompt, toToolCallSnippet } from "./nextActions";
 import { readAiengPackage } from "./packageReader";
 import { modifyPrompt, projectContextPrompt, starterPrompt } from "./prompts";
 import type { WebviewToHostMessage } from "./protocol";
@@ -57,6 +58,12 @@ class AiengPreviewProvider implements vscode.CustomReadonlyEditorProvider<AiengD
 class LivePreviewPanel {
   private static current: LivePreviewPanel | undefined;
   private static opening: Promise<void> | undefined;
+
+  /** The project of the open live preview, if any — lets commands target it. */
+  static activeProject(): Project | undefined {
+    const current = LivePreviewPanel.current;
+    return current ? { id: current.projectId, name: current.projectName } : undefined;
+  }
 
   static async handleActivity(extensionUri: vscode.Uri, backend: BackendManager, event: ProjectActivityEvent): Promise<void> {
     const current = LivePreviewPanel.current;
@@ -211,9 +218,61 @@ export function activate(context: vscode.ExtensionContext): void {
     backend,
   })));
   context.subscriptions.push(vscode.commands.registerCommand("aieng.doctor", () => void runDoctor()));
+  context.subscriptions.push(vscode.commands.registerCommand("aieng.copyNextActions", () => void copyNextActionHandoff()));
 }
 
 export function deactivate(): void {}
+
+/**
+ * Surface advisory operation receipts / `next_actions` as copy-only quick actions
+ * (#341). Reads the project's read-only `cae.prepare_solver_run` preflight, shows the
+ * advisory actions with their safety flags and blocked status preserved, and copies a
+ * tool-call snippet or a natural-language handoff prompt. Never executes a tool.
+ */
+async function copyNextActionHandoff(): Promise<void> {
+  const project = LivePreviewPanel.activeProject() ?? await chooseLiveProject();
+  if (!project) return;
+
+  let response: unknown;
+  try {
+    response = await fetchAdvisoryNextActions(project.id);
+  } catch (error) {
+    vscode.window.showErrorMessage(
+      `AIENG: Could not load next actions — ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return;
+  }
+
+  const actions = parseNextActions(response);
+  if (!actions.length) {
+    vscode.window.showInformationMessage("AIENG: No advisory next actions available for this project yet.");
+    return;
+  }
+
+  const picked = await vscode.window.showQuickPick(
+    actions.map((action) => ({
+      label: `${action.availableNow ? "$(check)" : "$(error)"} ${action.label}`,
+      description: action.tool,
+      detail: formatActionDetail(action),
+      action,
+    })),
+    { placeHolder: "Advisory next actions — copy only, nothing runs", matchOnDetail: true },
+  );
+  if (!picked) return;
+
+  const format = await vscode.window.showQuickPick(
+    [
+      { label: "$(json) Copy tool-call snippet", copyAs: "snippet" as const },
+      { label: "$(comment) Copy natural-language handoff prompt", copyAs: "prompt" as const },
+    ],
+    { placeHolder: `Copy "${picked.action.label}" as…` },
+  );
+  if (!format) return;
+
+  const text = format.copyAs === "snippet" ? toToolCallSnippet(picked.action) : toHandoffPrompt(picked.action);
+  await vscode.env.clipboard.writeText(text);
+  vscode.window.setStatusBarMessage("AIENG: Copied next-action handoff", 2500);
+}
 
 async function openPackage(): Promise<void> {
   const selected = await vscode.window.showOpenDialog({

@@ -46,6 +46,19 @@ export async function createProject(name = "Untitled project"): Promise<Project>
   }) as Project;
 }
 
+/**
+ * Fetch the project's advisory next actions via the READ-ONLY `cae.prepare_solver_run`
+ * preflight (#341). This tool executes nothing — it only reports solver readiness —
+ * so calling it to surface advisory `next_actions` does not run CAD/CAE/solver work.
+ */
+export async function fetchAdvisoryNextActions(projectId: string): Promise<unknown> {
+  return await fetchJson("/api/agent/invoke-tool", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tool: "cae.prepare_solver_run", input: { project_id: projectId } }),
+  });
+}
+
 export async function chooseLiveProject(): Promise<Project | undefined> {
   const configured = vscode.workspace.getConfiguration("aieng").get<string>("liveProjectId", "").trim();
   const projects = await listProjects();
