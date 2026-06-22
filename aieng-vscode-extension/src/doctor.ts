@@ -14,11 +14,10 @@ type DoctorResult = {
 };
 
 async function fetchHealth(): Promise<{ ok: true; identity: string } | { ok: false; error: string }> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
     const response = await fetch(`${backendUrl()}/api/health`, { signal: controller.signal });
-    clearTimeout(timeout);
     if (!response.ok) {
       return { ok: false, error: `HTTP ${response.status}` };
     }
@@ -28,6 +27,8 @@ async function fetchHealth(): Promise<{ ok: true; identity: string } | { ok: fal
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return { ok: false, error: message };
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -85,11 +86,14 @@ export async function runDoctor(): Promise<DoctorResult> {
   if (status === "info") {
     await vscode.window.showInformationMessage("AIENG Doctor", { detail: message, modal: false }, "OK");
   } else {
-    await vscode.window.showWarningMessage(
+    const choice = await vscode.window.showWarningMessage(
       "AIENG Doctor",
       { detail: `${message}\n\nStart the backend or check aieng.backendUrl in settings.`, modal: false },
       "Open Settings",
     );
+    if (choice === "Open Settings") {
+      await vscode.commands.executeCommand("workbench.action.openSettings", "aieng.backendUrl");
+    }
   }
 
   return result;

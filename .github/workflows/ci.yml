@@ -90,14 +90,19 @@ jobs:
   vscode-extension:
     name: VS Code extension (test + package + smoke)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     defaults:
       run:
         working-directory: aieng-vscode-extension
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "20"
           cache: npm
@@ -119,7 +124,7 @@ jobs:
         run: npm run smoke
 
       - name: Upload VSIX artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: aieng-vscode-extension-vsix
           path: aieng-vscode-extension/*.vsix
