@@ -22,6 +22,10 @@ AIENG project and ask your agent to generate the first model.
 You can also start the backend yourself before opening AIENG Home. If the
 extension connects to an existing backend, it will not try to stop that process.
 
+For the complete MCP-first workflow, including agent configuration and safety
+boundaries, see
+[`../docs/mcp-first-vscode-workflow.md`](../docs/mcp-first-vscode-workflow.md).
+
 The extension subscribes to the backend agent-activity SSE stream after VS Code
 starts. When an event includes a `project_id` and no Live CAD Preview is open,
 the matching project preview opens automatically. If another project later
@@ -191,6 +195,13 @@ MCP-capable agent configured for `aieng-workbench`.
   generated.
 
 ## Troubleshooting
+
+Run `AIENG: Doctor — Check Backend and MCP Readiness` at any time. It reports:
+
+- whether the configured backend is reachable and its registry hash,
+- whether an AIENG MCP config exists in this workspace.
+
+Common fixes:
 
 - `Backend not reachable`: start the AIENG backend, then click retry in AIENG
   Home, or click `Start AIENG Backend`.

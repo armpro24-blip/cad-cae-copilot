@@ -399,7 +399,9 @@ AI-CAD design loop directly into your editor. It can:
 The extension is one layer of the system, not the whole thing — the core is the
 package format and engineering backend that let agents and humans share
 reproducible CAD/CAE project state. Setup and development notes live in
-[`aieng-vscode-extension/README.md`](aieng-vscode-extension/README.md).
+[`aieng-vscode-extension/README.md`](aieng-vscode-extension/README.md). For the
+current editor-first path, see
+[`docs/mcp-first-vscode-workflow.md`](docs/mcp-first-vscode-workflow.md).
 
 ## Drive aieng from AI agents via MCP
 
