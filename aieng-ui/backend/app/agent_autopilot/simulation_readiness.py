@@ -22,6 +22,7 @@ from typing import Any, Callable
 
 import yaml
 
+from ..blocked_reason_codes import codes_for_readiness_report
 from ..cae_payload_profile import profile_payload
 from .mention_binding import bindings_to_targets, mention_status_word
 
@@ -347,6 +348,7 @@ def build_simulation_readiness_report(
         "notes": notes,
         "targets": bindings_to_targets(mention_bindings),
     }
+    report["blocked_reason_codes"] = codes_for_readiness_report(report)
     report["summary"] = summarize_simulation_readiness(report)
     profile_payload(report, label="simulation_readiness.report")
     return report

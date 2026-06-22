@@ -342,3 +342,56 @@ def test_explicit_unavailable_mesh_solver_in_setup_artifact() -> None:
     assert s["solver"] == "unknown"
     # Required still satisfied — unknown defaultables do not block readiness.
     assert report["ready_for_solver"] is True
+
+
+# --- blocked_reason_codes ---------------------------------------------------
+
+
+def test_blocked_reason_codes_for_missing_required_inputs() -> None:
+    report = build_simulation_readiness_report(None)
+    assert "blocked_reason_codes" in report
+    assert set(report["blocked_reason_codes"]) == {
+        "missing_material",
+        "missing_loads",
+        "missing_constraints",
+    }
+
+
+def test_blocked_reason_codes_for_unknown_defaultables() -> None:
+    report = build_simulation_readiness_report({
+        "present": True,
+        "materials": ["steel"],
+        "loads": [{"type": "force"}],
+        "boundary_conditions": [{"type": "fixed"}],
+        "mesh": False,
+        "solver": {"available": False},
+    })
+    assert report["ready_for_solver"] is True
+    codes = set(report["blocked_reason_codes"])
+    assert "missing_mesh" in codes
+    assert "solver_unavailable" in codes
+
+
+def test_blocked_reason_codes_for_unknown_analysis_type() -> None:
+    report = build_simulation_readiness_report({
+        "present": True,
+        "materials": ["steel"],
+        "loads": [{"type": "force"}],
+        "boundary_conditions": [{"type": "fixed"}],
+        "analysis_type": False,
+    })
+    assert "missing_analysis_type" in report["blocked_reason_codes"]
+
+
+def test_blocked_reason_codes_for_target_not_found() -> None:
+    mentions = [{"kind": "part", "raw": "@part:ghost", "value": "ghost"}]
+    bindings = build_mention_bindings(
+        mentions,
+        part_indexes=[("cad.named_parts", ["bracket"])],
+        artifact_indexes=None,
+    )
+    report = build_simulation_readiness_report(
+        {"materials": ["s"], "loads": ["l"], "boundary_conditions": ["b"]},
+        mention_bindings=bindings,
+    )
+    assert "target_not_found" in report["blocked_reason_codes"]

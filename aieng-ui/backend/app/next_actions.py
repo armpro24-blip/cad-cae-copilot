@@ -127,6 +127,10 @@ def normalize_next_action(
     if isinstance(raw_blocked, str):
         blocked_reason = raw_blocked
 
+    blocked_reason_codes = raw.get("blocked_reason_codes")
+    if not isinstance(blocked_reason_codes, list):
+        blocked_reason_codes = None
+
     if not tool_name:
         available_now = False
         if not blocked_reason:
@@ -139,7 +143,7 @@ def normalize_next_action(
         "runs_solver": safety["runs_solver"] or raw.get("runs_solver") is True,
         "advances_claim": safety["advances_claim"] or raw.get("advances_claim") is True,
     }
-    return {
+    item: dict[str, Any] = {
         "id": raw.get("id") if isinstance(raw.get("id"), str) else _action_id(tool_name, input_dict),
         "label": label,
         "priority": priority,
@@ -151,6 +155,9 @@ def normalize_next_action(
         "blocked_reason": blocked_reason,
         **safety,
     }
+    if blocked_reason_codes is not None:
+        item["blocked_reason_codes"] = blocked_reason_codes
+    return item
 
 
 def normalize_next_actions(
@@ -192,6 +199,7 @@ def build_next_action(
     priority: str = "medium",
     available_now: bool = True,
     blocked_reason: str | None = None,
+    blocked_reason_codes: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build a standardized next_action item from explicit fields.
 
@@ -199,7 +207,7 @@ def build_next_action(
     produced item's input payload afterwards.
     """
     safety = _safety_flags(tool)
-    return {
+    item: dict[str, Any] = {
         "id": _action_id(tool, input_dict),
         "label": label or _tool_label(tool),
         "priority": priority,
@@ -211,3 +219,6 @@ def build_next_action(
         "blocked_reason": blocked_reason,
         **safety,
     }
+    if blocked_reason_codes is not None:
+        item["blocked_reason_codes"] = list(blocked_reason_codes)
+    return item

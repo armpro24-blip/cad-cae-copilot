@@ -185,3 +185,30 @@ def test_build_next_action_copies_input() -> None:
     action = build_next_action("cad.critique", inp, "Review.")
     assert action["input"] is not inp
     assert action["input"] == inp
+
+
+def test_normalize_next_action_preserves_blocked_reason_codes() -> None:
+    action = normalize_next_action(
+        {
+            "tool": "cae.run_solver",
+            "input": {"project_id": "p1"},
+            "reason": "Run solver.",
+            "available_now": False,
+            "blocked_reason": "Not ready.",
+            "blocked_reason_codes": ["missing_mesh", "approval_required"],
+        },
+        source="preflight",
+    )
+    assert action["blocked_reason_codes"] == ["missing_mesh", "approval_required"]
+
+
+def test_build_next_action_blocked_reason_codes() -> None:
+    action = build_next_action(
+        "cae.run_solver",
+        {"project_id": "p1"},
+        "Run solver.",
+        available_now=False,
+        blocked_reason="Not ready.",
+        blocked_reason_codes=["deck_not_prepared", "approval_required"],
+    )
+    assert action["blocked_reason_codes"] == ["deck_not_prepared", "approval_required"]

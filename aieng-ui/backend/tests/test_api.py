@@ -4350,6 +4350,54 @@ def test_prepare_solver_run_reports_missing_artifacts(tmp_path: Path) -> None:
     assert len(preflight["missing_items"]) >= 4
 
 
+def test_prepare_solver_run_blocked_reason_codes_are_stable(tmp_path: Path) -> None:
+    """cae.prepare_solver_run exposes stable blocked_reason_codes and preserves prose fields."""
+    from app.main import create_app, default_project, project_dir, save_project
+    from starlette.testclient import TestClient
+
+    settings = _make_patch_settings(tmp_path)
+    app = create_app(settings)
+    client = TestClient(app)
+
+    project = save_project(settings, default_project("preflight-codes"))
+    project_id = project["id"]
+    pkg_path = project_dir(settings, project_id) / "preflight.aieng"
+    _make_preflight_package(pkg_path, mesh=False, solver_settings=False, load_case=False, input_deck=False)
+    project["aieng_file"] = "preflight.aieng"
+    save_project(settings, project)
+
+    resp = client.post("/api/runtime/runs", json={
+        "message": "prepare solver run",
+        "project_id": project_id,
+        "tool_input": {"project_id": project_id},
+    })
+    assert resp.status_code == 200
+    result = resp.json()["tool_results"][0]["output"]
+    assert result["ok"] is True
+    assert result["ready_to_run"] is False
+
+    # Top-level codes mirror the preflight blockers.
+    codes = set(result["blocked_reason_codes"])
+    assert "missing_mesh" in codes
+    assert "missing_analysis_type" in codes
+    assert "missing_solver" in codes
+    assert "missing_loads" in codes
+    assert "deck_not_prepared" in codes
+    assert "solver_unavailable" in codes
+
+    # The blocked cae.run_solver action carries approval + technical codes.
+    run_action = next(a for a in result["next_actions"] if a["tool"] == "cae.run_solver")
+    assert run_action["available_now"] is False
+    action_codes = set(run_action["blocked_reason_codes"])
+    assert "approval_required" in action_codes
+    assert "missing_mesh" in action_codes
+    assert "deck_not_prepared" in action_codes
+
+    # Human-readable fields are still present.
+    assert run_action["blocked_reason"]
+    assert result["preflight"]["missing_items"]
+
+
 def test_prepare_solver_run_ready_to_run_false_when_ccx_unavailable(tmp_path: Path) -> None:
     """cae.prepare_solver_run returns ready_to_run=false when ccx is not on PATH."""
     from unittest.mock import patch
