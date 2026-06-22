@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from .. import next_actions as _next_actions
 from .. import operation_receipt as _receipt
 from ..legacy_app_symbols import sync_main_symbols
 
@@ -650,6 +651,28 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 ),
             })
 
+        next_actions_raw: list[dict[str, Any]] = list(recommendations)
+        if not ready_to_run:
+            next_actions_raw.insert(
+                0,
+                {
+                    "tool": "cae.run_solver",
+                    "input": {
+                        "project_id": project_id or "",
+                        "run_id": run_id,
+                        "load_case_id": load_case_id,
+                        "input_deck_path": f"simulation/runs/{run_id}/solver_input.inp",
+                    },
+                    "reason": "Run the solver once all preflight checks pass.",
+                    "available_now": False,
+                    "blocked_reason": "Run is not ready: missing required inputs or stale topology references.",
+                    "priority": "high",
+                },
+            )
+        next_actions = _next_actions.normalize_next_actions(
+            next_actions_raw, source="cae.prepare_solver_run"
+        )
+
         return _receipt.receipt_from_prepare_solver_run({
             "ok": True,
             "tool": "cae.prepare_solver_run",
@@ -663,6 +686,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             "planned_artifacts": planned_artifacts,
             "warnings": warnings,
             "recommended_next_calls": recommendations,
+            "next_actions": next_actions,
         })
 
     def _tool_cae_generate_solver_input(inp: dict[str, Any], _ctx: dict[str, Any]) -> dict[str, Any]:

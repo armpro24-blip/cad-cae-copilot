@@ -4330,6 +4330,18 @@ def test_prepare_solver_run_reports_missing_artifacts(tmp_path: Path) -> None:
     assert receipt["approval_required"] is True
     assert receipt["approval_used"] is None
 
+    # Standardized next_actions are exposed alongside the legacy recommended_next_calls.
+    assert "next_actions" in result
+    assert isinstance(result["next_actions"], list)
+    assert "recommended_next_calls" in result
+    run_action = next(a for a in result["next_actions"] if a["tool"] == "cae.run_solver")
+    assert run_action["available_now"] is False
+    assert run_action["blocked_reason"]
+    assert run_action["runs_solver"] is True
+    assert "id" in run_action
+    assert "label" in run_action
+    assert "priority" in run_action
+
     preflight = result["preflight"]
     assert preflight["has_mesh"] is False
     assert preflight["has_solver_settings"] is False

@@ -12,53 +12,11 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from . import next_actions as _next_actions
+
 LOGGER = logging.getLogger("app.operation_receipt")
 
 RECEIPT_FORMAT = "aieng.operation_receipt.v0"
-
-# Tools that are known to execute an external solver.
-_SOLVER_TOOLS: frozenset[str] = frozenset({"cae.run_solver"})
-
-# Tools that are known to advance an engineering claim.
-_CLAIM_ADVANCING_TOOLS: frozenset[str] = frozenset({"opt.accept_candidate"})
-
-
-def _tool_metadata(tool_name: str) -> dict[str, Any] | None:
-    """Return runtime registry metadata for a tool, if available."""
-    try:
-        from . import runtime as _runtime
-
-        return _runtime.registered_tool_metadata(tool_name)
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def _safety_flags(tool_name: str) -> dict[str, bool]:
-    """Infer safety flags for a recommended next action.
-
-    Uses runtime registry metadata when available; otherwise falls back to
-    conservative, tool-name heuristics so receipts remain useful before the
-    registry is populated (e.g., during unit tests or early imports).
-    """
-    meta = _tool_metadata(tool_name)
-    if meta is not None:
-        requires_approval = bool(meta.get("requires_approval", False))
-        mutates_package = not bool(meta.get("read_only", True))
-    else:
-        # Conservative heuristics for known mutating / approval-gated tools.
-        requires_approval = tool_name in _SOLVER_TOOLS or tool_name in _CLAIM_ADVANCING_TOOLS
-        mutates_package = (
-            tool_name.startswith(("cad.execute", "cad.edit_", "cad.replace_", "cad.remove_"))
-            or tool_name.startswith(("cae.apply_setup_patch", "cae.run_", "cae.generate_solver_input"))
-            or tool_name.startswith("opt.")
-            or tool_name in _SOLVER_TOOLS
-        )
-    return {
-        "requires_approval": requires_approval,
-        "mutates_package": mutates_package,
-        "runs_solver": tool_name in _SOLVER_TOOLS,
-        "advances_claim": tool_name in _CLAIM_ADVANCING_TOOLS,
-    }
 
 
 def _normalize_artifact(artifact: Any, kind: str = "artifact") -> dict[str, Any]:
@@ -120,20 +78,9 @@ def build_receipt(
     response fields authoritative and must not derive engineering claims solely
     from the receipt.
     """
-    normalized_next_actions: list[dict[str, Any]] = []
-    for action in next_actions or []:
-        if not isinstance(action, dict):
-            continue
-        tool_name = str(action.get("tool") or "")
-        safety = _safety_flags(tool_name)
-        normalized_next_actions.append(
-            {
-                "tool": tool_name,
-                "input": action.get("input") if isinstance(action.get("input"), dict) else {},
-                "reason": str(action.get("reason") or ""),
-                **safety,
-            }
-        )
+    normalized_next_actions = _next_actions.normalize_next_actions(
+        next_actions, source="receipt"
+    )
 
     return {
         "format": RECEIPT_FORMAT,
@@ -265,16 +212,18 @@ def receipt_from_prepare_solver_run(result: dict[str, Any]) -> dict[str, Any]:
     warnings = _normalize_warnings(result)
     planned = [_normalize_artifact(a, kind="planned_solver_output") for a in _as_list(result.get("planned_artifacts"))]
     stale = [_normalize_artifact(a, kind="stale") for a in _as_list(result.get("stale_artifacts"))]
-    next_actions: list[dict[str, Any]] = []
-    for rec in _as_list(result.get("recommended_next_calls")):
-        if isinstance(rec, dict):
-            next_actions.append(
-                {
-                    "tool": rec.get("tool", ""),
-                    "input": rec.get("input") if isinstance(rec.get("input"), dict) else {},
-                    "reason": rec.get("reason", ""),
-                }
-            )
+    if isinstance(result.get("next_actions"), list):
+        next_actions = result["next_actions"]
+    else:
+        next_actions = [
+            {
+                "tool": rec.get("tool", ""),
+                "input": rec.get("input") if isinstance(rec.get("input"), dict) else {},
+                "reason": rec.get("reason", ""),
+            }
+            for rec in _as_list(result.get("recommended_next_calls"))
+            if isinstance(rec, dict)
+        ]
     summary = f"Solver preflight complete; ready_to_run={ready}."
     return attach_receipt(
         result,

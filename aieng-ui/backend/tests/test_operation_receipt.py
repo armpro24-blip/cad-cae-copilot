@@ -72,6 +72,26 @@ def test_build_receipt_solver_action_has_safety_flags() -> None:
     assert action["advances_claim"] is False
 
 
+def test_build_receipt_next_actions_use_standardized_schema() -> None:
+    receipt = build_receipt(
+        operation="cad.test",
+        status="ok",
+        mutated=True,
+        next_actions=[{"tool": "cad.critique", "input": {"project_id": "p1"}, "reason": "Check it."}],
+    )
+    action = receipt["next_actions"][0]
+    assert set(action.keys()) >= {
+        "id", "label", "priority", "source", "tool", "input", "reason",
+        "requires_approval", "mutates_package", "runs_solver", "advances_claim",
+        "available_now", "blocked_reason",
+    }
+    assert action["source"] == "receipt"
+    assert action["label"] == "Critique"
+    assert action["priority"] == "high"
+    assert action["available_now"] is True
+    assert action["blocked_reason"] is None
+
+
 def test_build_receipt_claim_advancing_action_flagged() -> None:
     receipt = build_receipt(
         operation="opt.rank_candidates",
