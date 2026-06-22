@@ -207,8 +207,13 @@ def receipt_from_prepare_solver_run(result: dict[str, Any]) -> dict[str, Any]:
     """Build and attach a receipt for a ``cae.prepare_solver_run`` result."""
     if not isinstance(result, dict):
         return result
+    if result.get("ok") is False:
+        status = "error"
+    elif result.get("ready_to_run"):
+        status = "ok"
+    else:
+        status = "warning"
     ready = bool(result.get("ready_to_run"))
-    status = "ok" if ready else "warning"
     warnings = _normalize_warnings(result)
     planned = [_normalize_artifact(a, kind="planned_solver_output") for a in _as_list(result.get("planned_artifacts"))]
     stale = [_normalize_artifact(a, kind="stale") for a in _as_list(result.get("stale_artifacts"))]
@@ -249,6 +254,9 @@ def receipt_from_run_solver(result: dict[str, Any]) -> dict[str, Any]:
     solver_executed = bool(result.get("solver_execution_performed"))
     solver_succeeded = ok and tool_status == "completed"
     status = "ok" if solver_succeeded else "error"
+    # Approval was relevant only when the tool reached the approval boundary
+    # (solver executed, or the invocation was rejected/awaited approval).
+    approval_relevant = solver_executed or tool_status in ("needs_approval", "rejected")
     artifacts_written = [
         _normalize_artifact(a, kind="solver_output")
         for a in _as_list(result.get("changed_artifacts"))
@@ -283,7 +291,7 @@ def receipt_from_run_solver(result: dict[str, Any]) -> dict[str, Any]:
         operation="cae.run_solver",
         status=status,
         mutated=solver_executed,
-        approval_required=True,
+        approval_required=approval_relevant,
         approval_used=solver_executed if solver_executed else None,
         artifacts_written=artifacts_written,
         evidence_created=evidence_created,

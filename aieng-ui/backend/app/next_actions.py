@@ -33,6 +33,25 @@ def _tool_metadata(tool_name: str) -> dict[str, Any] | None:
         return None
 
 
+def _normalize_blocked_reason_codes(value: Any) -> list[str] | None:
+    """Validate and deduplicate a blocked_reason_codes payload.
+
+    Returns a sorted list of unique string codes, or ``None`` if the payload
+    is not a list of strings.
+    """
+    if not isinstance(value, list):
+        return None
+    codes: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            return None
+        if item not in seen:
+            seen.add(item)
+            codes.append(item)
+    return codes
+
+
 def _tool_label(tool_name: str) -> str:
     """Human-readable label derived from a tool name.
 
@@ -127,9 +146,7 @@ def normalize_next_action(
     if isinstance(raw_blocked, str):
         blocked_reason = raw_blocked
 
-    blocked_reason_codes = raw.get("blocked_reason_codes")
-    if not isinstance(blocked_reason_codes, list):
-        blocked_reason_codes = None
+    blocked_reason_codes = _normalize_blocked_reason_codes(raw.get("blocked_reason_codes"))
 
     if not tool_name:
         available_now = False
@@ -207,6 +224,7 @@ def build_next_action(
     produced item's input payload afterwards.
     """
     safety = _safety_flags(tool)
+    normalized_codes = _normalize_blocked_reason_codes(blocked_reason_codes)
     item: dict[str, Any] = {
         "id": _action_id(tool, input_dict),
         "label": label or _tool_label(tool),
@@ -219,6 +237,6 @@ def build_next_action(
         "blocked_reason": blocked_reason,
         **safety,
     }
-    if blocked_reason_codes is not None:
-        item["blocked_reason_codes"] = list(blocked_reason_codes)
+    if normalized_codes is not None:
+        item["blocked_reason_codes"] = normalized_codes
     return item

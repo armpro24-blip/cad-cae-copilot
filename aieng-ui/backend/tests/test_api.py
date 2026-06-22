@@ -4352,6 +4352,7 @@ def test_prepare_solver_run_reports_missing_artifacts(tmp_path: Path) -> None:
 
 def test_prepare_solver_run_blocked_reason_codes_are_stable(tmp_path: Path) -> None:
     """cae.prepare_solver_run exposes stable blocked_reason_codes and preserves prose fields."""
+    from unittest.mock import patch
     from app.main import create_app, default_project, project_dir, save_project
     from starlette.testclient import TestClient
 
@@ -4366,11 +4367,12 @@ def test_prepare_solver_run_blocked_reason_codes_are_stable(tmp_path: Path) -> N
     project["aieng_file"] = "preflight.aieng"
     save_project(settings, project)
 
-    resp = client.post("/api/runtime/runs", json={
-        "message": "prepare solver run",
-        "project_id": project_id,
-        "tool_input": {"project_id": project_id},
-    })
+    with patch("app.main.shutil.which", return_value=None):
+        resp = client.post("/api/runtime/runs", json={
+            "message": "prepare solver run",
+            "project_id": project_id,
+            "tool_input": {"project_id": project_id},
+        })
     assert resp.status_code == 200
     result = resp.json()["tool_results"][0]["output"]
     assert result["ok"] is True
