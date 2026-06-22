@@ -106,7 +106,7 @@ checkout. The Docker container owns the backend process.
 
 ### Option 1: Install from a local `.vsix`
 
-If you already have a file such as `aieng-cad-preview-0.1.4.vsix`:
+If you already have a file such as `aieng-cad-preview-<version>.vsix`:
 
 1. Open the Extensions view in VS Code.
 2. Click the `...` menu in the Extensions panel.
@@ -124,7 +124,8 @@ From `cad-cae-copilot/aieng-vscode-extension`:
 ```powershell
 npm install
 npm run vsix
-code --install-extension .\aieng-cad-preview-0.1.4.vsix
+$version = node -p "require('./package.json').version"
+code --install-extension ".\aieng-cad-preview-$version.vsix"
 ```
 
 Confirm installation by searching for `AIENG CAD Preview` in the Extensions
@@ -195,11 +196,6 @@ MCP-capable agent configured for `aieng-workbench`.
   generated.
 
 ## Troubleshooting
-
-Run `AIENG: Doctor — Check Backend and MCP Readiness` at any time. It reports:
-
-- whether the configured backend is reachable and its registry hash,
-- whether an AIENG MCP config exists in this workspace.
 
 Common fixes:
 

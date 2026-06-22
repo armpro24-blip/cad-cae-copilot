@@ -34,8 +34,13 @@ Use one of these paths:
    cd aieng-vscode-extension
    npm install
    npm run vsix
-   code --install-extension .\aieng-cad-preview-0.1.4.vsix
+   $version = node -p "require('./package.json').version"
+   code --install-extension ".\aieng-cad-preview-$version.vsix"
    ```
+
+   The VSIX filename follows the version in
+   `aieng-vscode-extension/package.json`. If you downloaded a CI artifact, use
+   the `.vsix` file inside that artifact instead.
 
 Marketplace publishing is not claimed yet. Until that exists, `.vsix` is the
 install path.
@@ -140,22 +145,23 @@ For Docker/full viewer mode, use managed approval. For pure headless clients,
 use client-managed approval or MCP elicitation as documented in
 [`MCP_SETUP.md`](../aieng-ui/backend/MCP_SETUP.md).
 
-## Doctor checks
+## Setup checks
 
-Run:
+For MCP wiring, run the MCP server doctor from a terminal:
 
-```text
-AIENG: Doctor - Check Backend and MCP Readiness
+```powershell
+aieng-workbench-mcp --doctor --backend-url http://127.0.0.1:8000
 ```
 
 It reports:
 
-- backend reachability and registry hash,
-- whether an AIENG MCP config is present in the workspace,
+- backend reachability when a backend URL is supplied,
+- whether an AIENG MCP config is present in the current workspace,
 - actionable setup hints when the backend is unreachable.
 
-The doctor command is read-only. It does not start a backend, modify MCP config,
-run CAD tools, or run a solver.
+The doctor check is read-only. It does not start a backend, modify MCP config,
+run CAD tools, or run a solver. If the VS Code extension also provides an
+in-editor Doctor command, treat it as the same kind of read-only setup check.
 
 ## What is intentionally not covered yet
 
