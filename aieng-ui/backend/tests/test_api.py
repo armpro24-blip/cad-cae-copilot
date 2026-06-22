@@ -4750,6 +4750,14 @@ def test_run_solver_ccx_unavailable_returns_error(tmp_path: Path) -> None:
     assert result["code"] == "solver_not_found"
     assert result["solver_execution_performed"] is False
     assert "ccx" in result["message"].lower()
+    receipt = result.get("receipt")
+    assert receipt is not None
+    assert receipt["operation"] == "cae.run_solver"
+    assert receipt["status"] == "error"
+    assert receipt["mutated"] is False
+    assert receipt["approval_required"] is True
+    assert receipt["approval_used"] is None
+    assert receipt["next_actions"] == []
 
 
 def test_run_solver_uses_aieng_ccx_cmd_env_var(tmp_path: Path, monkeypatch) -> None:

@@ -242,6 +242,33 @@ def test_receipt_from_run_solver_success() -> None:
     assert any(a["tool"] == "cae.extract_solver_results" for a in receipt["next_actions"])
 
 
+def test_receipt_from_run_solver_nonzero_exit_is_error_without_extract_next_action() -> None:
+    result = receipt_from_run_solver(
+        {
+            "ok": True,
+            "tool": "cae.run_solver",
+            "status": "failed",
+            "solver_execution_performed": True,
+            "return_code": 2,
+            "run_id": "run_001",
+            "project_id": "p1",
+            "changed_artifacts": [
+                {"path": "simulation/runs/run_001/solver_log.txt", "kind": "solver_log", "role": "diagnostic"}
+            ],
+            "warnings": [],
+            "errors": ["ccx exited nonzero"],
+        }
+    )
+    receipt = result["receipt"]
+    assert receipt["operation"] == "cae.run_solver"
+    assert receipt["status"] == "error"
+    assert receipt["mutated"] is True
+    assert receipt["approval_used"] is True
+    assert "return_code=2" in receipt["summary"]
+    assert "solver_error: ccx exited nonzero" in receipt["warnings"]
+    assert receipt["next_actions"] == []
+
+
 def test_receipt_from_run_solver_failure_preserves_message() -> None:
     result = receipt_from_run_solver(
         {

@@ -296,8 +296,10 @@ def receipt_from_run_solver(result: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(result, dict):
         return result
     ok = bool(result.get("ok"))
+    tool_status = str(result.get("status") or "")
     solver_executed = bool(result.get("solver_execution_performed"))
-    status = "ok" if ok else "error"
+    solver_succeeded = ok and tool_status == "completed"
+    status = "ok" if solver_succeeded else "error"
     artifacts_written = [
         _normalize_artifact(a, kind="solver_output")
         for a in _as_list(result.get("changed_artifacts"))
@@ -313,7 +315,7 @@ def receipt_from_run_solver(result: dict[str, Any]) -> dict[str, Any]:
             if err is not None:
                 warnings.append(f"solver_error: {err}")
     next_actions: list[dict[str, Any]] = []
-    if ok and solver_executed:
+    if solver_succeeded and solver_executed:
         next_actions.append(
             {
                 "tool": "cae.extract_solver_results",
@@ -321,11 +323,12 @@ def receipt_from_run_solver(result: dict[str, Any]) -> dict[str, Any]:
                 "reason": "Extract computed metrics from the solver result file.",
             }
         )
-    summary = (
-        f"Solver run completed (executed={solver_executed})."
-        if ok
-        else f"Solver run failed: {result.get('message', 'unknown error')}"
-    )
+    if solver_succeeded:
+        summary = f"Solver run completed (executed={solver_executed})."
+    elif solver_executed and tool_status == "failed":
+        summary = f"Solver run failed with return_code={result.get('return_code', 'unknown')}."
+    else:
+        summary = f"Solver run failed: {result.get('message', 'unknown error')}"
     return attach_receipt(
         result,
         operation="cae.run_solver",
