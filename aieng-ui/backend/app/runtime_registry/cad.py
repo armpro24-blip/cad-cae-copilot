@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from .. import operation_receipt as _receipt
 from ..legacy_app_symbols import sync_main_symbols
 
 LOGGER = logging.getLogger("app.app_factory")
@@ -83,7 +84,7 @@ def register_cad_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             return {"status": "error", "code": "missing_project_id", "message": "project_id is required."}
         result = _cg.execute_build123d_code(active_settings, project_id, inp)
         _record_cad_snapshot(result, project_id, "cad.execute_build123d")
-        return result
+        return _receipt.receipt_from_execute_build123d(result)
 
     rt.register_tool(
         "cad.execute_build123d",
@@ -605,7 +606,7 @@ def register_cad_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             confirm_scope_risk=bool(inp.get("confirmScopeRisk")),
         )
         _record_cad_snapshot(result, inp.get("project_id"), "cad.edit_parameter")
-        return result
+        return _receipt.receipt_from_edit_parameter(result)
 
     rt.register_tool(
         "cad.edit_parameter",

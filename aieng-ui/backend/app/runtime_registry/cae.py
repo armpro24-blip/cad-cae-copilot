@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from .. import operation_receipt as _receipt
 from ..legacy_app_symbols import sync_main_symbols
 
 LOGGER = logging.getLogger("app.app_factory")
@@ -649,7 +650,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 ),
             })
 
-        return {
+        return _receipt.receipt_from_prepare_solver_run({
             "ok": True,
             "tool": "cae.prepare_solver_run",
             "ready_to_run": ready_to_run,
@@ -662,7 +663,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             "planned_artifacts": planned_artifacts,
             "warnings": warnings,
             "recommended_next_calls": recommendations,
-        }
+        })
 
     def _tool_cae_generate_solver_input(inp: dict[str, Any], _ctx: dict[str, Any]) -> dict[str, Any]:
         from .. import aieng_bridge
@@ -1157,7 +1158,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 result["refreshed_summaries"] = refreshed_summaries
             if auto_import_result is not None:
                 result["auto_import"] = auto_import_result
-            return result
+            return _receipt.receipt_from_run_solver(result)
 
         finally:
             try:
