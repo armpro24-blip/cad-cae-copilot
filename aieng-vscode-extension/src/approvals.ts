@@ -1,78 +1,16 @@
 import { EventSource } from "eventsource";
 import * as vscode from "vscode";
 
+import {
+  decisionBody,
+  parseApprovalEvent,
+  parseApprovalResolvedId,
+  truncatePreview,
+  type ApprovalRequest,
+} from "./approvalModel";
 import { backendUrl } from "./livePreview";
 
-/**
- * In-editor approval surface (#230).
- *
- * In workbench-managed approval mode the backend fans out each gated mutation as
- * an `approval_requested` agent event on `/api/agent-activity/stream`; a
- * connected surface must render it and POST the decision back. This coordinator
- * makes the VS Code extension that surface: it subscribes to the stream, shows a
- * native modal for each request, and resolves it via
- * `POST /api/agent/agentic/permission/{id}/resolve` — so a user driving an
- * agentic session can approve/deny gated CAD/CAE mutations without leaving the
- * editor. Being subscribed also makes `approval-surface` report available, so
- * managed-mode calls no longer fail fast for want of a viewer.
- */
-
-export type ApprovalRequest = {
-  permissionId: string;
-  toolName: string;
-  explanation: string;
-  codePreview?: string;
-  projectId?: string;
-};
-
-/** Parse an `approval_requested` SSE event into a request, or null. Pure. */
-export function parseApprovalEvent(data: unknown): ApprovalRequest | null {
-  if (typeof data !== "string") return null;
-  let event: Record<string, unknown>;
-  try {
-    event = JSON.parse(data) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-  if (!event || typeof event !== "object" || event.type !== "approval_requested") return null;
-  const payload = (event.payload && typeof event.payload === "object" ? event.payload : {}) as Record<string, unknown>;
-  const permissionId = String(payload.agentic_permission_id ?? payload.id ?? "").trim();
-  if (!permissionId) return null;
-  const toolName = String(payload.tool_name ?? "a workbench tool");
-  const explanation = String(payload.explanation ?? event.content ?? `Approve ${toolName}?`);
-  const codePreview = typeof payload.code_preview === "string" ? payload.code_preview : undefined;
-  const eventProject = typeof event.project_id === "string" ? event.project_id.trim() : "";
-  const payloadProject = typeof payload.target_project_id === "string" ? payload.target_project_id.trim() : "";
-  const projectId = eventProject || payloadProject || undefined;
-  return { permissionId, toolName, explanation, codePreview, projectId };
-}
-
-/** Extract the permission id from an `approval_resolved` event, or null. Pure. */
-export function parseApprovalResolvedId(data: unknown): string | null {
-  if (typeof data !== "string") return null;
-  try {
-    const event = JSON.parse(data) as Record<string, unknown>;
-    if (!event || event.type !== "approval_resolved") return null;
-    const payload = (event.payload && typeof event.payload === "object" ? event.payload : {}) as Record<string, unknown>;
-    const id = String(payload.agentic_permission_id ?? "").trim();
-    return id || null;
-  } catch {
-    return null;
-  }
-}
-
-/** Build the resolve POST body. Pure. */
-export function decisionBody(approved: boolean, projectId?: string, message?: string): Record<string, unknown> {
-  const body: Record<string, unknown> = { approved };
-  if (projectId) body.project_id = projectId;
-  if (message) body.message = message;
-  return body;
-}
-
-/** Truncate a code preview so the modal stays readable. Pure. */
-export function truncatePreview(text: string, max = 1200): string {
-  return text.length > max ? `${text.slice(0, max)}\n...(truncated)` : text;
-}
+export type { ApprovalRequest };
 
 async function postApprovalDecision(
   permissionId: string,

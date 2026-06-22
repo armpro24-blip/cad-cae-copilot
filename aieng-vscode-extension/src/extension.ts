@@ -3,6 +3,7 @@ import * as vscode from "vscode";
 import { AgentActivitySubscriber, type ProjectActivityEvent } from "./agentActivity";
 import { ApprovalCoordinator } from "./approvals";
 import { BackendManager } from "./backendManager";
+import { runDoctor } from "./doctor";
 import { HomePanel } from "./homePanel";
 import { backendUrl, chooseLiveProject, listProjects, type Project } from "./livePreview";
 import { readAiengPackage } from "./packageReader";
@@ -209,6 +210,7 @@ export function activate(context: vscode.ExtensionContext): void {
     openPackage,
     backend,
   })));
+  context.subscriptions.push(vscode.commands.registerCommand("aieng.doctor", () => void runDoctor()));
 }
 
 export function deactivate(): void {}
