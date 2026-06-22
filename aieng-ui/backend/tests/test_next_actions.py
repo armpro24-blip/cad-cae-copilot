@@ -100,8 +100,45 @@ def test_normalize_next_action_converts_legacy_shape() -> None:
     assert action["input"] == {"project_id": "p1", "run_id": "run_001"}
     assert action["reason"] == "Generate input deck."
     assert action["source"] == "legacy"
+    assert action["requires_approval"] is True
     assert action["mutates_package"] is True
     assert action["id"].startswith("cae_generate_solver_input_")
+
+
+def test_normalize_next_action_preserves_truthy_legacy_safety_flags() -> None:
+    action = normalize_next_action(
+        {
+            "tool": "external.custom_solver",
+            "input": {"project_id": "p1"},
+            "reason": "Run through an external gated workflow.",
+            "requires_approval": True,
+            "mutates_package": True,
+            "runs_solver": True,
+            "advances_claim": True,
+        },
+        source="legacy",
+    )
+    assert action["requires_approval"] is True
+    assert action["mutates_package"] is True
+    assert action["runs_solver"] is True
+    assert action["advances_claim"] is True
+
+
+def test_normalize_next_action_false_flags_do_not_downgrade_inferred_safety() -> None:
+    action = normalize_next_action(
+        {
+            "tool": "cae.run_solver",
+            "input": {"project_id": "p1", "input_deck_path": "simulation/runs/run_001/solver_input.inp"},
+            "reason": "Run solver.",
+            "requires_approval": False,
+            "mutates_package": False,
+            "runs_solver": False,
+        },
+        source="legacy",
+    )
+    assert action["requires_approval"] is True
+    assert action["mutates_package"] is True
+    assert action["runs_solver"] is True
 
 
 def test_normalize_next_actions_assigns_priority_by_position() -> None:

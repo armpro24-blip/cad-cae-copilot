@@ -101,7 +101,9 @@ def normalize_next_action(
     Recognized legacy fields:
       - ``tool``, ``input``, ``reason``, ``action``
       - ``id``, ``label``, ``priority``, ``available_now``, ``blocked_reason``
-      - ``requires_approval`` (preserved when no runtime metadata exists)
+      - ``requires_approval``, ``mutates_package``, ``runs_solver``,
+        ``advances_claim`` (truthy values are preserved as conservative
+        overrides; falsey values never downgrade inferred safety flags)
 
     Items with no executable ``tool`` are marked as blocked so clients do not
     accidentally render them as runnable actions.
@@ -131,6 +133,12 @@ def normalize_next_action(
             blocked_reason = reason or "Action cannot be executed automatically."
 
     safety = _safety_flags(tool_name)
+    safety = {
+        "requires_approval": safety["requires_approval"] or raw.get("requires_approval") is True,
+        "mutates_package": safety["mutates_package"] or raw.get("mutates_package") is True,
+        "runs_solver": safety["runs_solver"] or raw.get("runs_solver") is True,
+        "advances_claim": safety["advances_claim"] or raw.get("advances_claim") is True,
+    }
     return {
         "id": raw.get("id") if isinstance(raw.get("id"), str) else _action_id(tool_name, input_dict),
         "label": label,
