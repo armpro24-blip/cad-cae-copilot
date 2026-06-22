@@ -304,6 +304,7 @@ def test_receipt_from_run_solver_failure_preserves_message() -> None:
     receipt = result["receipt"]
     assert receipt["status"] == "error"
     assert receipt["mutated"] is False
+    assert receipt["approval_required"] is True
     assert "Solver not found" in receipt["summary"]
     assert receipt["approval_used"] is None
 
