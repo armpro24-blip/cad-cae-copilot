@@ -133,10 +133,12 @@ def register_tool(
 
 
 def registered_tool_names() -> list[str]:
+    """Return the list of currently registered tool names."""
     return list(_REGISTRY.keys())
 
 
 def registered_tools_info() -> list[dict[str, Any]]:
+    """Return a summary dict for each registered tool."""
     return [
         {
             "name": name,

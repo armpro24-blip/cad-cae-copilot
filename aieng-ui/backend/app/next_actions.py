@@ -176,7 +176,7 @@ def normalize_next_actions(
 
 def build_next_action(
     tool: str,
-    input: dict[str, Any],
+    input_dict: dict[str, Any],
     reason: str,
     *,
     source: str = "unknown",
@@ -185,15 +185,19 @@ def build_next_action(
     available_now: bool = True,
     blocked_reason: str | None = None,
 ) -> dict[str, Any]:
-    """Build a standardized next_action item from explicit fields."""
+    """Build a standardized next_action item from explicit fields.
+
+    ``input_dict`` is copied before serialization so callers cannot mutate the
+    produced item's input payload afterwards.
+    """
     safety = _safety_flags(tool)
     return {
-        "id": _action_id(tool, input),
+        "id": _action_id(tool, input_dict),
         "label": label or _tool_label(tool),
         "priority": priority,
         "source": source,
         "tool": tool,
-        "input": dict(input),
+        "input": dict(input_dict),
         "reason": reason,
         "available_now": available_now,
         "blocked_reason": blocked_reason,
