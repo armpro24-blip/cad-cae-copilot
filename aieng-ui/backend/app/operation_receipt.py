@@ -82,6 +82,15 @@ def _normalize_warnings(result: dict[str, Any]) -> list[str]:
     return []
 
 
+def _as_list(value: Any) -> list[Any]:
+    """Coerce an expected list value into a list, ignoring other shapes."""
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    return []
+
+
 def build_receipt(
     *,
     operation: str,
@@ -169,7 +178,7 @@ def receipt_from_execute_build123d(
     status = "ok" if result.get("status") == "ok" else "error"
     artifacts_written = [
         _normalize_artifact(p, kind="cad_geometry")
-        for p in (result.get("written_artifacts") or [])
+        for p in _as_list(result.get("written_artifacts"))
     ]
     warnings = _normalize_warnings(result)
     summary = (
@@ -207,7 +216,7 @@ def receipt_from_edit_parameter(result: dict[str, Any]) -> dict[str, Any]:
     status = "ok" if result.get("status") == "ok" else "error"
     artifacts_written = [
         _normalize_artifact(p, kind="cad_geometry")
-        for p in (result.get("written_artifacts") or [])
+        for p in _as_list(result.get("written_artifacts"))
     ]
     warnings = _normalize_warnings(result)
     param_name = result.get("cad_parameter_name") or result.get("parameter_name") or "parameter"
@@ -246,10 +255,10 @@ def receipt_from_prepare_solver_run(result: dict[str, Any]) -> dict[str, Any]:
     ready = bool(result.get("ready_to_run"))
     status = "ok" if ready else "warning"
     warnings = _normalize_warnings(result)
-    planned = [_normalize_artifact(a, kind="planned_solver_output") for a in (result.get("planned_artifacts") or [])]
-    stale = [_normalize_artifact(a, kind="stale") for a in (result.get("stale_artifacts") or [])]
+    planned = [_normalize_artifact(a, kind="planned_solver_output") for a in _as_list(result.get("planned_artifacts"))]
+    stale = [_normalize_artifact(a, kind="stale") for a in _as_list(result.get("stale_artifacts"))]
     next_actions: list[dict[str, Any]] = []
-    for rec in result.get("recommended_next_calls") or []:
+    for rec in _as_list(result.get("recommended_next_calls")):
         if isinstance(rec, dict):
             next_actions.append(
                 {
@@ -283,11 +292,11 @@ def receipt_from_run_solver(result: dict[str, Any]) -> dict[str, Any]:
     status = "ok" if ok else "error"
     artifacts_written = [
         _normalize_artifact(a, kind="solver_output")
-        for a in (result.get("changed_artifacts") or [])
+        for a in _as_list(result.get("changed_artifacts"))
     ]
     evidence_created = [
         _normalize_artifact(a, kind="evidence")
-        for a in (result.get("evidence_imported") or [])
+        for a in _as_list(result.get("evidence_imported"))
     ]
     warnings = _normalize_warnings(result)
     errors = result.get("errors")

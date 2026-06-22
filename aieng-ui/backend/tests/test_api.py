@@ -4869,6 +4869,9 @@ def test_run_solver_mocked_subprocess_success(tmp_path: Path) -> None:
     assert receipt["approval_used"] is True
     assert any(a["path"].endswith("result.frd") for a in receipt["artifacts_written"])
     assert any(a["tool"] == "cae.extract_solver_results" for a in receipt["next_actions"])
+    extract_action = next(a for a in receipt["next_actions"] if a["tool"] == "cae.extract_solver_results")
+    assert extract_action["input"]["project_id"] == project_id
+    assert extract_action["input"]["run_id"] == "run_001"
 
     # Verify subprocess args
     assert len(mock_run.call_args_list) == 1

@@ -1148,6 +1148,8 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 "status": "completed" if solved else "failed",
                 "solver_execution_performed": True,
                 "return_code": return_code,
+                "project_id": project_id,
+                "run_id": run_id,
                 "changed_artifacts": changed_artifacts,
                 "warnings": warnings,
                 "errors": errors,

@@ -114,6 +114,22 @@ def test_attach_receipt_skips_non_dict_result() -> None:
     assert attach_receipt("not a dict", operation="cad.test", status="ok", mutated=True) == "not a dict"
 
 
+@pytest.mark.parametrize("bad_artifacts", [{"path": "x"}, "not-a-list", 123, object()])
+def test_receipt_from_execute_build123d_tolerates_non_list_artifact_payload(bad_artifacts: Any) -> None:
+    """Non-list artifact payloads must not crash receipt assembly."""
+    result = receipt_from_execute_build123d(
+        {
+            "status": "ok",
+            "project_id": "p1",
+            "written_artifacts": bad_artifacts,
+            "warnings": [],
+        }
+    )
+    receipt = result["receipt"]
+    assert receipt["status"] == "ok"
+    assert receipt["artifacts_written"] == []
+
+
 def test_receipt_from_execute_build123d_success() -> None:
     result = receipt_from_execute_build123d(
         {
