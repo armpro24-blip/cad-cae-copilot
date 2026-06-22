@@ -75,7 +75,11 @@ def _normalize_artifact(artifact: Any, kind: str = "artifact") -> dict[str, Any]
 
 
 def _normalize_warnings(result: dict[str, Any]) -> list[str]:
-    """Extract a flat list of warning strings from a result dict."""
+    """Extract a flat list of warning strings from a result dict.
+
+    Non-list warning payloads are treated as empty so a malformed upstream
+    field cannot break receipt assembly.
+    """
     warnings = result.get("warnings")
     if isinstance(warnings, list):
         return [str(w) for w in warnings if w is not None]
@@ -83,7 +87,11 @@ def _normalize_warnings(result: dict[str, Any]) -> list[str]:
 
 
 def _as_list(value: Any) -> list[Any]:
-    """Coerce an expected list value into a list, ignoring other shapes."""
+    """Coerce an expected list value into a list, ignoring other shapes.
+
+    Dicts and strings are intentionally treated as non-list values so they
+    are not silently iterated key-by-key or character-by-character.
+    """
     if isinstance(value, list):
         return value
     if isinstance(value, tuple):
