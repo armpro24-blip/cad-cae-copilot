@@ -83,7 +83,7 @@ _SAMPLE_TOPOLOGY: dict = {
             "area": 251.3,
             "radius": 4.0,
             "center": [10.0, 10.0, 5.0],
-            "bounding_box": [8.0, 8.0, 0.0, 12.0, 12.0, 10.0],
+            "bounding_box": [6.0, 6.0, 0.0, 14.0, 14.0, 10.0],
         },
         {
             "id": "face_004",
@@ -92,7 +92,7 @@ _SAMPLE_TOPOLOGY: dict = {
             "area": 251.3,
             "radius": 4.0,
             "center": [90.0, 10.0, 5.0],
-            "bounding_box": [88.0, 8.0, 0.0, 92.0, 12.0, 10.0],
+            "bounding_box": [86.0, 6.0, 0.0, 94.0, 14.0, 10.0],
         },
         {
             "id": "face_005",
@@ -101,7 +101,7 @@ _SAMPLE_TOPOLOGY: dict = {
             "area": 251.3,
             "radius": 4.0,
             "center": [10.0, 40.0, 5.0],
-            "bounding_box": [8.0, 38.0, 0.0, 12.0, 42.0, 10.0],
+            "bounding_box": [6.0, 36.0, 0.0, 14.0, 44.0, 10.0],
         },
         {
             "id": "face_006",
@@ -110,7 +110,7 @@ _SAMPLE_TOPOLOGY: dict = {
             "area": 251.3,
             "radius": 4.0,
             "center": [90.0, 40.0, 5.0],
-            "bounding_box": [88.0, 38.0, 0.0, 92.0, 42.0, 10.0],
+            "bounding_box": [86.0, 36.0, 0.0, 94.0, 44.0, 10.0],
         },
     ],
 }
@@ -226,6 +226,47 @@ def test_feature_graph_recognizes_external_fillets_not_hole_pattern() -> None:
     for f in fg["features"]:
         if f["type"] in {"mounting_hole_pattern", "mounting_hole", "bore"}:
             assert not (set(f["geometry_refs"].get("faces", [])) & fillet_faces)
+
+
+def test_feature_graph_excludes_adjacency_free_fillets_from_hole_pattern() -> None:
+    """Real OCC topology carries NO adjacent_entity_ids and no real_step_parsing flag,
+    so the core recognizer's adjacency-gated fillet detector finds nothing. The runtime
+    must STILL exclude quarter-round fillet cylinders (cross-section ~1 radius) from the
+    bolt-pattern grouping via the adjacency-free signal — otherwise edge fillets become a
+    phantom hole pattern. Dogfood regression: #321's fix relied on adjacency the real
+    build does not produce.
+    """
+    from app.cad_generation import _topology_to_feature_graph
+
+    topo = {
+        "entities": [
+            {"id": "body_001", "type": "solid", "bounding_box": [0, 0, 0, 120, 60, 12], "volume": 86000.0},
+            {"id": "face_base", "type": "face", "surface_type": "plane", "area": 7200.0,
+             "normal": [0, 0, -1], "bounding_box": [0, 0, 0, 120, 60, 0]},
+            # 4 quarter-round edge fillets r=4: cross-section ~ [4, 4] (~1 radius). No adjacency.
+            {"id": "face_fil_1", "type": "face", "surface_type": "cylinder", "radius": 4.0, "axis": [0, 0, 1], "bounding_box": [0, 0, 0, 4, 4, 12]},
+            {"id": "face_fil_2", "type": "face", "surface_type": "cylinder", "radius": 4.0, "axis": [0, 0, 1], "bounding_box": [116, 0, 0, 120, 4, 12]},
+            {"id": "face_fil_3", "type": "face", "surface_type": "cylinder", "radius": 4.0, "axis": [0, 0, 1], "bounding_box": [0, 56, 0, 4, 60, 12]},
+            {"id": "face_fil_4", "type": "face", "surface_type": "cylinder", "radius": 4.0, "axis": [0, 0, 1], "bounding_box": [116, 56, 0, 120, 60, 12]},
+            # 2 genuine through-holes r=4.5: cross-section ~ [9, 9] (~2 radii = diameter).
+            {"id": "face_hole_1", "type": "face", "surface_type": "cylinder", "radius": 4.5, "axis": [0, 0, 1], "bounding_box": [20, 20, 0, 29, 29, 12]},
+            {"id": "face_hole_2", "type": "face", "surface_type": "cylinder", "radius": 4.5, "axis": [0, 0, 1], "bounding_box": [91, 20, 0, 100, 29, 12]},
+        ]
+    }
+    fg = _topology_to_feature_graph(topo)
+    fillet_face_ids = {"face_fil_1", "face_fil_2", "face_fil_3", "face_fil_4"}
+
+    # No hole/bore feature may reference a quarter-round fillet face.
+    for feat in fg["features"]:
+        if feat["type"] in {"mounting_hole", "mounting_hole_pattern", "bore"}:
+            assert not (set(feat.get("geometry_refs", {}).get("faces", [])) & fillet_face_ids), feat
+
+    # The genuine 2-radius holes are still recognized as holes.
+    hole_faces: set[str] = set()
+    for feat in fg["features"]:
+        if feat["type"] in {"mounting_hole", "mounting_hole_pattern"}:
+            hole_faces |= set(feat.get("geometry_refs", {}).get("faces", []))
+    assert {"face_hole_1", "face_hole_2"} <= hole_faces
 
 
 def test_feature_graph_surfaces_standard_parts_with_provenance() -> None:

@@ -2016,6 +2016,34 @@ def _standard_part_bom_summary(features: list[dict[str, Any]]) -> dict[str, Any]
     }
 
 
+def _is_quarter_round_fillet(face: dict[str, Any]) -> bool:
+    """True if a cylinder face is a quarter-round edge fillet, not a hole/bore.
+
+    Adjacency-free signal (works on real OCC topology, which carries no
+    adjacent_entity_ids): a quarter-round fillet's cross-section perpendicular to
+    its axis spans ~1 radius, whereas a hole/bore spans ~2 radii (its diameter).
+    Used to keep edge fillets out of the bolt-pattern cylinder grouping.
+    """
+    if face.get("surface_type") != "cylinder":
+        return False
+    radius = face.get("radius")
+    bbox = face.get("bounding_box")
+    if not isinstance(radius, (int, float)) or radius <= 0:
+        return False
+    if not (isinstance(bbox, list) and len(bbox) == 6):
+        return False
+    dims = [abs(bbox[3] - bbox[0]), abs(bbox[4] - bbox[1]), abs(bbox[5] - bbox[2])]
+    axis = face.get("axis")
+    if isinstance(axis, list) and len(axis) == 3 and max(abs(float(a)) for a in axis) >= 0.5:
+        axis_idx = max(range(3), key=lambda i: abs(float(axis[i])))
+        cross = [d for i, d in enumerate(dims) if i != axis_idx]
+    else:
+        cross = sorted(dims)[:2]
+    # Quarter-round: both cross extents ~1 radius. A hole/bore spans ~2 radii and
+    # is intentionally NOT matched here.
+    return all(0.4 * radius <= c <= 1.6 * radius for c in cross)
+
+
 def _topology_to_feature_graph(
     topo: dict[str, Any],
     source_code: str | None = None,
@@ -2094,12 +2122,17 @@ def _topology_to_feature_graph(
 
     if run_mechanical_heuristics:
         # bolt pattern detection — group cylinders by radius (±8% tolerance).
-        # Skip faces the core recognizer already classified as edge blends so a
-        # filleted edge is not mislabeled a hole/bore pattern.
+        # Skip faces the core recognizer classified as edge blends, AND quarter-round
+        # fillet cylinders detected directly from the cross-section signal. The latter
+        # is essential because real OCC topology carries no adjacent_entity_ids, so the
+        # core recognizer's adjacency-gated fillet detector finds nothing on a live build
+        # — without this adjacency-free check, every edge fillet becomes a phantom hole
+        # pattern (#297/#321 runtime gap, found by dogfood).
         cylinders = [
             f for f in faces
             if f.get("surface_type") == "cylinder" and f.get("radius")
             and str(f.get("id")) not in core_blend_faces
+            and not _is_quarter_round_fillet(f)
         ]
         radius_groups: dict[float, list[str]] = {}
         for face in cylinders:
