@@ -2147,6 +2147,29 @@ def test_cae_setup_patch_rejects_path_traversal(tmp_path: Path) -> None:
     assert result["code"] == "forbidden_path"
 
 
+def test_merge_object_creates_file_when_absent_and_accepts_content_key() -> None:
+    """merge_object into a MISSING file creates it, and accepts the `content` key
+    (consistent with create_file). The documented cae.apply_setup_patch materials
+    example uses merge_object + content as the first write, which previously failed
+    with 'requires an existing file'. Dogfood friction."""
+    import json
+    from app.project_io import _apply_single_patch
+
+    # merge into a missing file with `content` -> creates it
+    op = {
+        "action_type": "merge_object",
+        "path": "simulation/cae_imports/parsed_materials.json",
+        "content": {"materials": [{"name": "aluminum_6061"}]},
+    }
+    doc = json.loads(_apply_single_patch(None, op, op["path"]))
+    assert doc == {"materials": [{"name": "aluminum_6061"}]}
+
+    # merge into an existing file still merges (regression), `value` key still works
+    existing = json.dumps({"a": 1}).encode()
+    doc2 = json.loads(_apply_single_patch(existing, {"action_type": "merge_object", "path": "x.json", "value": {"b": 2}}, "x.json"))
+    assert doc2 == {"a": 1, "b": 2}
+
+
 def test_cae_setup_patch_rejects_absolute_path(tmp_path: Path) -> None:
     """cae.apply_setup_patch rejects absolute paths."""
     from app.main import create_app, default_project, project_dir, save_project

@@ -744,15 +744,22 @@ def _apply_single_patch(
         return str(content).encode()
 
     if action in ("replace_json", "merge_object", "append_array_item"):
-        if existing_content is None:
-            raise ValueError(f"{action} requires an existing file at {path!r}")
-        try:
-            doc = json.loads(existing_content)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"existing file at {path!r} is not valid JSON: {exc}") from exc
-
         pointer_str: str = op.get("pointer", "")
-        value: Any = op.get("value")
+        # Accept `content` as an alias for `value`, consistent with create_file and the
+        # documented cae.apply_setup_patch examples (which use `content` for merges).
+        value: Any = op.get("value") if op.get("value") is not None else op.get("content")
+        if existing_content is None:
+            # merge_object into a missing file = create it, so the first setup write can
+            # use the same merge op as later merges (the materials example does this).
+            if action == "merge_object" and not pointer_str:
+                doc: Any = {}
+            else:
+                raise ValueError(f"{action} requires an existing file at {path!r}")
+        else:
+            try:
+                doc = json.loads(existing_content)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"existing file at {path!r} is not valid JSON: {exc}") from exc
 
         if action == "replace_json":
             if pointer_str:
