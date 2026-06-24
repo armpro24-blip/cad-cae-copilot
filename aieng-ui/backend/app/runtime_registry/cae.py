@@ -15,6 +15,32 @@ from ..legacy_app_symbols import sync_main_symbols
 
 LOGGER = logging.getLogger("app.app_factory")
 
+# Windows NTSTATUS failure codes (e.g. 0xC0000005 access violation) are >= this.
+_WINDOWS_CRASH_THRESHOLD = 0xC0000000
+
+
+def _ccx_dll_crash_hint(return_code: int | None, stdout: str, frd_exists: bool) -> str | None:
+    """Return a remediation hint when ccx appears to have crashed on DLL load.
+
+    A bare ``ccx.exe`` invoked outside its conda environment (e.g. an absolute
+    ``AIENG_CCX_CMD`` path on Windows) fails to load its runtime DLLs and exits
+    with a Windows access-violation NTSTATUS code, producing no stdout and no
+    FRD. Detect that signature and steer the operator to an env-activating
+    launcher rather than surfacing a cryptic non-zero exit.
+    """
+    if frd_exists or (stdout or "").strip():
+        return None
+    if return_code is None:
+        return None
+    if (int(return_code) & 0xFFFFFFFF) < _WINDOWS_CRASH_THRESHOLD:
+        return None
+    return (
+        "Solver exited with a Windows access-violation code and produced no "
+        "output — ccx likely could not load its runtime DLLs. Set AIENG_CCX_CMD "
+        "to a launcher that activates the CalculiX environment, e.g. "
+        "'conda run -n calculix-env ccx', rather than a bare ccx.exe path."
+    )
+
 
 def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema: Any) -> dict[str, Any]:
     """Register cae runtime tools."""
@@ -992,6 +1018,12 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             result_frd = work_dir / f"{stem}.frd"
             if result_frd.exists():
                 frd_path = result_frd
+
+            # Steer past the silent "bare ccx.exe can't load its DLLs" crash.
+            _crash_hint = _ccx_dll_crash_hint(return_code, stdout, result_frd.exists())
+            if _crash_hint:
+                warnings.append(_crash_hint)
+                errors.append(_crash_hint)
 
             # Detect analysis type from the deck so eigenvalue (modal/buckling)
             # results are routed to the .dat extractor, not the FRD extractor.

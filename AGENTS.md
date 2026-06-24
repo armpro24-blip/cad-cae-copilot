@@ -977,21 +977,24 @@ verify these paths — see `aieng/docs/nafems_vv_cases.md`.
   conda create -n calculix-env -c conda-forge calculix
   ```
   Then point the backend at it with the `AIENG_CCX_CMD` environment variable.
-  **Most reliable on Windows — the absolute ccx path** (no launcher indirection):
-  ```powershell
-  $env:AIENG_CCX_CMD = "C:\Users\<you>\anaconda3\envs\calculix-env\Library\bin\ccx.exe"
-  ```
-  The `conda run` form also works, but only if the backend process can resolve the
-  `conda` launcher (it is detected via `CONDA_EXE` / a `conda.exe` on PATH —
-  usually true when uvicorn is launched from an activated conda shell):
+  **Use the `conda run` launcher form — it is the most reliable on Windows**
+  because it activates the CalculiX environment so `ccx` can find its runtime
+  DLLs:
   ```powershell
   $env:AIENG_CCX_CMD = "conda run -n calculix-env ccx"
   ```
-  **The env var must be set in the same shell that launches `uvicorn`** (the
-  backend process inherits it; a different shell will not). If `cae.prepare_solver_run`
-  still reports `ccx_available: false`, its `missing_items`/`blocked` message now
-  states exactly why (env var unset vs. launcher unresolvable). Do **not** install
-  `calculix` directly into `aieng311` — it downgrades OpenSSL and breaks SSL.
+  **Avoid pointing `AIENG_CCX_CMD` at a bare `ccx.exe` absolute path on Windows.**
+  It passes detection but the executable, run outside its conda environment,
+  fails to load its runtime DLLs and **crashes with a Windows access-violation
+  code and no output** (prepending the env's `Library/bin` to PATH is *not*
+  enough — full conda activation is required). `cae.run_solver` detects this
+  crash signature and tells you to switch to the `conda run` form.
+  The `conda run` launcher is resolved via `CONDA_EXE` / a `conda.exe` on PATH
+  (usually present when uvicorn is launched from an activated conda shell);
+  if it cannot be resolved, `cae.prepare_solver_run`'s `missing_items` message
+  states exactly why. **The env var must be set in the same shell that launches
+  `uvicorn`** (the backend process inherits it; a different shell will not). Do
+  **not** install `calculix` directly into `aieng311` — it downgrades OpenSSL.
 
 - **Linux/macOS:** use the system package (`apt install calculix-ccx`, `brew install calculix`)
   or a separate conda env. If `ccx` is already on the activated PATH, `AIENG_CCX_CMD` is optional.

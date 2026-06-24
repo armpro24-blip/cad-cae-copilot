@@ -4962,6 +4962,22 @@ def test_resolve_ccx_command_path_fallback_and_unset(monkeypatch) -> None:
     assert "not set" in reason.lower()
 
 
+def test_ccx_dll_crash_hint_detects_windows_access_violation() -> None:
+    """A bare ccx.exe that crashed on DLL load (NTSTATUS access violation, no
+    output, no FRD) yields a hint to use the env-activating conda-run form."""
+    from app.runtime_registry.cae import _ccx_dll_crash_hint
+
+    hint = _ccx_dll_crash_hint(3221225781, "", frd_exists=False)  # 0xC0000005
+    assert hint is not None and "conda run" in hint
+
+    # Not a crash: clean exit, a normal solver error (with output), or FRD present.
+    assert _ccx_dll_crash_hint(0, "", frd_exists=False) is None
+    assert _ccx_dll_crash_hint(201, " *ERROR in calinput", frd_exists=False) is None
+    assert _ccx_dll_crash_hint(1, "", frd_exists=False) is None  # small non-crash code
+    assert _ccx_dll_crash_hint(3221225781, "", frd_exists=True) is None
+    assert _ccx_dll_crash_hint(None, "", frd_exists=False) is None
+
+
 def test_runtime_capabilities_treats_malformed_ccx_cmd_as_unavailable(tmp_path: Path, monkeypatch) -> None:
     """Malformed AIENG_CCX_CMD does not crash the capabilities endpoint."""
     monkeypatch.setenv("AIENG_CCX_CMD", '"unterminated')
