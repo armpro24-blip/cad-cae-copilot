@@ -561,7 +561,10 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             has_input_deck = f"simulation/runs/{run_id}/solver_input.inp" in names
 
         # Check ccx availability without executing it
-        ccx_available = _resolve_ccx_cmd() is not None
+        from ..runtime_tool_registry import resolve_ccx_command
+
+        ccx_parts, ccx_reason = resolve_ccx_command()
+        ccx_available = ccx_parts is not None
 
         # Validate that face-scoped CAE references still match the current topology.
         topology_validation = validate_cae_topology_references(package_path)
@@ -578,9 +581,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             deck_hint = f" (or external: {input_deck_path_str})" if input_deck_path_str else ""
             missing_items.append(f"simulation/runs/{run_id}/solver_input.inp{deck_hint}")
         if not ccx_available:
-            missing_items.append(
-                "CalculiX command unavailable (set AIENG_CCX_CMD or ensure ccx is discoverable on PATH)."
-            )
+            missing_items.append(f"CalculiX command unavailable: {ccx_reason}")
         if not topology_refs_ok:
             missing_items.append(
                 "stale_topology_references: CAE face references do not match current geometry."

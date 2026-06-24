@@ -4901,6 +4901,67 @@ def test_split_ccx_cmd_preserves_windows_paths() -> None:
     ]
 
 
+def test_resolve_ccx_command_absolute_path(monkeypatch) -> None:
+    """An absolute ccx path resolves directly (most reliable form on Windows)."""
+    from app.runtime_tool_registry import resolve_ccx_command
+
+    abs_ccx = r"C:\envs\calculix-env\Library\bin\ccx.exe"
+    monkeypatch.setenv("AIENG_CCX_CMD", abs_ccx)
+    monkeypatch.setattr("shutil.which", lambda n: n if n.endswith("ccx.exe") else None)
+
+    parts, reason = resolve_ccx_command()
+    assert parts == [abs_ccx]
+    assert "path" in reason.lower()
+
+
+def test_resolve_ccx_command_conda_run_via_conda_exe(monkeypatch) -> None:
+    """`conda run ... ccx` resolves when CONDA_EXE points at a real conda exe,
+    even though bare `conda` is not on PATH (the Windows failure mode)."""
+    from app.runtime_tool_registry import resolve_ccx_command
+
+    conda_exe = r"C:\anaconda3\Scripts\conda.exe"
+    monkeypatch.setenv("AIENG_CCX_CMD", "conda run -n calculix-env ccx")
+    monkeypatch.setenv("CONDA_EXE", conda_exe)
+    monkeypatch.setattr("shutil.which", lambda n: None)  # nothing resolvable on PATH
+    monkeypatch.setattr("os.path.exists", lambda p: p == conda_exe)
+
+    parts, reason = resolve_ccx_command()
+    assert parts == [conda_exe, "run", "-n", "calculix-env", "ccx"]
+    assert "conda" in reason
+
+
+def test_resolve_ccx_command_conda_unresolvable_explains_why(monkeypatch) -> None:
+    """When the conda launcher cannot be resolved, the reason says so (not a
+    generic 'unavailable') so the operator knows to use the absolute path."""
+    from app.runtime_tool_registry import resolve_ccx_command, _resolve_ccx_cmd
+
+    monkeypatch.setenv("AIENG_CCX_CMD", "conda run -n calculix-env ccx")
+    monkeypatch.delenv("CONDA_EXE", raising=False)
+    monkeypatch.delenv("MAMBA_EXE", raising=False)
+    monkeypatch.setattr("shutil.which", lambda n: None)
+
+    parts, reason = resolve_ccx_command()
+    assert parts is None
+    assert "conda" in reason and "not resolvable" in reason.lower()
+    assert _resolve_ccx_cmd() is None  # back-compat wrapper
+
+
+def test_resolve_ccx_command_path_fallback_and_unset(monkeypatch) -> None:
+    """With AIENG_CCX_CMD unset: resolve a bare ccx on PATH, else explain it's unset."""
+    from app.runtime_tool_registry import resolve_ccx_command
+
+    monkeypatch.delenv("AIENG_CCX_CMD", raising=False)
+    monkeypatch.setattr("shutil.which", lambda n: "/usr/bin/ccx" if n == "ccx" else None)
+    parts, reason = resolve_ccx_command()
+    assert parts == ["/usr/bin/ccx"]
+    assert "ccx" in reason
+
+    monkeypatch.setattr("shutil.which", lambda n: None)
+    parts, reason = resolve_ccx_command()
+    assert parts is None
+    assert "not set" in reason.lower()
+
+
 def test_runtime_capabilities_treats_malformed_ccx_cmd_as_unavailable(tmp_path: Path, monkeypatch) -> None:
     """Malformed AIENG_CCX_CMD does not crash the capabilities endpoint."""
     monkeypatch.setenv("AIENG_CCX_CMD", '"unterminated')

@@ -976,11 +976,22 @@ verify these paths — see `aieng/docs/nafems_vv_cases.md`.
   ```powershell
   conda create -n calculix-env -c conda-forge calculix
   ```
-  Then point the backend at it with the `AIENG_CCX_CMD` environment variable:
+  Then point the backend at it with the `AIENG_CCX_CMD` environment variable.
+  **Most reliable on Windows — the absolute ccx path** (no launcher indirection):
+  ```powershell
+  $env:AIENG_CCX_CMD = "C:\Users\<you>\anaconda3\envs\calculix-env\Library\bin\ccx.exe"
+  ```
+  The `conda run` form also works, but only if the backend process can resolve the
+  `conda` launcher (it is detected via `CONDA_EXE` / a `conda.exe` on PATH —
+  usually true when uvicorn is launched from an activated conda shell):
   ```powershell
   $env:AIENG_CCX_CMD = "conda run -n calculix-env ccx"
   ```
-  Do **not** install `calculix` directly into `aieng311` — it downgrades OpenSSL and breaks SSL.
+  **The env var must be set in the same shell that launches `uvicorn`** (the
+  backend process inherits it; a different shell will not). If `cae.prepare_solver_run`
+  still reports `ccx_available: false`, its `missing_items`/`blocked` message now
+  states exactly why (env var unset vs. launcher unresolvable). Do **not** install
+  `calculix` directly into `aieng311` — it downgrades OpenSSL and breaks SSL.
 
 - **Linux/macOS:** use the system package (`apt install calculix-ccx`, `brew install calculix`)
   or a separate conda env. If `ccx` is already on the activated PATH, `AIENG_CCX_CMD` is optional.
