@@ -1224,6 +1224,130 @@ def test_solve_package_static_rebinds_faces_when_stale(tmp_path: Path) -> None:
     assert result["status"] == "success"
 
 
+# ── generate_mesh_for_package (STEP -> Gmsh -> persisted mesh artifacts) ──────
+
+def _build_real_step_package(pkg_path: Path) -> None:
+    """Build a minimal package with a REAL build123d box STEP (meshable)."""
+    build123d = pytest.importorskip("build123d")
+    pkg_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        step_path = Path(tmp) / "box.step"
+        box = build123d.Box(20.0, 20.0, 20.0)
+        build123d.export_step(box, str(step_path))
+        step_bytes = step_path.read_bytes()
+    with zipfile.ZipFile(pkg_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("manifest.json", json.dumps({"schema_version": "0.1"}))
+        zf.writestr("geometry/generated.step", step_bytes)
+
+
+def test_generate_mesh_for_package_meshes_real_box(tmp_path: Path) -> None:
+    pytest.importorskip("gmsh")
+    from app.simulation_runner import (
+        generate_mesh_for_package,
+        get_mesh_preview,
+        _read_member,
+    )
+
+    pkg = tmp_path / "box.aieng"
+    _build_real_step_package(pkg)
+
+    result = generate_mesh_for_package(pkg, mesh_size_mm=8.0)
+
+    assert result["status"] == "success", result
+    assert result["node_count"] > 0
+    assert result["element_count"] > 0
+    assert result["element_type"] == "C3D4"
+    assert result["target_size_mm"] == 8.0
+    assert "simulation/mesh.inp" in result["written_artifacts"]
+    assert "simulation/mesh/mesh_metadata.json" in result["written_artifacts"]
+
+    # Both artifacts are actually in the package.
+    with zipfile.ZipFile(pkg, "r") as zf:
+        names = zf.namelist()
+        assert "simulation/mesh.inp" in names
+        assert "simulation/mesh/mesh_metadata.json" in names
+        # has_mesh preflight scans the simulation/mesh/ prefix.
+        assert any(n.startswith("simulation/mesh/") for n in names)
+        metadata = json.loads(zf.read("simulation/mesh/mesh_metadata.json"))
+        assert metadata["node_count"] == result["node_count"]
+        assert metadata["element_count"] == result["element_count"]
+        assert metadata["generator"] == "gmsh"
+
+    # The persisted mesh.inp lights up the existing mesh-preview reader.
+    preview = get_mesh_preview(pkg)
+    assert preview["available"] is True
+    assert preview["element_count"] == result["element_count"]
+
+
+def test_generate_mesh_for_package_no_geometry(tmp_path: Path) -> None:
+    from app.simulation_runner import generate_mesh_for_package
+
+    pkg = tmp_path / "empty.aieng"
+    pkg.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(pkg, "w") as zf:
+        zf.writestr("manifest.json", "{}")
+
+    # Gmsh is checked first; force it "available" so we reach the geometry branch.
+    with patch("app.simulation_runner._gmsh_available", return_value=True):
+        result = generate_mesh_for_package(pkg)
+
+    assert result["status"] == "no_geometry"
+
+
+def test_generate_mesh_for_package_tools_unavailable(tmp_path: Path) -> None:
+    from app.simulation_runner import generate_mesh_for_package
+
+    pkg = tmp_path / "nogmsh.aieng"
+    pkg.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(pkg, "w") as zf:
+        zf.writestr("manifest.json", "{}")
+        zf.writestr("geometry/generated.step", _FAKE_STEP)
+
+    with patch("app.simulation_runner._gmsh_available", return_value=False):
+        result = generate_mesh_for_package(pkg)
+
+    assert result["status"] == "tools_unavailable"
+    assert "gmsh" in result["missing_tools"]
+
+
+def test_cae_generate_mesh_tool_registered(tmp_path: Path) -> None:
+    settings = _make_settings(tmp_path)
+    client = TestClient(create_app(settings))
+    tools = {t["name"]: t for t in client.get("/api/runtime/tools").json()}
+
+    assert "cae.generate_mesh" in tools
+    # Meshing is non-destructive geometry compute (like generate_solver_input):
+    # no approval gate; only cae.run_solver is approval-gated.
+    assert tools["cae.generate_mesh"]["requires_approval"] is False
+
+
+def test_cae_generate_mesh_tool_meshes_via_invoke(tmp_path: Path) -> None:
+    pytest.importorskip("gmsh")
+    pytest.importorskip("build123d")
+    settings = _make_settings(tmp_path)
+    app = create_app(settings)
+    client = TestClient(app, raise_server_exceptions=True)
+
+    project_id, pkg_path = _make_project(settings, "mesh-tool", "mesh_tool.aieng")
+    _build_real_step_package(pkg_path)
+
+    resp = client.post(
+        "/api/agent/invoke-tool",
+        json={"tool": "cae.generate_mesh", "input": {"project_id": project_id, "mesh_size_mm": 8.0}},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data.get("ok") is True, data
+    assert data["status"] == "completed"
+    assert data["node_count"] > 0
+    assert data["element_count"] > 0
+
+    with zipfile.ZipFile(pkg_path, "r") as zf:
+        names = zf.namelist()
+        assert "simulation/mesh.inp" in names
+        assert "simulation/mesh/mesh_metadata.json" in names
+
+
 def test_solve_package_static_refuses_rebind_when_ambiguous(tmp_path: Path) -> None:
     from app.simulation_runner import solve_package_static
 

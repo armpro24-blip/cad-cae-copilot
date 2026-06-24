@@ -1669,6 +1669,25 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         },
         "additionalProperties": True,
     },
+    "cae.generate_mesh": {
+        "type": "object",
+        "required": ["project_id"],
+        "description": (
+            "Mesh the project's STEP geometry in-process with Gmsh and persist the FE mesh "
+            "(simulation/mesh.inp + simulation/mesh/mesh_metadata.json) into the .aieng package. "
+            "Produces only the mesh — does not bind loads/BCs, assemble a solver deck, or run a solver. "
+            "Typical input: {project_id, mesh_size_mm: 2.5}."
+        ),
+        "properties": {
+            "project_id": {"type": "string"},
+            "mesh_size_mm": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "description": "Target element size (mm). Defaults to the package's configured size, else 2.5 mm.",
+            },
+        },
+        "additionalProperties": True,
+    },
     "cae.write_mesh_handoff": {
         "type": "object",
         "required": ["project_id"],

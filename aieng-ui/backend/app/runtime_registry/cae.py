@@ -1208,6 +1208,78 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                     context={"run_id": run_id},
                 )
 
+    def _tool_cae_generate_mesh(inp: dict[str, Any], _ctx: dict[str, Any]) -> dict[str, Any]:
+        from pathlib import Path as _Path
+        from .. import simulation_runner
+
+        package_path_str: str | None = inp.get("packagePath") or inp.get("package_path")
+        project_id: str | None = inp.get("project_id")
+        mesh_size_raw = inp.get("mesh_size_mm", inp.get("meshSizeMm"))
+
+        if not package_path_str and project_id:
+            proj = get_project(active_settings, project_id)
+            pkg = resolve_project_path(active_settings, project_id, proj.get("aieng_file"))
+            if pkg is not None and pkg.exists():
+                package_path_str = str(pkg)
+
+        if not package_path_str:
+            return {
+                "ok": False,
+                "tool": "cae.generate_mesh",
+                "status": "error",
+                "code": "missing_package_path",
+                "message": "No package path provided and no project_id could be resolved.",
+            }
+
+        package_path = _Path(package_path_str)
+        if not package_path.exists():
+            return {
+                "ok": False,
+                "tool": "cae.generate_mesh",
+                "status": "error",
+                "code": "file_not_found",
+                "message": f"Package not found: {package_path_str}",
+            }
+
+        mesh_size_mm: float | None = None
+        if mesh_size_raw is not None:
+            try:
+                mesh_size_mm = float(mesh_size_raw)
+            except (TypeError, ValueError):
+                return {
+                    "ok": False,
+                    "tool": "cae.generate_mesh",
+                    "status": "error",
+                    "code": "bad_input",
+                    "message": f"mesh_size_mm must be a number, got {mesh_size_raw!r}.",
+                }
+
+        result = simulation_runner.generate_mesh_for_package(
+            package_path, mesh_size_mm=mesh_size_mm
+        )
+        status = result.get("status")
+        ok = status == "success"
+        artifacts = [
+            {"path": p, "kind": "fe_mesh", "role": "calculix_mesh"}
+            for p in result.get("written_artifacts", [])
+        ]
+        return {
+            "ok": ok,
+            "tool": "cae.generate_mesh",
+            "status": "completed" if ok else status,
+            "package_path": str(package_path),
+            "node_count": result.get("node_count"),
+            "element_count": result.get("element_count"),
+            "element_type": result.get("element_type"),
+            "target_size_mm": result.get("target_size_mm"),
+            "quality_verdict": result.get("quality_verdict"),
+            "quality": result.get("quality"),
+            "code": result.get("code"),
+            "message": result.get("message"),
+            "missing_tools": result.get("missing_tools"),
+            "artifacts": artifacts,
+        }
+
     def _tool_cae_write_mesh_handoff(inp: dict[str, Any], _ctx: dict[str, Any]) -> dict[str, Any]:
         from .. import aieng_bridge
         from pathlib import Path as _Path
@@ -1516,6 +1588,19 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             "Typical input: {project_id, run_id, load_case_id, input_deck_path: 'simulation/runs/run_001/solver_input.inp'}."
         ),
         input_schema=_schema("cae.run_solver"),
+    )
+    rt.register_tool(
+        "cae.generate_mesh",
+        _tool_cae_generate_mesh,
+        description=(
+            "Mesh the project's STEP geometry in-process with Gmsh and persist the FE mesh "
+            "(simulation/mesh.inp + simulation/mesh/mesh_metadata.json) into the .aieng package, "
+            "satisfying the has_mesh preflight and lighting up mesh preview/quality/convergence. "
+            "Produces ONLY the mesh — it does not bind loads/BCs, assemble a solver deck, or run a "
+            "solver. Degrades honestly when Gmsh is unavailable or the package has no STEP. "
+            "Typical input: {project_id, mesh_size_mm: 2.5}."
+        ),
+        input_schema=_schema("cae.generate_mesh"),
     )
     rt.register_tool(
         "cae.write_mesh_handoff",

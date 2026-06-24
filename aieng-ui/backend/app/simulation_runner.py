@@ -112,12 +112,39 @@ def _write_results_to_package(
 
 # ── Gmsh meshing ──────────────────────────────────────────────────────────────
 
+class _suppress_offthread_signal:
+    """Let gmsh run in a worker thread.
+
+    ``gmsh.initialize()`` installs a SIGINT handler via ``signal.signal()``,
+    which raises ``ValueError: signal only works in main thread of the main
+    interpreter`` when gmsh is called off the main thread — e.g. from FastAPI's
+    sync-endpoint threadpool or the MCP runtime. Temporarily no-op
+    ``signal.signal`` (only when not on the main thread) so meshing succeeds;
+    losing Ctrl-C interruptibility of the mesher is an acceptable trade for a
+    background mesh.
+    """
+
+    def __enter__(self) -> "_suppress_offthread_signal":
+        import signal
+        import threading
+
+        self._signal = signal
+        self._orig = signal.signal
+        if threading.current_thread() is not threading.main_thread():
+            signal.signal = lambda *_args, **_kwargs: None  # type: ignore[assignment]
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        self._signal.signal = self._orig
+
+
 def _mesh_with_gmsh(step_path: Path, work_dir: Path, mesh_size_mm: float) -> Path:
     """Mesh the STEP file with Gmsh and export a CalculiX-format .inp mesh."""
     import gmsh
 
     out_inp = work_dir / "mesh.inp"
-    gmsh.initialize()
+    with _suppress_offthread_signal():
+        gmsh.initialize()
     try:
         gmsh.option.setNumber("General.Terminal", 0)
         gmsh.model.add("model")
@@ -536,6 +563,142 @@ def get_mesh_quality_diagnostics(package_path: Path) -> dict[str, Any]:
         diagnostics.get("verdict"), set_coverage.get("verdict")
     )
     return diagnostics
+
+
+# ── Mesh generation (STEP -> Gmsh -> persisted mesh artifacts) ────────────────
+
+def _write_members_to_package(package_path: Path, files: dict[str, bytes]) -> None:
+    """Atomically add/replace the given members inside the .aieng package."""
+    tmp = package_path.with_suffix(".meshtmp.aieng")
+    try:
+        with zipfile.ZipFile(package_path, "r") as src, \
+             zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as dst:
+            for item in src.infolist():
+                if item.filename not in files:
+                    dst.writestr(item, src.read(item.filename))
+            for archive_path, content_bytes in files.items():
+                dst.writestr(archive_path, content_bytes)
+        tmp.replace(package_path)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def generate_mesh_for_package(
+    package_path: Path,
+    *,
+    mesh_size_mm: float | None = None,
+) -> dict[str, Any]:
+    """Mesh the package's STEP geometry with Gmsh and persist the FE mesh.
+
+    Writes two artifacts into the ``.aieng`` package:
+
+    - ``simulation/mesh.inp`` — the CalculiX-format mesh deck (``*NODE`` /
+      ``*ELEMENT``), which lights up the existing mesh-preview, mesh-quality, and
+      mesh-convergence readers (all of which read this path).
+    - ``simulation/mesh/mesh_metadata.json`` — mesh stats + quality verdict, which
+      flips the ``has_mesh`` preflight check (it scans the ``simulation/mesh/``
+      prefix).
+
+    This produces **only the FE mesh** — it does not build NSETs, bind boundary
+    conditions/loads, assemble a solver deck, or run a solver. Those remain the
+    job of the setup/deck/solver tools. Mesh size is taken from the ``mesh_size_mm``
+    argument, else the package's configured target size, else a 2.5 mm default.
+
+    Returns a status dict. Degrades honestly: ``tools_unavailable`` when Gmsh is
+    not importable, ``no_geometry`` when the package has no STEP, ``mesh_failed``
+    when Gmsh raises (e.g. non-manifold / no 3D volume).
+    """
+    package_path = Path(package_path)
+    if not package_path.exists():
+        return {"status": "error", "code": "file_not_found",
+                "message": f"Package not found: {package_path}"}
+
+    if not _gmsh_available():
+        return {
+            "status": "tools_unavailable",
+            "missing_tools": ["gmsh"],
+            "message": "Gmsh is not importable in this environment; cannot mesh.",
+        }
+
+    size = float(
+        mesh_size_mm
+        if mesh_size_mm is not None
+        else (_read_mesh_target_size_mm(package_path) or 2.5)
+    )
+    if size <= 0:
+        return {"status": "error", "code": "bad_input",
+                "message": f"mesh_size_mm must be positive, got {size}"}
+
+    with tempfile.TemporaryDirectory(prefix="aieng_generate_mesh_") as tmp_str:
+        work = Path(tmp_str)
+        step_path = _extract_step(package_path, work)
+        if step_path is None:
+            return {
+                "status": "no_geometry",
+                "message": "No STEP geometry found in package — run CAD generation first.",
+            }
+
+        try:
+            mesh_inp = _mesh_with_gmsh(step_path, work, size)
+        except Exception as exc:  # noqa: BLE001 — surface the mesher error honestly
+            return {
+                "status": "mesh_failed",
+                "code": "gmsh_error",
+                "message": f"Gmsh meshing failed: {exc}",
+                "target_size_mm": size,
+            }
+
+        mesh_bytes = mesh_inp.read_bytes()
+        nodes = _parse_inp_nodes(mesh_inp)
+        elements = _parse_inp_elements(mesh_inp)
+
+    quality = compute_mesh_quality(nodes, elements)
+    element_type = elements[0]["type"] if elements else None
+    node_count = len(nodes)
+    element_count = len(elements)
+
+    if node_count == 0 or element_count == 0:
+        return {
+            "status": "mesh_failed",
+            "code": "empty_mesh",
+            "message": "Gmsh produced no solid elements for this geometry.",
+            "target_size_mm": size,
+        }
+
+    metadata = {
+        "schema_version": "0.1",
+        "generator": "gmsh",
+        "element_type": element_type,
+        "node_count": node_count,
+        "element_count": element_count,
+        "target_size_mm": size,
+        "min_size_mm": size / 4.0,
+        "algorithm_3d": "frontal_delaunay",
+        "quality": quality,
+    }
+
+    _write_members_to_package(
+        package_path,
+        {
+            "simulation/mesh.inp": mesh_bytes,
+            "simulation/mesh/mesh_metadata.json": json.dumps(metadata, indent=2).encode(),
+        },
+    )
+
+    return {
+        "status": "success",
+        "node_count": node_count,
+        "element_count": element_count,
+        "element_type": element_type,
+        "target_size_mm": size,
+        "quality_verdict": quality.get("verdict"),
+        "quality": quality,
+        "written_artifacts": [
+            "simulation/mesh.inp",
+            "simulation/mesh/mesh_metadata.json",
+        ],
+    }
 
 
 _VERDICT_RANK = {"unknown": 0, "ok": 1, "warning": 2, "fail": 3}
