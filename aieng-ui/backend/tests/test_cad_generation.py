@@ -269,6 +269,59 @@ def test_feature_graph_excludes_adjacency_free_fillets_from_hole_pattern() -> No
     assert {"face_hole_1", "face_hole_2"} <= hole_faces
 
 
+def test_tapped_hole_surfaces_thread_and_critique_skips_standard_drill_advice() -> None:
+    """A blind tap-drill hole (Ø6.8 = M8) must surface as a `thread` feature at runtime
+    so cad.critique recognizes it as tapped and does NOT advise rounding it to a standard
+    drill — which would destroy the thread. Dogfood finding (runtime under-surfaced #297
+    thread recognition, defeating the #323 thread-aware critique)."""
+    from app.cad_generation import _topology_to_feature_graph
+    from aieng.converters.critique_engine import critique_geometry
+
+    topo = {
+        "entities": [
+            {"id": "body_001", "type": "solid", "bounding_box": [0, 0, 0, 80, 80, 20], "volume": 120000.0},
+            {"id": "face_base", "type": "face", "surface_type": "plane", "area": 6400.0,
+             "normal": [0, 0, -1], "bounding_box": [0, 0, 0, 80, 80, 0]},
+            # 2 blind tap-drill holes Ø6.8 (M8), cross-section ~ [6.8, 6.8] (= diameter)
+            {"id": "face_tap_1", "type": "face", "surface_type": "cylinder", "radius": 3.4, "axis": [0, 0, 1], "bounding_box": [16.6, 36.6, 6.0, 23.4, 43.4, 20.0]},
+            {"id": "face_tap_2", "type": "face", "surface_type": "cylinder", "radius": 3.4, "axis": [0, 0, 1], "bounding_box": [56.6, 36.6, 6.0, 63.4, 43.4, 20.0]},
+        ]
+    }
+    fg = _topology_to_feature_graph(topo, model_kind="mechanical")
+
+    threads = [f for f in fg["features"] if f["type"] == "thread"]
+    assert threads, "tapped Ø6.8 holes should surface as thread features"
+    thread_faces = {ref for f in threads for ref in f["geometry_refs"]["faces"]}
+    assert {"face_tap_1", "face_tap_2"} & thread_faces
+
+    crit = critique_geometry(topo, fg, mode="engineering", process="cnc")
+    std_hole = [f for f in crit["findings"] if f["rule"] == "standard_hole_size"]
+    assert not any("6.8" in f["observation"] for f in std_hole), std_hole
+
+
+def test_label_heuristic_does_not_classify_machined_feature_as_standard_part() -> None:
+    """A machined feature whose name references a standard part ('bearing_boss',
+    'bearing_seat') HOLDS a standard part — it is not itself off-the-shelf, and its
+    designation must not be scraped from unrelated source text. Dogfood: bearing_boss
+    became a phantom 'bearing M8' in the BOM (M8 leaked from a tap-drill comment)."""
+    from app.cad_generation import _standard_part_metadata_for_body
+
+    src = "BORE = 35\nCAP_TAP_DRILL = 6.8  # M8 tap drill\n"
+    assert _standard_part_metadata_for_body({"name": "bearing_boss"}, src) is None
+    assert _standard_part_metadata_for_body({"name": "bearing_seat_R"}, src) is None
+    assert _standard_part_metadata_for_body({"name": "gear_housing"}, src) is None
+
+    # A genuinely-labeled standard part is still recognized; designation from the NAME.
+    bolt = _standard_part_metadata_for_body({"name": "mounting_bolt_M6"}, src)
+    assert bolt and bolt["canonical_type"] == "bolt"
+    assert bolt.get("designation") == "M6"
+
+    # Designation is not scraped from source for a name that has none.
+    plain = _standard_part_metadata_for_body({"name": "shoulder_bolt"}, src)
+    assert plain and plain["canonical_type"] == "bolt"
+    assert plain.get("designation") in (None, "")
+
+
 def test_feature_graph_surfaces_standard_parts_with_provenance() -> None:
     from app.cad_generation import _named_parts_from_feature_graph, _topology_to_feature_graph
 

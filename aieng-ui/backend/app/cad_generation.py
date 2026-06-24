@@ -1905,8 +1905,22 @@ _STANDARD_PART_SOURCE_HINTS = (
 )
 
 
+# Nouns that mark a MACHINED FEATURE which holds/relates to a standard part rather
+# than being the off-the-shelf part itself (e.g. "bearing_boss", "bearing_seat",
+# "gear_housing"). Matched as whole underscore/space tokens so "mounting_bolt" stays
+# a bolt. These must not collide with the standard-part nouns below.
+_MACHINED_FEATURE_NOUNS = frozenset(
+    {"boss", "seat", "housing", "saddle", "gusset", "web", "carrier", "support", "pad", "lug"}
+)
+
+
 def _canonical_standard_type_from_text(text: str) -> str | None:
     lower = text.lower()
+    # A label naming a machined feature describes geometry that HOLDS a standard part,
+    # not the part itself — do not classify it as a standard part. Token match (not
+    # substring) so e.g. "mounting_bolt_M6" is unaffected.
+    if {tok for tok in re.split(r"[^a-z0-9]+", lower) if tok} & _MACHINED_FEATURE_NOUNS:
+        return None
     checks = (
         ("washer", "washer"),
         ("nut", "nut"),
@@ -1977,7 +1991,12 @@ def _standard_part_metadata_for_body(
     metadata = {
         "standard_part": True,
         "canonical_type": canonical,
-        "designation": _designation_from_text(f"{name} {source_text}"),
+        # Designation comes from the part NAME only — scanning the whole source
+        # scraped unrelated M-numbers from comments (e.g. a tap-drill note) into a
+        # bogus designation. Real standard parts carry explicit metadata (handled
+        # above via _clean_standard_part_metadata). Underscores → spaces so the
+        # word-boundary match fires on names like "mounting_bolt_M6".
+        "designation": _designation_from_text(name.replace("_", " ")),
         "original_label": name,
         "object_label": name,
         "detection_method": "source_and_label_heuristic" if source_known else "label_heuristic",
@@ -2270,6 +2289,32 @@ def _topology_to_feature_graph(
             used_face_ids.update(face_ids)
     except Exception:
         # Best-effort: do not fail CAD execution if heuristic merge fails.
+        pass
+
+    # Threads are ADDITIVE annotations on a tapped hole (a tap-drill diameter): they
+    # reference faces already claimed by a mounting_hole, so they bypass the dedup
+    # guard above and never consume faces. Surfacing them lets cad.critique recognize
+    # the tapped hole and stop advising "round to a standard drill" on a tap-drill
+    # diameter — advice that would destroy the thread (#323). Restricted to recognized
+    # mounting-hole faces so a large bore is never mislabeled a thread. Dogfood finding.
+    try:
+        mounting_hole_faces: set[str] = set()
+        for feature in features:
+            if feature.get("type") in {"mounting_hole", "mounting_hole_pattern"}:
+                refs = feature.get("geometry_refs") or {}
+                if isinstance(refs, dict):
+                    mounting_hole_faces.update(refs.get("faces") or [])
+        for core_feature in core_graph.get("features", []):
+            if core_feature.get("type") != "thread":
+                continue
+            refs = core_feature.get("geometry_refs") or {}
+            face_ids = set(refs.get("faces") or [])
+            if not (face_ids & mounting_hole_faces):
+                continue
+            feat_counter += 1
+            core_feature["id"] = f"feat_{feat_counter:03d}"
+            features.append(core_feature)
+    except Exception:
         pass
 
     feature_graph = {"format_version": "0.1.0", "features": features, "model_kind": resolved_kind}
