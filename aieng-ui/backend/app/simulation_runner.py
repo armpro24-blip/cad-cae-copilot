@@ -701,6 +701,110 @@ def generate_mesh_for_package(
     }
 
 
+# ── Source solver deck synthesis (close the decoupled MCP solve loop) ─────────
+#
+# The staged MCP path (cae.generate_solver_input -> cae.run_solver) assembles its
+# deck from simulation/cae_imports/source_solver_deck.inp, binding loads/BCs to
+# NSETs *by name* (the cae_mapping cae_entity). A bare Gmsh mesh names surfaces
+# SURF{tag}, not the cae_entity NSETs, so an imported source deck was required and
+# a freshly-meshed model could not solve via MCP. These helpers synthesize that
+# source deck from simulation/mesh.inp + topology + cae_mapping, using the same
+# geometric face->node binding (_build_nsets) the legacy one-shot path uses.
+
+SOURCE_SOLVER_DECK_PATH = "simulation/cae_imports/source_solver_deck.inp"
+
+
+def build_source_deck_from_mesh(
+    mesh_text: str,
+    setup: dict[str, Any],
+    nsets: dict[str, list[int]],
+) -> tuple[str, list[str]]:
+    """Build a CalculiX source deck: mesh + *SOLID SECTION + named *NSETs.
+
+    This is the mesh-and-sets half of a deck — materials, BCs, loads, and the
+    analysis step are added later by ``aieng.simulation.deck_generator``. The
+    NSETs are named per ``cae_mapping`` cae_entity so the deck generator's
+    BC/load ``target`` references resolve. Returns ``(deck_text, empty_nsets)``
+    where ``empty_nsets`` lists cae_entities that caught no mesh nodes (so the
+    caller can warn honestly instead of emitting a dangling NSET reference).
+    """
+    lines: list[str] = []
+    # Preserve the mesh verbatim (Gmsh writes *NODE / *ELEMENT / *ELSET incl. EALL).
+    # Defensive stop if the mesh source somehow carried solver sections.
+    for line in mesh_text.splitlines():
+        up = line.strip().upper()
+        if up.startswith("*MATERIAL") or up.startswith("*BOUNDARY") or up.startswith("*STEP"):
+            break
+        lines.append(line)
+
+    # Assign the volume element set (EALL, from _mesh_with_gmsh's physical group)
+    # a solid section so the elements carry a material. Use the raw setup material
+    # name so it matches the deck generator's *MATERIAL block (avoids a rename).
+    mat_name = setup.get("material_name") or next(
+        iter((setup.get("materials") or {}).keys()), "AIENG_MATERIAL"
+    )
+    lines.append(f"*SOLID SECTION, ELSET=EALL, MATERIAL={mat_name}")
+
+    empty_nsets: list[str] = []
+    for nset_name, node_ids in nsets.items():
+        if not node_ids:
+            empty_nsets.append(nset_name)
+            continue
+        lines.append(f"*NSET, NSET={nset_name}")
+        for i in range(0, len(node_ids), 16):
+            lines.append(", ".join(str(n) for n in node_ids[i : i + 16]))
+
+    return "\n".join(lines) + "\n", empty_nsets
+
+
+def ensure_source_deck_from_mesh(package_path: Path) -> dict[str, Any]:
+    """Synthesize ``source_solver_deck.inp`` from a persisted mesh when absent.
+
+    No-op (``status=exists``) when a source deck is already present — an
+    explicitly imported deck always wins. Returns ``status=no_mesh`` when there is
+    no ``simulation/mesh.inp`` to build from. On success writes the source deck and
+    returns the NSET names it bound (and any that caught no nodes). Never runs a
+    solver; safe to call before ``cae.generate_solver_input``.
+    """
+    package_path = Path(package_path)
+    if _read_member(package_path, SOURCE_SOLVER_DECK_PATH):
+        return {"created": False, "status": "exists"}
+
+    mesh_bytes = _read_member(package_path, "simulation/mesh.inp")
+    if not mesh_bytes:
+        return {"created": False, "status": "no_mesh"}
+
+    setup_raw = _read_member(package_path, "simulation/setup.yaml")
+    setup = (yaml.safe_load(setup_raw) or {}) if setup_raw else {}
+    cae_raw = _read_member(package_path, "simulation/cae_mapping.json")
+    cae_mapping: dict[str, Any] = json.loads(cae_raw) if cae_raw else {"mappings": []}
+    topo_raw = _read_member(package_path, "geometry/topology_map.json")
+    topology: dict[str, Any] = json.loads(topo_raw) if topo_raw else {}
+
+    with tempfile.TemporaryDirectory(prefix="aieng_source_deck_") as tmp_str:
+        mesh_path = Path(tmp_str) / "mesh.inp"
+        mesh_path.write_bytes(mesh_bytes)
+        nodes = _parse_inp_nodes(mesh_path)
+
+    nsets = (
+        _build_nsets(nodes, topology, cae_mapping)
+        if cae_mapping.get("mappings")
+        else {}
+    )
+    deck_text, empty_nsets = build_source_deck_from_mesh(
+        mesh_bytes.decode(errors="replace"), setup, nsets
+    )
+    _write_members_to_package(package_path, {SOURCE_SOLVER_DECK_PATH: deck_text.encode()})
+
+    return {
+        "created": True,
+        "status": "synthesized",
+        "source_deck_path": SOURCE_SOLVER_DECK_PATH,
+        "nset_names": [n for n in nsets if nsets[n]],
+        "empty_nsets": empty_nsets,
+    }
+
+
 _VERDICT_RANK = {"unknown": 0, "ok": 1, "warning": 2, "fail": 3}
 
 

@@ -729,6 +729,18 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 "message": f"Package not found: {package_path_str}",
             }
 
+        # Close the decoupled solve loop: if the package has a Gmsh mesh
+        # (simulation/mesh.inp, e.g. from cae.generate_mesh) but no imported
+        # source solver deck, synthesize one (mesh + *SOLID SECTION + named NSETs)
+        # so the deck generator can bind loads/BCs. An imported deck always wins.
+        source_deck_synthesis: dict[str, Any] | None = None
+        try:
+            from .. import simulation_runner
+
+            source_deck_synthesis = simulation_runner.ensure_source_deck_from_mesh(package_path)
+        except Exception as exc:  # noqa: BLE001 — best-effort; deck gen reports the real gap
+            source_deck_synthesis = {"created": False, "status": "error", "message": str(exc)}
+
         try:
             result = aieng_bridge.generate_solver_input(
                 package_path,
@@ -744,6 +756,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 "code": "missing_setup",
                 "message": str(exc),
                 "missing_items": getattr(exc, "missing_items", []),
+                "source_deck_synthesis": source_deck_synthesis,
             }
         except RuntimeError as exc:
             return {
@@ -752,6 +765,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 "status": "error",
                 "code": "generation_failed",
                 "message": str(exc),
+                "source_deck_synthesis": source_deck_synthesis,
             }
 
         return {
@@ -761,6 +775,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             "package_path": str(package_path),
             "out_path": result.get("out_path"),
             "warnings": result.get("warnings", []),
+            "source_deck_synthesis": source_deck_synthesis,
             "artifacts": [
                 {
                     "path": result.get("out_path", ""),

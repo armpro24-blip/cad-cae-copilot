@@ -1348,6 +1348,127 @@ def test_cae_generate_mesh_tool_meshes_via_invoke(tmp_path: Path) -> None:
         assert "simulation/mesh/mesh_metadata.json" in names
 
 
+# ── source solver deck synthesis (close the decoupled MCP solve loop) ─────────
+
+def test_build_source_deck_from_mesh_structure() -> None:
+    from app.simulation_runner import build_source_deck_from_mesh
+
+    nsets = {"FEAT_HOLE_001": [5], "FEAT_BASE_001_L": [4], "EMPTY_SET": []}
+    deck, empty = build_source_deck_from_mesh(_MINIMAL_MESH_INP, _SETUP_YAML, nsets)
+
+    # Mesh preserved + a solid section assigned to the volume element set.
+    assert "*NODE" in deck.upper()
+    assert "*ELEMENT" in deck.upper()
+    assert "*SOLID SECTION, ELSET=EALL, MATERIAL=Al6061-T6" in deck
+    # NSETs named per cae_entity so the deck generator's BC/load targets resolve.
+    assert "*NSET, NSET=FEAT_HOLE_001" in deck
+    assert "*NSET, NSET=FEAT_BASE_001_L" in deck
+    # Empty sets are reported, never emitted as a dangling NSET reference.
+    assert "*NSET, NSET=EMPTY_SET" not in deck
+    assert empty == ["EMPTY_SET"]
+
+
+def _build_meshed_setup_package(pkg_path: Path) -> None:
+    """A package with a mesh + setup + cae_mapping but NO imported source deck."""
+    pkg_path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(pkg_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("manifest.json", json.dumps({"schema_version": "0.1", "model_id": "src-deck-test"}))
+        zf.writestr("geometry/topology_map.json", json.dumps(_TOPOLOGY))
+        zf.writestr("geometry/generated.step", _FAKE_STEP)
+        zf.writestr("simulation/setup.yaml", yaml.dump(_SETUP_YAML))
+        zf.writestr("simulation/cae_mapping.json", json.dumps(_CAE_MAPPING))
+        zf.writestr("simulation/mesh.inp", _MINIMAL_MESH_INP)
+
+
+def test_ensure_source_deck_from_mesh_synthesizes_and_is_idempotent(tmp_path: Path) -> None:
+    from app.simulation_runner import ensure_source_deck_from_mesh, SOURCE_SOLVER_DECK_PATH, _read_member
+
+    pkg = tmp_path / "meshed.aieng"
+    _build_meshed_setup_package(pkg)
+
+    result = ensure_source_deck_from_mesh(pkg)
+    assert result["created"] is True
+    assert result["status"] == "synthesized"
+    # node 5 -> cylinder face_003 (FEAT_HOLE_001); node 4 -> top face_002 (FEAT_BASE_001_L)
+    assert set(result["nset_names"]) == {"FEAT_HOLE_001", "FEAT_BASE_001_L"}
+
+    deck_bytes = _read_member(pkg, SOURCE_SOLVER_DECK_PATH)
+    assert deck_bytes is not None
+    assert b"*NSET, NSET=FEAT_HOLE_001" in deck_bytes
+
+    # Idempotent: an existing (or imported) source deck is never overwritten.
+    again = ensure_source_deck_from_mesh(pkg)
+    assert again["created"] is False
+    assert again["status"] == "exists"
+
+
+def test_ensure_source_deck_from_mesh_no_mesh(tmp_path: Path) -> None:
+    from app.simulation_runner import ensure_source_deck_from_mesh
+
+    pkg = tmp_path / "nomesh.aieng"
+    pkg.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(pkg, "w") as zf:
+        zf.writestr("manifest.json", "{}")
+    result = ensure_source_deck_from_mesh(pkg)
+    assert result["created"] is False
+    assert result["status"] == "no_mesh"
+
+
+def test_generate_solver_input_consumes_synthesized_source_deck(tmp_path: Path) -> None:
+    """End-to-end (no ccx): a meshed+setup package with no imported source deck
+    now produces a runnable solver input deck via the staged MCP path, because
+    cae.generate_solver_input synthesizes the source deck from the mesh first."""
+    from app import aieng_bridge, simulation_runner
+    from app.simulation_runner import _read_member
+
+    pkg = tmp_path / "loop.aieng"
+    _build_meshed_setup_package(pkg)
+
+    synth = simulation_runner.ensure_source_deck_from_mesh(pkg)
+    assert synth["created"] is True
+
+    result = aieng_bridge.generate_solver_input(
+        pkg, aieng_root=_WORKSPACE_ROOT / "aieng", run_id="run_001", overwrite=True
+    )
+    assert result["status"] == "ok"
+    assert result["out_path"] == "simulation/runs/run_001/solver_input.inp"
+
+    # The assembled deck binds the BC to the synthesized NSET name + has a step.
+    deck = _read_member(pkg, "simulation/runs/run_001/solver_input.inp")
+    assert deck is not None
+    text = deck.decode(errors="replace")
+    assert "FEAT_HOLE_001" in text   # fixed-support BC target NSET
+    assert "*STEP" in text
+    assert "*STATIC" in text
+
+
+def test_cae_generate_solver_input_synthesizes_source_deck_via_invoke(tmp_path: Path) -> None:
+    """Handler wiring: cae.generate_solver_input synthesizes the source deck from a
+    persisted mesh, so a meshed+setup project produces a deck via MCP with no
+    externally-imported source deck."""
+    settings = _make_settings(tmp_path)
+    app = create_app(settings)
+    client = TestClient(app, raise_server_exceptions=True)
+
+    project_id, pkg_path = _make_project(settings, "gen-input", "gen_input.aieng")
+    _build_meshed_setup_package(pkg_path)
+
+    resp = client.post(
+        "/api/agent/invoke-tool",
+        json={"tool": "cae.generate_solver_input", "input": {"project_id": project_id, "overwrite": True}},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data.get("ok") is True, data
+    assert data["status"] == "completed"
+    assert data["source_deck_synthesis"]["created"] is True
+    assert data["out_path"] == "simulation/runs/run_001/solver_input.inp"
+
+    with zipfile.ZipFile(pkg_path, "r") as zf:
+        assert "simulation/cae_imports/source_solver_deck.inp" in zf.namelist()
+        assert "simulation/runs/run_001/solver_input.inp" in zf.namelist()
+
+
 def test_solve_package_static_refuses_rebind_when_ambiguous(tmp_path: Path) -> None:
     from app.simulation_runner import solve_package_static
 
