@@ -191,6 +191,30 @@ def test_static_step_block_unchanged(tmp_path: Path) -> None:
     assert "*FREQUENCY" not in deck and "*BUCKLE" not in deck
 
 
+def test_cload_distributes_total_force_across_nset_nodes(tmp_path: Path) -> None:
+    """A load value is the TOTAL force on its node set. The N_LOAD set has 2 nodes
+    and the load is 1000 N, so the per-node *CLOAD must be 500 (1000/2) — not 1000
+    applied to every node (which would be a 2x over-load)."""
+    pkg = _write_package(
+        tmp_path / "cload.aieng",
+        setup=_SETUP_WITH_FEATURE_REFS,
+        cae_mapping=_CAE_MAPPING_WITH_FEATURES,
+    )
+    generate_solver_input_package(pkg, run_id="run_cload")
+    deck = _read_deck(pkg, "run_cload")
+
+    cload_lines = [
+        ln.strip() for ln in deck.splitlines()
+        if ln.strip().startswith("N_LOAD,")
+    ]
+    assert cload_lines, f"expected an N_LOAD *CLOAD line; deck:\n{deck}"
+    # dof 2 (direction [0,-1,0]); per-node = 1000 / 2 nodes = 500.
+    parts = [p.strip() for p in cload_lines[0].split(",")]
+    assert parts[0] == "N_LOAD"
+    assert parts[1] == "2"
+    assert abs(float(parts[2]) - 500.0) < 1e-3, cload_lines[0]
+
+
 def test_modal_step_block_emits_frequency_and_no_load_required(tmp_path: Path) -> None:
     """A modal analysis needs no loads: *FREQUENCY + N modes, no *STATIC/*CLOAD."""
     setup = {

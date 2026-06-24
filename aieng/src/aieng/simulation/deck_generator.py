@@ -393,6 +393,33 @@ def _primary_dof_from_direction(direction: Any) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _count_nset_nodes(source_deck_text: str) -> dict[str, int]:
+    """Count the nodes in each ``*NSET`` defined in the (source) deck.
+
+    A concentrated ``*CLOAD`` applied to an NSET is applied by CalculiX to EVERY
+    node in that set, so to represent a *total* force on a face the per-node value
+    must be ``total / n_nodes``. These counts let the step builder do that
+    division. Tolerant of comma- or space-attached headers (``*NSET, NSET=X`` and
+    ``*NSET,NSET=X``).
+    """
+    counts: dict[str, int] = {}
+    current: str | None = None
+    for raw in source_deck_text.splitlines():
+        stripped = raw.strip()
+        upper = stripped.upper()
+        if upper.startswith("*"):
+            current = None
+            if upper.split(",")[0].split()[0] == "*NSET":
+                for token in stripped.replace(" ", "").split(","):
+                    if token.upper().startswith("NSET="):
+                        current = token.split("=", 1)[1]
+                        counts.setdefault(current, 0)
+            continue
+        if current and stripped and not stripped.startswith("**"):
+            counts[current] += sum(1 for p in stripped.split(",") if p.strip())
+    return counts
+
+
 def _extract_solid_section_materials(source_deck_text: str) -> set[str]:
     """Extract material names referenced by *SOLID SECTION in the source deck."""
     materials: set[str] = set()
@@ -512,7 +539,8 @@ def _assemble_deck(
     # ---- Step (analysis-type-specific; CalculiX *CLOAD is step-dependent, so
     #      loads are emitted inside the step here, not before it) ----
     lines.append(f"** --- Step ({analysis_type}) ---")
-    lines += _step_block(analysis_type, solver_settings, loads, warnings)
+    nset_counts = _count_nset_nodes(source_deck_text or "")
+    lines += _step_block(analysis_type, solver_settings, loads, warnings, nset_counts)
 
     return "\n".join(lines) + "\n"
 
@@ -613,6 +641,7 @@ def _step_block(
     solver_settings: dict[str, Any] | None,
     loads: list[dict[str, Any]],
     warnings: list[str],
+    nset_counts: dict[str, int] | None = None,
 ) -> list[str]:
     """Build the analysis-type-specific *STEP block.
 
@@ -621,14 +650,33 @@ def _step_block(
     - static: `*STATIC` + loads + U/S output.
     - modal:  `*FREQUENCY` + N eigenvalues + mode-shape (U) output; loads ignored.
     - buckling: `*BUCKLE` + N factors + the reference load + U output.
+
+    A load's ``value`` is the intended TOTAL force on its target node set. Because
+    a ``*CLOAD`` on an NSET is applied by CalculiX to every node in the set, the
+    emitted per-node value is ``total / n_nodes`` (``nset_counts``). When the node
+    count is unknown the total is emitted unchanged and a warning is recorded, so
+    the load is never silently dropped.
     """
     ss = solver_settings if isinstance(solver_settings, dict) else {}
     step_name = _resolve_step_name(solver_settings)
+    counts = nset_counts or {}
 
     def _cload_lines() -> list[str]:
         out = ["*CLOAD"]
         for load in loads:
-            out.append(f"{load.get('target', 'unknown')}, {load.get('dof', 2)}, {load.get('value', 0.0)}")
+            target = load.get("target", "unknown")
+            total = float(load.get("value", 0.0) or 0.0)
+            n_nodes = counts.get(target, 0)
+            if n_nodes > 0:
+                per_node = total / n_nodes
+            else:
+                per_node = total
+                warnings.append(
+                    f"Load on '{target}': node count unknown, applying the value "
+                    f"per node (CalculiX *CLOAD semantics) instead of distributing "
+                    f"a total force — verify the resulting magnitude."
+                )
+            out.append(f"{target}, {load.get('dof', 2)}, {per_node:.6f}")
         return out
 
     def _int_setting(*keys: str, default: int, lo: int, hi: int) -> int:
