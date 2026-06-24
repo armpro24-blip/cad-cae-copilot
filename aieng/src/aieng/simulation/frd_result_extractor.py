@@ -34,6 +34,24 @@ _BINARY_FRD_UNSUPPORTED = (
 # FRD parser
 # ---------------------------------------------------------------------------
 
+def _detect_frd_layout(lines: list[str]) -> tuple[int, int]:
+    """Detect the FRD record key/node field widths from the first tag line.
+
+    Returns ``(key_width, node_width)``. Standard CalculiX output leads each
+    record with a single space + 2-char key (" -4", key_width=3) and an I10 node
+    field (node_width=10); a wider dialect uses key_width=6 / node_width=12.
+    Defaults to the wide layout when no tag line is found.
+    """
+    for line in lines:
+        stripped = line.lstrip()
+        if stripped[:2] in ("-1", "-2", "-3", "-4", "-5"):
+            lead = len(line) - len(stripped)
+            key_width = lead + 2
+            node_width = 12 if key_width >= 6 else 10
+            return key_width, node_width
+    return 6, 12
+
+
 def _parse_frd_text(text: str) -> list[dict[str, Any]]:
     """Parse FRD text and return a flat list of datasets in file order.
 
@@ -48,13 +66,23 @@ def _parse_frd_text(text: str) -> list[dict[str, Any]]:
     i = 0
     field_occurrence: dict[str, int] = {}
 
+    # FRD record layout differs between CalculiX output dialects: standard ccx
+    # writes a 1-space-led key (" -4"/" -1") with an I10 node field
+    # (key_width=3, node_width=10, values from col 13), while some exports use a
+    # wider key (key_width=6, node_width=12, values from col 18). Detect the
+    # widths once so both parse correctly.
+    key_width, node_width = _detect_frd_layout(lines)
+    value_start = key_width + node_width
+
+    def _key(text_line: str) -> str:
+        return text_line[:key_width].strip()
+
     while i < len(lines):
         line = lines[i]
-        tag = line[:6] if len(line) >= 6 else ""
 
-        if tag == "    -4":
-            # Field header: "    -4  FIELDNAME  n_components  ..."
-            parts = line[6:].split()
+        if _key(line) == "-4":
+            # Field header: "<key>  FIELDNAME  n_components  ..."
+            parts = line[key_width:].split()
             if not parts:
                 i += 1
                 continue
@@ -67,8 +95,8 @@ def _parse_frd_text(text: str) -> list[dict[str, Any]]:
             # Read component names from consecutive -5 lines
             i += 1
             component_names: list[str] = []
-            while i < len(lines) and lines[i][:6] == "    -5":
-                cparts = lines[i][6:].split()
+            while i < len(lines) and _key(lines[i]) == "-5":
+                cparts = lines[i][key_width:].split()
                 component_names.append(cparts[0].upper() if cparts else "")
                 i += 1
 
@@ -78,27 +106,27 @@ def _parse_frd_text(text: str) -> list[dict[str, Any]]:
 
             while i < len(lines):
                 ln = lines[i]
-                t = ln[:6] if len(ln) >= 6 else ""
+                t = _key(ln)
 
-                if t == "    -3":
+                if t == "-3":
                     i += 1
                     break
 
-                if t == "    -1":
+                if t == "-1":
                     try:
-                        current_node_id = int(ln[6:18])
+                        current_node_id = int(ln[key_width:value_start])
                     except (ValueError, IndexError):
                         i += 1
                         continue
-                    node_data[current_node_id] = _slice_values(ln, 18, n_components)
+                    node_data[current_node_id] = _slice_values(ln, value_start, n_components)
 
-                elif t == "    -2" and current_node_id is not None:
-                    # Continuation line for the same node; -2 lines also have a
-                    # 12-char node-ID field at [6:18], then more values.
+                elif t == "-2" and current_node_id is not None:
+                    # Continuation line for the same node; -2 lines also carry the
+                    # node-ID field before the extra values.
                     already = len(node_data.get(current_node_id, []))
                     remaining = n_components - already
                     if remaining > 0:
-                        more = _slice_values(ln, 18, remaining)
+                        more = _slice_values(ln, value_start, remaining)
                         node_data.setdefault(current_node_id, []).extend(more)
 
                 i += 1
@@ -321,7 +349,8 @@ def extract_computed_metrics(
     """
     fields = parse_frd_steps(frd_path)
     disp_steps = fields.get("DISP", [])
-    stress_steps = fields.get("S", [])
+    # CalculiX names the stress field "STRESS"; some exports use "S". Accept both.
+    stress_steps = fields.get("S") or fields.get("STRESS") or []
     n_steps = max(len(disp_steps), len(stress_steps), 1)
 
     warnings: list[str] = []

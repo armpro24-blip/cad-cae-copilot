@@ -247,6 +247,57 @@ class TestParseFrd:
 # extract_computed_metrics
 # ---------------------------------------------------------------------------
 
+def _ccx_node_line(node_id: int, values: list[float]) -> str:
+    """A node-data line in standard CalculiX layout: ' -1' + I10 node + E12.5 values."""
+    return " -1" + f"{node_id:10d}" + "".join(f"{v:12.5E}" for v in values)
+
+
+def _make_ccx_frd(disp_nodes, stress_nodes) -> str:
+    """Build an FRD in the layout real CalculiX (2.x) emits: a single leading
+    space + 2-char key (key_width=3), an I10 node field, and the stress field
+    named 'STRESS' (not 'S')."""
+    lines = ["    1C", "    1UCUT"]
+    if disp_nodes is not None:
+        lines += [" -4  DISP        4    1", " -5  D1          1    2    1    0",
+                  " -5  D2          1    2    2    0", " -5  D3          1    2    3    0",
+                  " -5  ALL         1    2    0    1"]
+        lines += [_ccx_node_line(n, v) for n, v in disp_nodes.items()]
+        lines.append(" -3")
+    if stress_nodes is not None:
+        lines += [" -4  STRESS      6    1", " -5  SXX         1    4    1    1",
+                  " -5  SYY         1    4    2    1", " -5  SZZ         1    4    3    1",
+                  " -5  SXY         1    4    4    1", " -5  SXZ         1    4    5    1",
+                  " -5  SYZ         1    4    6    1"]
+        lines += [_ccx_node_line(n, v) for n, v in stress_nodes.items()]
+        lines.append(" -3")
+    lines.append(" 9999")
+    return "\n".join(lines) + "\n"
+
+
+class TestCalculiXStandardFrdLayout:
+    """Regression: real CalculiX FRD uses a 1-space key (key_width=3), I10 node,
+    and names the stress field 'STRESS'. The parser previously hard-coded the
+    wide layout (key_width=6) + field name 'S', so it silently extracted nothing
+    from real ccx output."""
+
+    def test_disp_and_stress_extracted_from_ccx_layout(self, tmp_path: Path) -> None:
+        disp = {1: [0.0, 0.0, 0.0, 0.0], 2: [3.0, 4.0, 0.0, 5.0]}  # max |U| = 5.0
+        stress = {1: [100.0, 50.0, 30.0, 20.0, 10.0, 5.0], 2: [0.0] * 6}
+        frd = _write_frd(tmp_path, _make_ccx_frd(disp, stress))
+        result = extract_computed_metrics(frd)
+        lc = result["load_cases"][0]
+        assert abs(lc["metrics"]["max_displacement"]["value"] - 5.0) < 1e-4
+        expected_vm = _vm(100.0, 50.0, 30.0, 20.0, 10.0, 5.0)
+        assert abs(lc["metrics"]["max_von_mises_stress"]["value"] - expected_vm) < 1e-2
+        assert not any("not found" in w for w in result.get("warnings", []))
+
+    def test_ccx_layout_parses_node_values(self, tmp_path: Path) -> None:
+        frd = _write_frd(tmp_path, _make_ccx_frd({7: [1.5, 0.0, 0.0, 1.5]}, None))
+        fields = parse_frd(frd)
+        assert "DISP" in fields
+        assert abs(fields["DISP"]["node_data"][7][0] - 1.5) < 1e-5
+
+
 class TestExtractComputedMetrics:
     def test_max_displacement_from_all_component(self, tmp_path: Path) -> None:
         disp = {
