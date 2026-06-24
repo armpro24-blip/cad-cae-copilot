@@ -1142,13 +1142,17 @@ def _build_calculix_deck(
     """Build the full CalculiX input deck from the Gmsh mesh + AI preprocessing output."""
     lines: list[str] = []
 
-    # ── Keep mesh sections from Gmsh verbatim (nodes + elements + elsets) ──
-    # Stop if Gmsh somehow wrote material/BC/step sections (shouldn't happen).
-    for line in mesh_inp_text.splitlines():
-        up = line.strip().upper()
-        if up.startswith("*MATERIAL") or up.startswith("*BOUNDARY") or up.startswith("*STEP"):
-            break
-        lines.append(line)
+    # ── Mesh section: solid-only, under a canonical EALL element set ──────────
+    # Gmsh emits 2D surface elements (CPS3) for its surface groups alongside the
+    # C3D solids; mixing 2D + 3D makes ccx abort ("*ERROR in gen3delem"). Keep
+    # only the volume elements (same fix as build_source_deck_from_mesh) so the
+    # sizing-sweep / mesh-convergence solver paths run against real CalculiX.
+    node_lines, solid_blocks = _filter_mesh_to_solid(mesh_inp_text)
+    lines.append("*NODE")
+    lines.extend(node_lines)
+    for element_type, data_lines in solid_blocks:
+        lines.append(f"*ELEMENT, TYPE={element_type}, ELSET=EALL")
+        lines.extend(data_lines)
 
     # ── NALL / NSET definitions ──────────────────────────────────────────────
     if nsets:

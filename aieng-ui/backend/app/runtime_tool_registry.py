@@ -100,9 +100,8 @@ def resolve_ccx_command() -> tuple[list[str] | None, str]:
             )
         return None, (
             f"AIENG_CCX_CMD launcher {launcher!r} is not resolvable in the backend "
-            f"process. Set AIENG_CCX_CMD to the absolute ccx executable path "
-            f"(most reliable on Windows), or ensure {launcher!r} is on PATH / its "
-            f"launcher env var is set in the shell that starts the backend."
+            f"process. Ensure {launcher!r} is on PATH / its launcher env var "
+            f"(e.g. CONDA_EXE) is set in the shell that starts the backend."
         )
     for candidate in ("ccx", "ccx_linux", "ccx2.21", "ccx_static"):
         path = shutil.which(candidate)
@@ -110,7 +109,9 @@ def resolve_ccx_command() -> tuple[list[str] | None, str]:
             return [path], f"found {candidate!r} on PATH"
     return None, (
         "AIENG_CCX_CMD is not set and no ccx executable was found on PATH. "
-        "Install CalculiX and set AIENG_CCX_CMD (absolute ccx path recommended)."
+        "Install CalculiX and set AIENG_CCX_CMD — on Windows + conda the most "
+        "reliable form is 'conda run -n calculix-env ccx' (a bare ccx.exe path "
+        "can crash on missing runtime DLLs)."
     )
 
 

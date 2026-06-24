@@ -401,6 +401,22 @@ def test_build_calculix_deck_no_bc_when_nset_empty() -> None:
     assert load_count == 0
 
 
+def test_build_calculix_deck_is_solid_only() -> None:
+    """The legacy deck builder must also drop Gmsh's 2D surface elements — mixing
+    CPS3 with C3D4 aborts ccx (gen3delem), which would crash opt.sizing_sweep /
+    cae.mesh_convergence on real CalculiX. (_MIXED_GMSH_MESH_INP defined below.)"""
+    from app.simulation_runner import _build_calculix_deck
+
+    nsets = {"FEAT_HOLE_001": [1, 2]}
+    deck, _, _ = _build_calculix_deck(_MIXED_GMSH_MESH_INP, _SETUP_YAML, nsets, _CAE_MAPPING)
+
+    assert "CPS3" not in deck.upper()
+    assert "2, 1, 2, 3" not in deck                      # surface element dropped
+    assert "*ELEMENT, TYPE=C3D4, ELSET=EALL" in deck     # solid under canonical EALL
+    assert "1, 1, 2, 3, 4" in deck                       # volume element kept
+    assert "*SOLID SECTION, ELSET=EALL" in deck
+
+
 # ── endpoint: requires confirmed=true ─────────────────────────────────────────
 
 def test_run_simulation_requires_confirmed(tmp_path: Path) -> None:
