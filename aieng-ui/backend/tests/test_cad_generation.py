@@ -48,7 +48,7 @@ def _load_topology_map(settings: Settings, project_id: str) -> dict:
         return json.loads(zf.read("geometry/topology_map.json"))
 
 
-# ── sample topology ───────────────────────────────────────────────────────────
+# -- sample topology -----------------------------------------------------------
 
 _SAMPLE_TOPOLOGY: dict = {
     "format_version": "0.1",
@@ -124,7 +124,7 @@ result = bp.part
 """
 
 
-# ── _coerce_code ──────────────────────────────────────────────────────────────
+# -- _coerce_code --------------------------------------------------------------
 
 def test_coerce_code_strips_python_fence() -> None:
     from app.cad_generation import _coerce_code
@@ -147,7 +147,7 @@ def test_coerce_code_plain_text_unchanged() -> None:
     assert _coerce_code(raw) == raw
 
 
-# ── _topology_to_feature_graph ────────────────────────────────────────────────
+# -- _topology_to_feature_graph ------------------------------------------------
 
 def test_feature_graph_detects_bolt_pattern() -> None:
     from app.cad_generation import _topology_to_feature_graph
@@ -232,7 +232,7 @@ def test_feature_graph_excludes_adjacency_free_fillets_from_hole_pattern() -> No
     """Real OCC topology carries NO adjacent_entity_ids and no real_step_parsing flag,
     so the core recognizer's adjacency-gated fillet detector finds nothing. The runtime
     must STILL exclude quarter-round fillet cylinders (cross-section ~1 radius) from the
-    bolt-pattern grouping via the adjacency-free signal — otherwise edge fillets become a
+    bolt-pattern grouping via the adjacency-free signal  otherwise edge fillets become a
     phantom hole pattern. Dogfood regression: #321's fix relied on adjacency the real
     build does not produce.
     """
@@ -269,10 +269,48 @@ def test_feature_graph_excludes_adjacency_free_fillets_from_hole_pattern() -> No
     assert {"face_hole_1", "face_hole_2"} <= hole_faces
 
 
+def test_boss_outer_cylinders_are_not_classified_as_mounting_holes() -> None:
+    """A boss/pin/shaft is a CONVEX cylinder whose body IS that cylinder (the body's
+    cross-section perpendicular to the axis ~ the diameter). Its outer face must not be
+    grouped as a mounting hole  only a concave cylinder cut into a larger body is a
+    hole. Dogfood: an enclosure's 4 D9 bosses became a phantom 4-hole pattern."""
+    from app.cad_generation import _topology_to_feature_graph
+
+    topo = {
+        "entities": [
+            {"id": "body_plate", "type": "solid", "bounding_box": [0, 0, 0, 100, 100, 10], "volume": 100000.0},
+            {"id": "face_base", "type": "face", "surface_type": "plane", "area": 10000.0,
+             "normal": [0, 0, -1], "bounding_box": [0, 0, 0, 100, 100, 0], "body_id": "body_plate"},
+            # 2 real through-holes in the plate: r=4 (D8); body cross (100x100) >> diameter
+            {"id": "face_hole_1", "type": "face", "surface_type": "cylinder", "radius": 4.0, "axis": [0, 0, 1], "bounding_box": [20, 20, 0, 28, 28, 10], "body_id": "body_plate"},
+            {"id": "face_hole_2", "type": "face", "surface_type": "cylinder", "radius": 4.0, "axis": [0, 0, 1], "bounding_box": [72, 20, 0, 80, 28, 10], "body_id": "body_plate"},
+            # 2 bosses: each its own D9 body  outer cylinder r=4.5, body cross ~ 9 (= 2r)
+            {"id": "body_boss_1", "type": "solid", "bounding_box": [30, 60, 10, 39, 69, 40], "volume": 1900.0},
+            {"id": "face_boss_1", "type": "face", "surface_type": "cylinder", "radius": 4.5, "axis": [0, 0, 1], "bounding_box": [30, 60, 10, 39, 69, 40], "body_id": "body_boss_1"},
+            {"id": "body_boss_2", "type": "solid", "bounding_box": [60, 60, 10, 69, 69, 40], "volume": 1900.0},
+            {"id": "face_boss_2", "type": "face", "surface_type": "cylinder", "radius": 4.5, "axis": [0, 0, 1], "bounding_box": [60, 60, 10, 69, 69, 40], "body_id": "body_boss_2"},
+        ]
+    }
+    fg = _topology_to_feature_graph(topo, model_kind="mechanical")
+    boss_faces = {"face_boss_1", "face_boss_2"}
+
+    # A boss outer cylinder must never be grouped as a hole/bore.
+    for feat in fg["features"]:
+        if feat["type"] in {"mounting_hole", "mounting_hole_pattern", "bore"}:
+            assert not (set(feat.get("geometry_refs", {}).get("faces", [])) & boss_faces), feat
+
+    # The genuine plate holes are still recognized.
+    hole_faces: set[str] = set()
+    for feat in fg["features"]:
+        if feat["type"] in {"mounting_hole", "mounting_hole_pattern"}:
+            hole_faces |= set(feat.get("geometry_refs", {}).get("faces", []))
+    assert {"face_hole_1", "face_hole_2"} <= hole_faces
+
+
 def test_tapped_hole_surfaces_thread_and_critique_skips_standard_drill_advice() -> None:
-    """A blind tap-drill hole (Ø6.8 = M8) must surface as a `thread` feature at runtime
+    """A blind tap-drill hole (D6.8 = M8) must surface as a `thread` feature at runtime
     so cad.critique recognizes it as tapped and does NOT advise rounding it to a standard
-    drill — which would destroy the thread. Dogfood finding (runtime under-surfaced #297
+    drill  which would destroy the thread. Dogfood finding (runtime under-surfaced #297
     thread recognition, defeating the #323 thread-aware critique)."""
     from app.cad_generation import _topology_to_feature_graph
     from aieng.converters.critique_engine import critique_geometry
@@ -282,7 +320,7 @@ def test_tapped_hole_surfaces_thread_and_critique_skips_standard_drill_advice() 
             {"id": "body_001", "type": "solid", "bounding_box": [0, 0, 0, 80, 80, 20], "volume": 120000.0},
             {"id": "face_base", "type": "face", "surface_type": "plane", "area": 6400.0,
              "normal": [0, 0, -1], "bounding_box": [0, 0, 0, 80, 80, 0]},
-            # 2 blind tap-drill holes Ø6.8 (M8), cross-section ~ [6.8, 6.8] (= diameter)
+            # 2 blind tap-drill holes D6.8 (M8), cross-section ~ [6.8, 6.8] (= diameter)
             {"id": "face_tap_1", "type": "face", "surface_type": "cylinder", "radius": 3.4, "axis": [0, 0, 1], "bounding_box": [16.6, 36.6, 6.0, 23.4, 43.4, 20.0]},
             {"id": "face_tap_2", "type": "face", "surface_type": "cylinder", "radius": 3.4, "axis": [0, 0, 1], "bounding_box": [56.6, 36.6, 6.0, 63.4, 43.4, 20.0]},
         ]
@@ -290,7 +328,7 @@ def test_tapped_hole_surfaces_thread_and_critique_skips_standard_drill_advice() 
     fg = _topology_to_feature_graph(topo, model_kind="mechanical")
 
     threads = [f for f in fg["features"] if f["type"] == "thread"]
-    assert threads, "tapped Ø6.8 holes should surface as thread features"
+    assert threads, "tapped D6.8 holes should surface as thread features"
     thread_faces = {ref for f in threads for ref in f["geometry_refs"]["faces"]}
     assert {"face_tap_1", "face_tap_2"} & thread_faces
 
@@ -301,7 +339,7 @@ def test_tapped_hole_surfaces_thread_and_critique_skips_standard_drill_advice() 
 
 def test_label_heuristic_does_not_classify_machined_feature_as_standard_part() -> None:
     """A machined feature whose name references a standard part ('bearing_boss',
-    'bearing_seat') HOLDS a standard part — it is not itself off-the-shelf, and its
+    'bearing_seat') HOLDS a standard part  it is not itself off-the-shelf, and its
     designation must not be scraped from unrelated source text. Dogfood: bearing_boss
     became a phantom 'bearing M8' in the BOM (M8 leaked from a tap-drill comment)."""
     from app.cad_generation import _standard_part_metadata_for_body
@@ -454,11 +492,11 @@ def test_feature_graph_two_hole_groups() -> None:
     }
     fg = _topology_to_feature_graph(topo)
     types = [f["type"] for f in fg["features"]]
-    # Both groups have 2 cylinders → both become "mounting_hole"
+    # Both groups have 2 cylinders -> both become "mounting_hole"
     assert types.count("mounting_hole") == 2
 
 
-# ── Build123dBackend.can_generate ─────────────────────────────────────────────
+# -- Build123dBackend.can_generate ---------------------------------------------
 
 def test_build123d_backend_can_generate_true() -> None:
     from app.cad_generation import Build123dBackend
@@ -477,7 +515,7 @@ def test_build123d_backend_cannot_generate_without_build123d() -> None:
         assert backend.can_generate() is False
 
 
-# ── _execute_build123d_code ───────────────────────────────────────────────────
+# -- _execute_build123d_code ---------------------------------------------------
 
 def test_execute_build123d_code_success(tmp_path: Path) -> None:
     from app.cad_generation import _execute_build123d_code
@@ -522,7 +560,7 @@ def test_execute_build123d_code_failure() -> None:
             _execute_build123d_code("Box(10, 10, 10)  # missing result =")
 
 
-# ── CAD execution resource limits + timeout failure mode (#182) ────────────────
+# -- CAD execution resource limits + timeout failure mode (#182) ----------------
 
 def test_resource_limits_from_env_defaults(monkeypatch) -> None:
     from app.cad_generation import (
@@ -704,7 +742,7 @@ def test_execute_build123d_bd_warehouse_clearance_hole_bolt_pattern() -> None:
         "result = Compound(children=[plate] + screws)\n"
     )
     step_bytes, stl_bytes, _glb_bytes, topo, _mesh_meta = _execute_build123d_code(code)
-    # the build succeeds (this is the core #35 regression — no AttributeError)
+    # the build succeeds (this is the core #35 regression  no AttributeError)
     assert step_bytes[:13] == b"ISO-10303-21;"
     assert stl_bytes
     assert isinstance(topo, dict) and topo.get("entities")
@@ -746,7 +784,7 @@ result = body
     assert any("uv_bounds" in face or "proxy_normal" in face for face in freeform_faces)
 
 
-# ── thumbnail rendering ───────────────────────────────────────────────────────
+# -- thumbnail rendering -------------------------------------------------------
 
 def test_render_mesh_thumbnail_returns_png_base64() -> None:
     """A valid ASCII STL renders to a base64-encoded PNG (headless, no GL)."""
@@ -774,7 +812,7 @@ def test_render_mesh_thumbnail_empty_bytes_returns_none() -> None:
     assert render_mesh_thumbnail(b"") is None
 
 
-# ── named parts + append mode (real build123d) ────────────────────────────────
+# -- named parts + append mode (real build123d) --------------------------------
 
 def test_execute_build123d_captures_part_labels(tmp_path: Path) -> None:
     pytest.importorskip("build123d")
@@ -1024,7 +1062,7 @@ def test_execute_build123d_replace_summary_fields(tmp_path: Path) -> None:
     # in a fresh replace, everything is newly added
     assert out["named_parts"] == ["fuselage"]
     assert out["parts_added"] == ["fuselage"]
-    # replace has no "before" model to diff against → no critique_diff
+    # replace has no "before" model to diff against -> no critique_diff
     assert "critique_diff" not in out
 
 
@@ -1074,7 +1112,7 @@ def test_read_cad_source_after_build(tmp_path: Path) -> None:
     assert out["named_parts"] == ["fuselage"]
 
 
-# ── endpoint integration tests ────────────────────────────────────────────────
+# -- endpoint integration tests ------------------------------------------------
 
 def test_generate_cad_endpoint_missing_description(tmp_path: Path) -> None:
     settings = _make_settings(tmp_path)
@@ -1188,7 +1226,7 @@ def test_generate_cad_endpoint_writes_artifacts(tmp_path: Path) -> None:
         assert len(fg["features"]) >= 1
 
 
-# ── cad-preview endpoint ──────────────────────────────────────────────────────
+# -- cad-preview endpoint ------------------------------------------------------
 
 def test_cad_preview_endpoint_returns_glb(tmp_path: Path) -> None:
     settings = _make_settings(tmp_path)
@@ -1224,7 +1262,7 @@ def test_cad_preview_endpoint_404_without_package(tmp_path: Path) -> None:
     assert resp.status_code == 404
 
 
-# ── refine-cad endpoint ───────────────────────────────────────────────────────
+# -- refine-cad endpoint -------------------------------------------------------
 
 def test_refine_cad_endpoint_missing_feedback(tmp_path: Path) -> None:
     settings = _make_settings(tmp_path)
@@ -1402,7 +1440,7 @@ def test_cad_refine_tool_uses_server_env_key_and_mocked_refinement(
     assert out["named_parts"] == ["torso", "thigh_L"]
     assert out["parts_added"] == ["thigh_L"]
     # #285: topology_summary.bounding_box is the union over ALL solids (whole model),
-    # not just the first — here torso (z 0..10) ∪ thigh_L (z -20..0) → z -20..10.
+    # not just the first  here torso (z 0..10)  thigh_L (z -20..0) -> z -20..10.
     assert out["topology_summary"]["bounding_box"] == [0, 0, -20, 10, 10, 10]
     refine_mock.assert_called_once()
     assert refine_mock.call_args.kwargs["api_key"] is None
@@ -1424,7 +1462,7 @@ def test_cad_refine_tool_requires_server_env_key(tmp_path: Path, monkeypatch: py
     assert out["message"] == "ANTHROPIC_API_KEY not configured; cad.refine requires LLM access"
 
 
-# ── execute_build123d_code (agent-supplied code, no LLM) ──────────────────────
+# -- execute_build123d_code (agent-supplied code, no LLM) ----------------------
 
 def _fake_stream_ok(code, timeout=60):
     """Mimic _execute_build123d_code_streaming: a heartbeat then a result."""
@@ -1743,7 +1781,7 @@ def test_execute_build123d_project_not_found_recommends_create_project(tmp_path:
     assert recs[0]["input"] == {"name": "Pump bracket"}
 
 
-# ── geometry report ───────────────────────────────────────────────────────────
+# -- geometry report -----------------------------------------------------------
 
 def test_geometry_report_flags_asymmetry_and_floating() -> None:
     from app.cad_generation import _compute_geometry_report
@@ -1770,7 +1808,7 @@ def test_geometry_report_flags_asymmetry_and_floating() -> None:
     assert gs["touching"] + gs["near"] + gs["floating"] == gs["total"]
 
 
-# ── geometry regression diff ──────────────────────────────────────────────────
+# -- geometry regression diff --------------------------------------------------
 
 def test_geometry_report_flags_deep_overlap_and_containment() -> None:
     from app.cad_generation import _compute_geometry_report, _geometry_report_summary
@@ -1976,12 +2014,12 @@ def test_param_binding_uses_source_usage_not_name_token() -> None:
     gi, go = _consts(feats["gear_input"]), _consts(feats["gear_output"])
     assert "GEAR_IN_PITCH_DIA" in gi and "GEAR_OUT_PITCH_DIA" not in gi   # no cross-pollution
     assert "GEAR_OUT_PITCH_DIA" in go and "GEAR_IN_PITCH_DIA" not in go
-    assert "GEAR_WIDTH" not in gi and "GEAR_WIDTH" not in go              # shared → not per-gear
+    assert "GEAR_WIDTH" not in gi and "GEAR_WIDTH" not in go              # shared -> not per-gear
     gp = next((f for f in out["features"] if f.get("type") == "global_params"), None)
     assert gp is not None and any(p["cad_parameter_name"] == "GEAR_WIDTH" for p in gp["parameters"].values())
 
 
-# ── cad.validate_subpart (read-only isolated fragment validation) ─────────────
+# -- cad.validate_subpart (read-only isolated fragment validation) -------------
 
 def test_validate_subpart_accepts_valid_solid() -> None:
     pytest.importorskip("build123d")
@@ -2029,7 +2067,7 @@ def test_validate_subpart_requires_code() -> None:
     assert out["code"] == "missing_code"
 
 
-# ── assembly authoring (cad.define_part / cad.define_mate) end-to-end ─────────
+# -- assembly authoring (cad.define_part / cad.define_mate) end-to-end ---------
 
 def test_assembly_authoring_end_to_end(tmp_path: Path) -> None:
     pytest.importorskip("build123d")
@@ -2123,7 +2161,7 @@ def test_design_review_surfaces_modeling_fidelity_for_crude_build(tmp_path: Path
 
     settings = _make_settings(tmp_path)
     pid = _make_project(settings, "fidelity-crude")
-    # a bare box: 6 faces, no fillets, no shaped bodies → crude
+    # a bare box: 6 faces, no fillets, no shaped bodies -> crude
     code = "from build123d import *\nb = Box(80, 60, 10); b.label = 'block'\nresult = Compound(children=[b])\n"
     assert execute_build123d_code(settings, pid, {"code": code, "thumbnail": False})["status"] == "ok"
 
@@ -2154,7 +2192,7 @@ def test_housing_helper_builds_and_reads_designed(tmp_path: Path) -> None:
 
     rev = design_review(settings, pid, {})
     # the helper's filleted edges are credited even though the user source never
-    # literally calls fillet() — so it is NOT flagged for crude sharp edges
+    # literally calls fillet()  so it is NOT flagged for crude sharp edges
     assert rev["fidelity"]["signals"]["has_edge_breaking"] is True
     assert rev["summary"]["modeling_fidelity"]["level"] in {"designed", "basic"}
     assert not any(f["rule"] == "no_edge_breaking" for f in rev["fidelity"]["findings"])
@@ -2162,7 +2200,7 @@ def test_housing_helper_builds_and_reads_designed(tmp_path: Path) -> None:
 
 def test_nested_paren_fillet_is_credited_as_edge_breaking() -> None:
     # the common build123d form fillet(bp.edges().filter_by(Axis.Z), radius=N) has a
-    # nested paren the radius regex misses — credit edge-breaking by presence so a
+    # nested paren the radius regex misses  credit edge-breaking by presence so a
     # filleted model is not mislabelled 'crude'.
     from app.cad_generation import _detect_advanced_features
 
@@ -2290,7 +2328,7 @@ def test_cad_brief_feeds_validate_targets_end_to_end(tmp_path: Path) -> None:
     )
     assert execute_build123d_code(settings, pid, {"code": code, "thumbnail": False})["status"] == "ok"
 
-    # 3) validate with NO explicit targets → auto-loads the brief's targets
+    # 3) validate with NO explicit targets -> auto-loads the brief's targets
     out = validate_targets(settings, pid, {})
     assert out["status"] == "ok"
     assert out["targets_source"] == "cad_brief"
@@ -2307,7 +2345,7 @@ def test_positioning_helpers_place_parts_relative(tmp_path: Path) -> None:
         "plate = Box(80, 60, 10); plate.label = 'plate'\n"
         "pin = stack_on(Cylinder(5, 20), plate, label='pin')\n"          # bottom on plate top, XY-centered
         "ref = Box(20, 20, 40).moved(Location((10, 20, 0)))\n"
-        "shaft = coaxial(Cylinder(3, 60), ref, axis='Z', label='shaft')\n"  # X,Y → ref center (10,20)
+        "shaft = coaxial(Cylinder(3, 60), ref, axis='Z', label='shaft')\n"  # X,Y -> ref center (10,20)
         "result = Compound(children=[plate, pin, shaft])\n"
     )
     _s, _st, _g, topo, _mesh_meta = _execute_build123d_code(code)
@@ -2332,7 +2370,7 @@ def test_diagnose_ready_vs_needs_repair(tmp_path: Path) -> None:
 
     settings = _make_settings(tmp_path)
 
-    # clean single filleted part → no blocking issues → ready
+    # clean single filleted part -> no blocking issues -> ready
     pid = _make_project(settings, "diag-ready")
     ok_code = (
         "from build123d import *\n"
@@ -2348,12 +2386,12 @@ def test_diagnose_ready_vs_needs_repair(tmp_path: Path) -> None:
     assert ready["verdict"] == "ready"
     assert ready["blocking_issues"] == []
 
-    # a floating part → high risk + blocking → needs_repair
+    # a floating part -> high risk + blocking -> needs_repair
     pid2 = _make_project(settings, "diag-float")
     bad_code = (
         "from build123d import *\n"
         "a = Box(10, 10, 10); a.label = 'a'\n"
-        "b = Box(10, 10, 10).moved(Location((500, 0, 0))); b.label = 'b'\n"  # 500mm away → floating
+        "b = Box(10, 10, 10).moved(Location((500, 0, 0))); b.label = 'b'\n"  # 500mm away -> floating
         "result = Compound(children=[a, b])\n"
     )
     assert execute_build123d_code(settings, pid2, {"code": bad_code, "thumbnail": False})["status"] == "ok"
@@ -2405,7 +2443,7 @@ def test_engineering_detail_helpers_build_and_compose(tmp_path: Path) -> None:
 
     settings = _make_settings(tmp_path)
     pid = _make_project(settings, "detailed-housing")
-    # housing + bearing-seat boss + stiffening rib + mounting foot — the detail a
+    # housing + bearing-seat boss + stiffening rib + mounting foot  the detail a
     # raw Box-Box gearbox was missing
     code = (
         "from build123d import *\n"
@@ -2425,7 +2463,7 @@ def test_engineering_detail_helpers_build_and_compose(tmp_path: Path) -> None:
     assert rev["summary"]["modeling_fidelity"]["level"] in {"designed", "basic"}
 
 
-# ── critique (engineering-diagnostics) regression diff ────────────────────────
+# -- critique (engineering-diagnostics) regression diff ------------------------
 # Two solids far apart trip the deterministic `floating_component` high finding;
 # moving them apart introduces it, moving them together resolves it. This lets us
 # unit-test _diff_critique purely (no build123d) on topology dicts alone.
@@ -2516,7 +2554,7 @@ def test_write_last_edit_diff_noop_when_both_none(tmp_path: Path) -> None:
     pkg = tmp_path / "p.aieng"
     with zipfile.ZipFile(pkg, "w") as zf:
         zf.writestr("metadata.json", "{}")
-    _write_last_edit_diff(pkg, tool="cad.edit_parameter")  # both diffs None → no write
+    _write_last_edit_diff(pkg, tool="cad.edit_parameter")  # both diffs None -> no write
     with zipfile.ZipFile(pkg, "r") as zf:
         assert _LAST_EDIT_DIFF_MEMBER not in zf.namelist()
 
@@ -2526,16 +2564,16 @@ def test_append_mode_critique_diff_only_for_append_with_prior() -> None:
 
     prior = _CLOSE_TWO_PART
     after = _FAR_TWO_PART
-    # append with a prior model → a diff is produced (new floating part → fail)
+    # append with a prior model -> a diff is produced (new floating part -> fail)
     diff = _append_mode_critique_diff("append", prior, {}, after, {})
     assert diff is not None and diff["verdict"] == "fail"
-    # replace mode → no before-model to diff → None
+    # replace mode -> no before-model to diff -> None
     assert _append_mode_critique_diff("replace", prior, {}, after, {}) is None
-    # append with no prior topology (first build) → None
+    # append with no prior topology (first build) -> None
     assert _append_mode_critique_diff("append", {}, {}, after, {}) is None
 
 
-# ── design-rule assertions (require) — marker parser ──────────────────────────
+# -- design-rule assertions (require)  marker parser --------------------------
 
 def test_extract_design_rule_violation_finds_marker() -> None:
     from app.cad_generation import _extract_design_rule_violation
@@ -2555,7 +2593,7 @@ def test_extract_design_rule_violation_absent_returns_none() -> None:
     assert _extract_design_rule_violation("ordinary build error\n") is None
 
 
-# ── parametric edit end-to-end (real build123d) ───────────────────────────────
+# -- parametric edit end-to-end (real build123d) -------------------------------
 
 def test_edit_build123d_parameter_end_to_end(tmp_path: Path) -> None:
     pytest.importorskip("build123d")
@@ -2563,7 +2601,7 @@ def test_edit_build123d_parameter_end_to_end(tmp_path: Path) -> None:
 
     settings = _make_settings(tmp_path)
     pid = _make_project(settings, "param-edit")
-    # Named constants → the feature graph exposes an editable parameter.
+    # Named constants -> the feature graph exposes an editable parameter.
     code = (
         "from build123d import *\n"
         "BODY_LENGTH = 120\n"
@@ -2603,7 +2641,7 @@ def test_edit_build123d_parameter_end_to_end(tmp_path: Path) -> None:
     assert cdiff["delta"]["high"] <= 0
     assert cdiff["introduced"] == []
     # #226: the real edit path persists the diff to package state so the viewer
-    # (GET /edit-diff) can re-surface it — not just the tool response.
+    # (GET /edit-diff) can re-surface it  not just the tool response.
     import zipfile as _zf
     from app.cad_generation import _LAST_EDIT_DIFF_MEMBER
     from app.project_io import get_project, resolve_project_path
@@ -2819,7 +2857,7 @@ def test_edit_build123d_parameter_invalid_value_preserves_geometry(tmp_path: Pat
         f for f in execute_build123d_code(settings, pid, {"code": code, "thumbnail": False})["feature_graph"]["features"]
         if f.get("name") == "base_plate" and (f.get("parameters") or {})
     )
-    # 0-length box is geometrically invalid → build fails, prior geometry preserved
+    # 0-length box is geometrically invalid -> build fails, prior geometry preserved
     edited = edit_build123d_parameter(
         settings, pid,
         feature_id=feat["id"], parameter_name="length_mm", new_value=0,
@@ -2828,7 +2866,7 @@ def test_edit_build123d_parameter_invalid_value_preserves_geometry(tmp_path: Pat
     assert edited["code"] in ("execution_failed", "invalid_contract")
 
 
-# ── F1: organic models skip mechanical heuristics ─────────────────────────────
+# -- F1: organic models skip mechanical heuristics -----------------------------
 
 def test_feature_graph_organic_skips_mechanical_heuristics() -> None:
     from app.cad_generation import _topology_to_feature_graph
@@ -2863,7 +2901,7 @@ def test_feature_graph_mechanical_keeps_heuristics() -> None:
     assert any(f["type"] in ("mounting_hole", "mounting_hole_pattern") for f in fg["features"])
 
 
-# ── F2: remove / replace a named part (real build123d) ────────────────────────
+# -- F2: remove / replace a named part (real build123d) ------------------------
 
 def _ironman_stub_code() -> str:
     return (
@@ -2937,13 +2975,13 @@ def test_replace_part_contract_requires_result(tmp_path: Path) -> None:
     assert out["code"] == "contract_violation"
 
 
-# ── free-form faces carry a proxy normal (CAE face-binding fix) ───────────────
+# -- free-form faces carry a proxy normal (CAE face-binding fix) ---------------
 
 def test_freeform_faces_get_proxy_normal(tmp_path: Path) -> None:
     pytest.importorskip("build123d")
     from app.cad_generation import _execute_build123d_code
 
-    # capsule = sphere caps + cylinder → all free-form / curved faces
+    # capsule = sphere caps + cylinder -> all free-form / curved faces
     _step, _stl, _glb, topo, _mesh_meta = _execute_build123d_code(
         "arm = capsule(20, 80, label='arm')\nresult = Compound(children=[arm])\n"
     )
@@ -2958,7 +2996,7 @@ def test_freeform_faces_get_proxy_normal(tmp_path: Path) -> None:
         assert f.get("normal") and len(f["normal"]) == 3
 
 
-# ── agent builds populate the UI viewer asset (web_asset) ─────────────────────
+# -- agent builds populate the UI viewer asset (web_asset) ---------------------
 
 def test_execute_build123d_publishes_web_asset(tmp_path: Path) -> None:
     pytest.importorskip("build123d")
@@ -2978,7 +3016,7 @@ def test_execute_build123d_publishes_web_asset(tmp_path: Path) -> None:
     assert viewer_file.exists() and viewer_file.stat().st_size > 0
 
 
-# ── project discoverability: auto-naming + named_parts + part search ──────────
+# -- project discoverability: auto-naming + named_parts + part search ----------
 
 def test_derive_project_name_prefixed_assembly() -> None:
     from app.cad_generation import _derive_project_name
@@ -3035,11 +3073,11 @@ def test_find_projects_by_part_tool(tmp_path: Path) -> None:
     assert schema and "query" in schema["properties"]
 
 
-# ── Shape IR: post-execution provenance reconciliation ───────────────────────
+# -- Shape IR: post-execution provenance reconciliation -----------------------
 
 def test_reconcile_shape_ir_provenance_refreshes_registry_and_manifest(tmp_path: Path) -> None:
     """After Shape IR source executes, object_registry is rebuilt against the
-    real executed ids and the conversion manifest is stamped — no dangling
+    real executed ids and the conversion manifest is stamped  no dangling
     projected slug references remain."""
     from app.cad_generation import reconcile_shape_ir_provenance
 
@@ -3083,7 +3121,7 @@ def test_reconcile_shape_ir_provenance_refreshes_registry_and_manifest(tmp_path:
     assert man["geometry_execution"]["executed_at_utc"] == "2026-01-01T00:00:00Z"
 
 
-# ── implicit SDF runner (Shape IR representation: implicit_sdf) ───────────────
+# -- implicit SDF runner (Shape IR representation: implicit_sdf) ---------------
 
 def test_mesh_feature_graph_reads_representation_from_topology() -> None:
     from app.cad_generation import _mesh_feature_graph
@@ -3160,7 +3198,7 @@ def test_execute_nurbs_source_builds_brep_face() -> None:
     assert any(f.get("surface_type") == "bspline" for f in faces)
 
 
-# ── cad.search_reference_image (Wikimedia Commons) ───────────────────────────
+# -- cad.search_reference_image (Wikimedia Commons) ---------------------------
 
 def _fake_urlopen_json(payload: dict) -> MagicMock:
     """Build a urlopen() return value usable as a context manager yielding JSON."""
@@ -3291,7 +3329,7 @@ def test_search_reference_image_validates_input() -> None:
     assert bad_source["code"] == "unsupported_source"
 
 
-# ── cad.design_review (critique + structure + fix targets) ───────────────────
+# -- cad.design_review (critique + structure + fix targets) -------------------
 
 def test_design_review_symmetry_findings_from_report() -> None:
     from app import cad_generation as cg
@@ -3389,7 +3427,7 @@ def test_design_review_merges_critique_and_respects_detail(tmp_path: Path) -> No
     from app import cad_generation as cg
 
     settings = _make_settings(tmp_path)
-    pid = _make_project(settings, "review-merge")  # no geometry → no package
+    pid = _make_project(settings, "review-merge")  # no geometry -> no package
     fake_crit = {
         "status": "ok", "verdict": "passes_with_notes",
         "findings": [{"id": "find_001", "severity": "low", "category": "manufacturing_rule",
@@ -3403,7 +3441,7 @@ def test_design_review_merges_critique_and_respects_detail(tmp_path: Path) -> No
     assert full["verdict"] == "passes_with_notes"
     assert full["critique_verdict"] == "passes_with_notes"
     assert full["summary"]["findings_count"] == 1
-    assert full["summary"]["actionable_count"] == 0  # no feature graph → no bound target
+    assert full["summary"]["actionable_count"] == 0  # no feature graph -> no bound target
     assert "findings" in full and "findings" not in compact  # compact omits the full list
     assert "actions" in compact and "recommendation" in compact
 
@@ -3439,7 +3477,7 @@ def test_design_review_end_to_end_binds_target_and_flags_symmetry(tmp_path: Path
 
     review = design_review(settings, pid, {})
     assert review["status"] == "ok"
-    # thin wall is a high-severity manufacturing finding → fails the audit
+    # thin wall is a high-severity manufacturing finding -> fails the audit
     assert review["verdict"] == "fails_audit"
     # symmetry check (which plain critique lacks) flags the mismatched arm pair
     assert any("arm_L" in s for s in review["summary"]["broken_symmetry"])
@@ -3452,7 +3490,7 @@ def test_design_review_end_to_end_binds_target_and_flags_symmetry(tmp_path: Path
     assert wall_actions[0]["parameter_target"]["known"] is True
 
 
-# ── domain primitives (naca_airfoil / fuselage_profile / wheel / ribbed_plate) ─
+# -- domain primitives (naca_airfoil / fuselage_profile / wheel / ribbed_plate) -
 
 @pytest.mark.parametrize("snippet", [
     "result = naca_airfoil(120, 14, span=200, label='wing')",
@@ -3536,7 +3574,7 @@ def test_tube_is_hollow(tmp_path: Path) -> None:
 
     settings = _make_settings(tmp_path)
     pid = _make_project(settings, "tube-hollow")
-    # A hollow tube has an inner + outer cylindrical wall → more faces than a solid rod.
+    # A hollow tube has an inner + outer cylindrical wall -> more faces than a solid rod.
     solid = execute_build123d_code(
         settings, _make_project(settings, "rod"),
         {"code": "from build123d import *\nresult = Cylinder(12, 40); result.label='rod'\n", "thumbnail": False},
@@ -3559,7 +3597,7 @@ def test_invalid_tube_radii_is_a_clean_error(tmp_path: Path) -> None:
         settings, pid,
         {"code": "from build123d import *\nresult = tube(8, 12, 40, label='bad')\n", "thumbnail": False},
     )
-    # inner >= outer raises ValueError inside the runner → surfaced as an error, not a crash.
+    # inner >= outer raises ValueError inside the runner -> surfaced as an error, not a crash.
     assert out["status"] == "error"
 
 
@@ -3572,11 +3610,11 @@ def test_fuselage_primitive_marks_model_organic(tmp_path: Path) -> None:
     code = "from build123d import *\nresult = fuselage_profile(400, 60, label='fuselage')\n"
     out = execute_build123d_code(settings, pid, {"code": code, "thumbnail": False})
     assert out["status"] == "ok", out
-    # organic helper hint → mechanical heuristics are skipped
+    # organic helper hint -> mechanical heuristics are skipped
     assert out["feature_graph"]["model_kind"] == "organic"
 
 
-# ── category starter templates produce code that actually builds ─────────────
+# -- category starter templates produce code that actually builds -------------
 
 @pytest.mark.parametrize("message,expect_parts", [
     ("model an airplane, fuselage length 500mm", {"fuselage", "wing", "tail_fin"}),
@@ -3596,7 +3634,7 @@ def test_category_template_code_builds(tmp_path: Path, message: str, expect_part
     out = execute_build123d_code(settings, pid, {"code": exec_input["code"], "thumbnail": False})
     assert out["status"] == "ok", out
     assert expect_parts.issubset(set(out["named_parts"])), (expect_parts, out["named_parts"])
-    # organic family → mechanical heuristics skipped
+    # organic family -> mechanical heuristics skipped
     assert out["feature_graph"]["model_kind"] == "organic"
 
 
@@ -3620,7 +3658,7 @@ def test_execute_response_always_includes_geometry_report_summary(tmp_path: Path
     assert isinstance(compact["geometry_report"], str)
 
 
-# ── cache hardening tests (#25) ──────────────────────────────────────────────
+# -- cache hardening tests (#25) ----------------------------------------------
 
 
 def test_concurrent_cache_writes_produce_one_valid_entry(tmp_path: Path) -> None:
@@ -3677,7 +3715,7 @@ def test_corrupt_cache_entry_removed_on_read(tmp_path: Path) -> None:
     root = cad_generation._build123d_cache_root(settings)
     entry = root / cache_key
     entry.mkdir(parents=True, exist_ok=True)
-    # Write only metadata and .complete — missing generated.step, topology_map, etc.
+    # Write only metadata and .complete  missing generated.step, topology_map, etc.
     (entry / "metadata.json").write_text(
         json.dumps({"cache_key": cache_key, "cache_format_version": "1"}), encoding="utf-8",
     )
@@ -3809,7 +3847,7 @@ def test_remove_part_cache_hit_on_repeated_identical_remove(tmp_path: Path) -> N
     assert calls == 1
 
 
-# ── append-step-cache spike (#91) ─────────────────────────────────────────────
+# -- append-step-cache spike (#91) ---------------------------------------------
 
 def test_step_roundtrip_preserves_labels() -> None:
     """Sanity check for the STEP roundtrip probe; skips when build123d absent."""
@@ -3838,7 +3876,7 @@ def test_build_face_colors_from_mesh_meta_fallback() -> None:
     assert colors.shape == (10, 3)
     np.testing.assert_allclose(colors, np.tile([1.0, 0.0, 0.0], (10, 1)))
 
-    # No available color → no fallback array.
+    # No available color -> no fallback array.
     mesh_meta_no_color = {
         "fallback": True,
         "total_triangles": 10,
@@ -4070,7 +4108,7 @@ def test_mark_cae_mapping_stale_records_topology_hash(tmp_path: Path) -> None:
     assert mapping.get("topology_hash_at_stale") == compute_topology_hash(topology)
 
 
-# ── design-rule assertions as build failures (#217) — end-to-end ──────────────
+# -- design-rule assertions as build failures (#217)  end-to-end --------------
 
 def test_require_failure_is_structured_design_rule_violation(tmp_path: Path) -> None:
     pytest.importorskip("build123d")

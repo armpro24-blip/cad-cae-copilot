@@ -2063,6 +2063,33 @@ def _is_quarter_round_fillet(face: dict[str, Any]) -> bool:
     return all(0.4 * radius <= c <= 1.6 * radius for c in cross)
 
 
+def _is_convex_outer_cylinder(face: dict[str, Any], body_bbox_by_id: dict[str, list[float]]) -> bool:
+    """True if a cylinder face is a boss/pin/shaft OUTER surface, not a hole.
+
+    A hole is concave — a small cylinder cut into a much larger body. A boss/pin is
+    convex — the body IS essentially that cylinder, so the body's cross-section
+    perpendicular to the cylinder axis is ~the cylinder diameter. Adjacency-free,
+    works on real OCC topology. Keeps boss/pin outer faces out of the bolt-pattern
+    grouping while leaving genuine holes (body cross-section >> diameter) untouched.
+    """
+    radius = face.get("radius")
+    bbox = body_bbox_by_id.get(str(face.get("body_id")))
+    if not isinstance(radius, (int, float)) or radius <= 0:
+        return False
+    if not (isinstance(bbox, list) and len(bbox) == 6):
+        return False
+    dims = [abs(bbox[3] - bbox[0]), abs(bbox[4] - bbox[1]), abs(bbox[5] - bbox[2])]
+    axis = face.get("axis")
+    if isinstance(axis, list) and len(axis) == 3 and max(abs(float(a)) for a in axis) >= 0.5:
+        axis_idx = max(range(3), key=lambda i: abs(float(axis[i])))
+        cross = [d for i, d in enumerate(dims) if i != axis_idx]
+    else:
+        cross = sorted(dims)[:2]
+    diameter = 2.0 * radius
+    # Body cross-section ~ the cylinder diameter -> the body is that cylinder (boss/pin).
+    return all(abs(c - diameter) <= 0.25 * diameter for c in cross)
+
+
 def _topology_to_feature_graph(
     topo: dict[str, Any],
     source_code: str | None = None,
@@ -2139,19 +2166,30 @@ def _topology_to_feature_graph(
         core_graph = {}
         core_blend_faces = set()
 
+    # Body bounding boxes, so the bolt-pattern grouping can tell a concave hole from a
+    # convex boss/pin/shaft outer cylinder (whose body IS the cylinder).
+    _body_bbox: dict[str, list[float]] = {}
+    for _e in entities:
+        if _e.get("type") == "solid":
+            _bb = _e.get("bounding_box")
+            if isinstance(_bb, list) and len(_bb) == 6:
+                _body_bbox[str(_e.get("id"))] = _bb
+
     if run_mechanical_heuristics:
         # bolt pattern detection — group cylinders by radius (±8% tolerance).
-        # Skip faces the core recognizer classified as edge blends, AND quarter-round
-        # fillet cylinders detected directly from the cross-section signal. The latter
-        # is essential because real OCC topology carries no adjacent_entity_ids, so the
-        # core recognizer's adjacency-gated fillet detector finds nothing on a live build
-        # — without this adjacency-free check, every edge fillet becomes a phantom hole
-        # pattern (#297/#321 runtime gap, found by dogfood).
+        # Skip faces the core recognizer classified as edge blends, quarter-round fillet
+        # cylinders (cross-section signal), AND boss/pin/shaft OUTER cylinders (convex —
+        # the body is the cylinder). All three are adjacency-free because real OCC
+        # topology carries no adjacent_entity_ids, so the core recognizer's
+        # adjacency-gated detectors find nothing on a live build — without these checks
+        # edge fillets and boss outers become phantom hole patterns (dogfood findings,
+        # #297/#321 runtime gap).
         cylinders = [
             f for f in faces
             if f.get("surface_type") == "cylinder" and f.get("radius")
             and str(f.get("id")) not in core_blend_faces
             and not _is_quarter_round_fillet(f)
+            and not _is_convex_outer_cylinder(f, _body_bbox)
         ]
         radius_groups: dict[float, list[str]] = {}
         for face in cylinders:
