@@ -714,12 +714,70 @@ def generate_mesh_for_package(
 SOURCE_SOLVER_DECK_PATH = "simulation/cae_imports/source_solver_deck.inp"
 
 
+# CalculiX 3D solid element types (C3D4/C3D10/C3D8/C3D20/C3D6/C3D15…). The Gmsh
+# .inp also carries 2D surface elements (CPS3/S3/…) for its surface physical
+# groups; those must NOT reach the solver — mixing 2D and 3D elements makes ccx
+# abort ("*ERROR in gen3delem"). We keep solid elements only.
+_SOLID_ELEMENT_PREFIX = "C3D"
+
+
+def _element_type_from_header(header: str) -> str | None:
+    """Extract the TYPE= value from a (comma- or space-delimited) *ELEMENT header."""
+    for token in header.replace(" ", "").split(","):
+        if token.upper().startswith("TYPE="):
+            return token.split("=", 1)[1].upper()
+    return None
+
+
+def _filter_mesh_to_solid(mesh_text: str) -> tuple[list[str], list[tuple[str, list[str]]]]:
+    """Split a Gmsh CalculiX-format mesh into solid-only sections.
+
+    Returns ``(node_lines, solid_blocks)`` where ``node_lines`` are the raw
+    ``*NODE`` data lines and ``solid_blocks`` is a list of
+    ``(element_type, [raw_data_lines])`` for 3D solid ``*ELEMENT`` blocks only.
+    Drops 2D surface elements, Gmsh's own ``*ELSET``/``*NSET``/``*SURFACE`` sets
+    (we emit our own canonical EALL set + NSETs), and tolerates Gmsh's
+    comma-attached, lowercase keyword dialect (``*ELEMENT, type=C3D4, ELSET=…``).
+    """
+    node_lines: list[str] = []
+    solid_blocks: list[tuple[str, list[str]]] = []
+    section: str | None = None  # "node" | "solid" | None(skip)
+
+    for raw in mesh_text.splitlines():
+        stripped = raw.strip()
+        upper = stripped.upper()
+        if upper.startswith("*"):
+            head = upper.split(",")[0].split()[0]  # robust to comma/space attachment
+            if head == "*NODE" and not any(
+                kw in upper for kw in ("FILE", "PRINT", "OUTPUT")
+            ):
+                section = "node"
+            elif head == "*ELEMENT":
+                etype = _element_type_from_header(stripped[len("*ELEMENT"):])
+                if etype and etype.startswith(_SOLID_ELEMENT_PREFIX):
+                    section = "solid"
+                    solid_blocks.append((etype, []))
+                else:
+                    section = None  # 2D surface / unsupported element block → drop
+            else:
+                section = None  # any other keyword ends the mesh copy
+            continue
+        if not stripped or stripped.startswith("**"):
+            continue
+        if section == "node":
+            node_lines.append(raw)
+        elif section == "solid":
+            solid_blocks[-1][1].append(raw)
+
+    return node_lines, solid_blocks
+
+
 def build_source_deck_from_mesh(
     mesh_text: str,
     setup: dict[str, Any],
     nsets: dict[str, list[int]],
 ) -> tuple[str, list[str]]:
-    """Build a CalculiX source deck: mesh + *SOLID SECTION + named *NSETs.
+    """Build a SOLID-ONLY CalculiX source deck: mesh + *SOLID SECTION + named *NSETs.
 
     This is the mesh-and-sets half of a deck — materials, BCs, loads, and the
     analysis step are added later by ``aieng.simulation.deck_generator``. The
@@ -727,19 +785,25 @@ def build_source_deck_from_mesh(
     BC/load ``target`` references resolve. Returns ``(deck_text, empty_nsets)``
     where ``empty_nsets`` lists cae_entities that caught no mesh nodes (so the
     caller can warn honestly instead of emitting a dangling NSET reference).
-    """
-    lines: list[str] = []
-    # Preserve the mesh verbatim (Gmsh writes *NODE / *ELEMENT / *ELSET incl. EALL).
-    # Defensive stop if the mesh source somehow carried solver sections.
-    for line in mesh_text.splitlines():
-        up = line.strip().upper()
-        if up.startswith("*MATERIAL") or up.startswith("*BOUNDARY") or up.startswith("*STEP"):
-            break
-        lines.append(line)
 
-    # Assign the volume element set (EALL, from _mesh_with_gmsh's physical group)
-    # a solid section so the elements carry a material. Use the raw setup material
-    # name so it matches the deck generator's *MATERIAL block (avoids a rename).
+    The 3D solid elements are re-emitted under a single canonical
+    ``*ELEMENT, TYPE=<t>, ELSET=EALL`` header (rather than preserving Gmsh's
+    output verbatim) for two reasons learned from running real CalculiX:
+    Gmsh's 2D surface elements abort the solver when mixed with the solids, and
+    Gmsh's comma-attached ``*ELSET,ELSET=EALL`` is dropped by the deck
+    generator's mesh-section extractor — so a verbatim mesh left ``EALL``
+    undefined. A clean, canonical, solid-only deck sidesteps both.
+    """
+    node_lines, solid_blocks = _filter_mesh_to_solid(mesh_text)
+
+    lines: list[str] = ["*NODE", *node_lines]
+    for element_type, data_lines in solid_blocks:
+        lines.append(f"*ELEMENT, TYPE={element_type}, ELSET=EALL")
+        lines.extend(data_lines)
+
+    # Assign the canonical EALL solid element set a section so the elements carry
+    # a material. Use the raw setup material name so it matches the deck
+    # generator's *MATERIAL block (avoids a rename).
     mat_name = setup.get("material_name") or next(
         iter((setup.get("materials") or {}).keys()), "AIENG_MATERIAL"
     )

@@ -1368,6 +1368,72 @@ def test_build_source_deck_from_mesh_structure() -> None:
     assert empty == ["EMPTY_SET"]
 
 
+# A Gmsh-style mesh mixing 3D solids (C3D4) with 2D surface elements (CPS3) and
+# Gmsh's comma-attached EALL set — the two things that broke real CalculiX.
+_MIXED_GMSH_MESH_INP = """\
+*Node
+1, 0.0, 0.0, 0.0
+2, 10.0, 0.0, 0.0
+3, 5.0, 10.0, 0.0
+4, 5.0, 5.0, 10.0
+*Element, type=C3D4, ELSET=Volume1
+1, 1, 2, 3, 4
+*Element, type=CPS3, ELSET=Surface1
+2, 1, 2, 3
+3, 2, 3, 4
+*ELSET,ELSET=EALL
+1
+*ELSET,ELSET=SURF1
+2, 3
+"""
+
+
+def test_build_source_deck_is_solid_only_and_canonical() -> None:
+    from app.simulation_runner import build_source_deck_from_mesh
+
+    deck, empty = build_source_deck_from_mesh(
+        _MIXED_GMSH_MESH_INP, _SETUP_YAML, {"FIXED_END": [1, 2]}
+    )
+
+    # 2D surface elements are dropped — mixing them with C3D4 aborts ccx (gen3delem).
+    assert "CPS3" not in deck.upper()
+    assert "2, 1, 2, 3" not in deck   # the CPS3 element data line is gone
+    assert "3, 2, 3, 4" not in deck
+    # The solid element is re-emitted under a canonical EALL header (one space,
+    # which the deck generator's mesh extractor recognizes — Gmsh's comma form
+    # was silently dropped, leaving EALL undefined).
+    assert "*ELEMENT, TYPE=C3D4, ELSET=EALL" in deck
+    assert "1, 1, 2, 3, 4" in deck     # the C3D4 element survives
+    assert "*SOLID SECTION, ELSET=EALL" in deck
+    # Gmsh's own comma-attached sets are not carried through verbatim.
+    assert "*ELSET,ELSET=SURF1" not in deck
+    assert "*NSET, NSET=FIXED_END" in deck
+    assert empty == []
+
+
+def test_synthesized_deck_mesh_section_survives_deck_generator_extraction() -> None:
+    """Regression for the bug where Gmsh's comma-attached *ELSET,ELSET=EALL was
+    dropped by the core deck generator, leaving *SOLID SECTION referencing an
+    undefined EALL. The canonical solid-only deck must round-trip through
+    _extract_mesh_section with EALL + the solid elements intact."""
+    import sys
+    from pathlib import Path as _P
+
+    sys.path.insert(0, str(_WORKSPACE_ROOT / "aieng" / "src"))
+    from aieng.simulation.deck_generator import _extract_mesh_section
+    from app.simulation_runner import build_source_deck_from_mesh
+
+    deck, _ = build_source_deck_from_mesh(
+        _MIXED_GMSH_MESH_INP, _SETUP_YAML, {"FIXED_END": [1, 2]}
+    )
+    mesh_section = _extract_mesh_section(deck)
+    assert mesh_section is not None
+    upper = mesh_section.upper()
+    assert "ELSET=EALL" in upper          # EALL defined (was dropped before the fix)
+    assert "C3D4" in upper                # solid elements retained
+    assert "CPS3" not in upper            # surface elements never present
+
+
 def _build_meshed_setup_package(pkg_path: Path) -> None:
     """A package with a mesh + setup + cae_mapping but NO imported source deck."""
     pkg_path.parent.mkdir(parents=True, exist_ok=True)
