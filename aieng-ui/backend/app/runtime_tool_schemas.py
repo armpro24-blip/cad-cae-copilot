@@ -1561,14 +1561,15 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "required": ["project_id"],
         "description": (
             "Apply incremental patches to the project's CAE setup artifacts "
-            "(materials, boundary conditions, loads, mesh settings, solver settings). "
+            "(solver settings, materials, boundary conditions, loads, and the face-to-NSET mapping). "
             "Each patch specifies an action_type and a target path within the package. "
-            "Minimal linear-static example: create simulation/solver_settings.json "
+            "For a linear-static solve: create simulation/solver_settings.json "
             "({solver: CalculiX, analysis_type: linear_static}), set materials in "
-            "simulation/cae_imports/parsed_materials.json, add boundary conditions in "
-            "simulation/cae_imports/parsed_boundary_conditions.json, add loads in "
-            "simulation/cae_imports/parsed_loads.json or simulation/load_cases/load_case_001.json, "
-            "then call cae.generate_solver_input."
+            "simulation/cae_imports/parsed_materials.json, and write boundary conditions/loads "
+            "to simulation/setup.yaml (preferred) or simulation/cae_imports/parsed_boundary_conditions.json "
+            "and simulation/cae_imports/parsed_loads.json. Load/BC targets must be NSET names such as "
+            "'FIXED_BASE' or 'LOAD_TOP', not @face: pointers. Bind those NSETs to actual faces by "
+            "writing simulation/cae_mapping.json, then call cae.generate_solver_input."
         ),
         "properties": {
             "project_id": {"type": "string"},
@@ -1590,12 +1591,18 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                         '"content": {"materials": [{"name": "aluminum_6061", '
                         '"density_kg_m3": 2700, "youngs_modulus_pa": 69e9, '
                         '"poisson_ratio": 0.33, "yield_strength_pa": 276e6}]}}. '
-                        "Example load-case patch: "
+                        "Example boundary-condition patch (target is an NSET name): "
                         '{"action_type": "create_file", '
-                        '"path": "simulation/load_cases/load_case_001.json", '
-                        '"content": {"id": "load_case_001", '
-                        '"loads": [{"id": "load_001", "type": "force", '
-                        '"target": "REPLACE_WITH_NSET_OR_FACE_POINTER", "dof": 2, "value": 500.0}]}}'
+                        '"path": "simulation/cae_imports/parsed_boundary_conditions.json", '
+                        '"content": {"boundary_conditions": [{"id": "bc_001", "type": "fixed", '
+                        '"target": "FIXED_BASE", "dof_start": 1, "dof_end": 3, "value": 0}]}}. '
+                        "Example face-to-NSET mapping patch: "
+                        '{"action_type": "create_file", '
+                        '"path": "simulation/cae_mapping.json", '
+                        '"content": {"schema_version": "0.1", "mappings": [{"cae_entity": "FIXED_BASE", '
+                        '"maps_to": {"role": "fixed_support", "target_pointers": ["@face:face_003"]}, '
+                        '"face_ids": ["face_003"]}]}}. '
+                        "Use NSET names for load/BC targets; @face: pointers belong only inside cae_mapping.json."
                     ),
                 },
                 "description": (

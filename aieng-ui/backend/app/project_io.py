@@ -966,6 +966,30 @@ def compute_topology_hash(topology_map: dict[str, Any] | None) -> str | None:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def load_topology_face_ids(package_path: str | Path) -> set[str]:
+    """Return the set of face entity IDs present in the package topology_map.json.
+
+    Returns an empty set if the topology map is missing or unreadable so callers
+    can degrade safely.
+    """
+    pkg = Path(package_path)
+    try:
+        with zipfile.ZipFile(pkg, "r") as zf:
+            if "geometry/topology_map.json" not in zf.namelist():
+                return set()
+            data = json.loads(zf.read("geometry/topology_map.json").decode("utf-8"))
+    except Exception:
+        return set()
+    entities = data.get("entities") if isinstance(data, dict) else None
+    if not isinstance(entities, list):
+        return set()
+    return {
+        str(e.get("id"))
+        for e in entities
+        if isinstance(e, dict) and e.get("type") == "face" and e.get("id")
+    }
+
+
 _FACE_POINTER_RE = re.compile(r"@face:([A-Za-z0-9_]+)")
 
 

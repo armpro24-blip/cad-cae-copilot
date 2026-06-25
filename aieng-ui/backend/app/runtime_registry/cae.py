@@ -46,7 +46,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
     """Register cae runtime tools."""
     sync_main_symbols(globals())
     from ..runtime_tool_registry import _resolve_ccx_cmd
-    from ..project_io import validate_cae_topology_references
+    from ..project_io import validate_cae_topology_references, load_topology_face_ids
 
     _delete_project_everywhere = app_context.delete_project_everywhere
     _load_project_feature_parameters = app_context.load_project_feature_parameters
@@ -153,7 +153,32 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 "message": "No patches provided.",
             }
 
+        def _extract_patch_face_ids(patch: dict[str, Any]) -> set[str]:
+            """Collect face_ids referenced by a cae_mapping.json patch."""
+            seen: set[str] = set()
+            for key in ("value", "content", "payload"):
+                doc = patch.get(key)
+                if doc is not None:
+                    break
+            if not isinstance(doc, dict):
+                return seen
+            mappings = doc.get("mappings")
+            if isinstance(mappings, list):
+                for mapping in mappings:
+                    if not isinstance(mapping, dict):
+                        continue
+                    for fid in mapping.get("face_ids") or []:
+                        if fid:
+                            seen.add(str(fid))
+                    maps_to = mapping.get("maps_to")
+                    if isinstance(maps_to, dict):
+                        for ptr in maps_to.get("target_pointers") or []:
+                            if isinstance(ptr, str) and ptr.startswith("@face:"):
+                                seen.add(ptr[len("@face:"):])
+            return seen
+
         # Validate all patches before applying any
+        valid_face_ids: set[str] | None = None
         for i, patch in enumerate(patches):
             path = patch.get("path", "")
             action = patch.get("action_type") or patch.get("operation") or ""
@@ -177,6 +202,22 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                         f"Supported: {sorted(_SUPPORTED_PATCH_OPERATIONS)}"
                     ),
                 }
+
+            if path == "simulation/cae_mapping.json":
+                if valid_face_ids is None:
+                    valid_face_ids = load_topology_face_ids(package_path)
+                referenced = _extract_patch_face_ids(patch)
+                unknown = sorted(referenced - valid_face_ids)
+                if unknown:
+                    return {
+                        "status": "error",
+                        "code": "unknown_face_ids",
+                        "message": (
+                            f"Patch {i} for simulation/cae_mapping.json references "
+                            f"face IDs not present in the current topology: {unknown}. "
+                            "Use @face:* pointers from the project's B-Rep graph."
+                        ),
+                    }
 
         try:
             changed_paths, apply_warnings, artifact_diffs = _apply_patches_to_package(
@@ -1598,7 +1639,9 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             "Accepts a preferred 'patches' array plus legacy 'patch' compatibility. "
             "Supports create_file, replace_json, merge_object, append_array_item. "
             "Use this to assemble a minimal linear_static setup: solver settings, "
-            "materials, boundary conditions, and loads. Writes only to allowed setup paths; "
+            "materials, boundary conditions, loads, and the face-to-NSET mapping "
+            "(simulation/cae_mapping.json). Load/BC targets must be NSET names; "
+            "bind NSETs to faces with cae_mapping.json. Writes only to allowed setup paths; "
             "rejects results/ and path traversal."
         ),
         input_schema=_schema("cae.apply_setup_patch"),

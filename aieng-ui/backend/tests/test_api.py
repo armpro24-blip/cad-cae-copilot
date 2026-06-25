@@ -2238,6 +2238,126 @@ def test_create_file_accepts_payload_key_as_content_alias() -> None:
     assert doc["id"] == "load_case_001"
 
 
+def test_cae_setup_patch_rejects_unknown_face_ids_in_cae_mapping(tmp_path: Path) -> None:
+    """cae.apply_setup_patch rejects cae_mapping.json patches that reference
+    face IDs absent from the current topology."""
+    from app.main import create_app, default_project, project_dir, save_project
+    from starlette.testclient import TestClient
+
+    settings = _make_patch_settings(tmp_path)
+    app = create_app(settings)
+    client = TestClient(app)
+
+    project = save_project(settings, default_project("cae-mapping-face-ids"))
+    project_id = project["id"]
+    pkg_path = project_dir(settings, project_id) / "patch-test.aieng"
+    _make_setup_package(
+        pkg_path,
+        extra={
+            "geometry/topology_map.json": {
+                "entities": [
+                    {"id": "face_001", "type": "face"},
+                    {"id": "face_002", "type": "face"},
+                    {"id": "body_001", "type": "solid"},
+                ]
+            }
+        },
+    )
+    project["aieng_file"] = "patch-test.aieng"
+    save_project(settings, project)
+
+    resp = client.post("/api/runtime/runs", json={
+        "message": "apply cae setup patch",
+        "project_id": project_id,
+        "tool_input": {
+            "project_id": project_id,
+            "patches": [{
+                "action_type": "create_file",
+                "path": "simulation/cae_mapping.json",
+                "content": {
+                    "schema_version": "0.1",
+                    "mappings": [
+                        {
+                            "cae_entity": "FIXED_BASE",
+                            "maps_to": {"role": "fixed_support", "target_pointers": ["@face:face_001"]},
+                            "face_ids": ["face_001", "face_999"],
+                        }
+                    ],
+                },
+            }],
+        },
+    })
+    assert resp.status_code == 200
+    run = resp.json()
+    assert run["status"] == "completed"
+    result = run["tool_results"][0]["output"]
+    assert result["status"] == "error"
+    assert result["code"] == "unknown_face_ids"
+    assert "face_999" in result["message"]
+    assert "face_001" not in result["message"]
+
+
+def test_cae_setup_patch_accepts_valid_face_ids_in_cae_mapping(tmp_path: Path) -> None:
+    """cae.apply_setup_patch writes cae_mapping.json when all referenced face IDs exist."""
+    from app.main import create_app, default_project, project_dir, save_project
+    from starlette.testclient import TestClient
+
+    settings = _make_patch_settings(tmp_path)
+    app = create_app(settings)
+    client = TestClient(app)
+
+    project = save_project(settings, default_project("cae-mapping-valid"))
+    project_id = project["id"]
+    pkg_path = project_dir(settings, project_id) / "patch-test.aieng"
+    _make_setup_package(
+        pkg_path,
+        extra={
+            "geometry/topology_map.json": {
+                "entities": [
+                    {"id": "face_003", "type": "face"},
+                    {"id": "body_001", "type": "solid"},
+                ]
+            }
+        },
+    )
+    project["aieng_file"] = "patch-test.aieng"
+    save_project(settings, project)
+
+    mapping = {
+        "schema_version": "0.1",
+        "mappings": [
+            {
+                "cae_entity": "LOAD_TOP",
+                "maps_to": {
+                    "role": "load_application",
+                    "load_type": "force",
+                    "target_pointers": ["@face:face_003"],
+                },
+                "face_ids": ["face_003"],
+            }
+        ],
+    }
+    resp = client.post("/api/runtime/runs", json={
+        "message": "apply cae setup patch",
+        "project_id": project_id,
+        "tool_input": {
+            "project_id": project_id,
+            "patches": [{
+                "action_type": "create_file",
+                "path": "simulation/cae_mapping.json",
+                "content": mapping,
+            }],
+        },
+    })
+    assert resp.status_code == 200
+    run = resp.json()
+    assert run["status"] == "completed"
+    result = run["tool_results"][0]["output"]
+    assert result["status"] == "ok"
+    diff_paths = {d["path"] for d in result.get("artifact_diffs", [])}
+    assert "simulation/cae_mapping.json" in diff_paths
+
+
 def test_cae_setup_patch_rejects_absolute_path(tmp_path: Path) -> None:
     """cae.apply_setup_patch rejects absolute paths."""
     from app.main import create_app, default_project, project_dir, save_project
