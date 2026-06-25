@@ -1581,8 +1581,9 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                         "A single patch operation. Required fields: "
                         "action_type (create_file|replace_json|merge_object|append_array_item), "
                         "path (allowed target file path in the package, e.g. "
-                        "'simulation/cae_imports/parsed_materials.json'), and payload "
-                        "(content for create_file; value or content for JSON operations). "
+                        "'simulation/cae_imports/parsed_materials.json'), and value "
+                        "(payload, content, or value are accepted aliases: payload/content for "
+                        "create_file; value/content/payload for JSON operations). "
                         "Example material patch: "
                         '{"action_type": "merge_object", '
                         '"path": "simulation/cae_imports/parsed_materials.json", '

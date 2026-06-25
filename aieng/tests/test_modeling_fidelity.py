@@ -23,14 +23,17 @@ def _fg(named: list[tuple[str, int, str]], adv: tuple[str, ...] = ()) -> dict:
 
 
 def test_crude_gearbox_is_flagged_crude() -> None:
-    # housing box + two gears buried inside it, no fillet/loft anywhere
+    # enclosure box + two gears buried inside it, no fillet/loft anywhere.
+    # Use a non-mechanical label ("case") so the generic fidelity heuristic still
+    # fires on the sharp edges; a true mechanical housing with model_kind set is
+    # treated differently (see test_mechanical_bracket_is_not_flagged_crude).
     topo = _topo([
-        ("body_001", "housing", [0, 0, 0, 120, 80, 60]),
+        ("body_001", "case", [0, 0, 0, 120, 80, 60]),
         ("body_005", "gear_input", [55, 20, 25, 63, 35, 55]),
         ("body_006", "gear_output", [55, -30, 5, 63, 20, 55]),
     ])
     fid = assess_modeling_fidelity(topo, _fg([
-        ("housing", 15, "body_001"), ("gear_input", 3, "body_005"), ("gear_output", 3, "body_006"),
+        ("case", 15, "body_001"), ("gear_input", 3, "body_005"), ("gear_output", 3, "body_006"),
     ]))
     assert fid["level"] == "crude"
     rules = {f["rule"] for f in fid["findings"]}
@@ -91,12 +94,13 @@ def test_part_inside_solid_block_is_still_flagged_hidden() -> None:
 
 
 def test_finished_boxy_model_is_designed_not_penalized_for_no_loft() -> None:
-    # a filleted housing (no loft) should be 'designed' — boxy mechanical massing
-    # with broken edges is only a mild note, not a heavy penalty.
+    # a filleted product body (no loft) should be 'designed' — boxy massing with
+    # broken edges is only a mild note, not a heavy penalty. Use a non-engineering
+    # label so the generic heuristic still notes the lack of loft/sweep/revolve.
     topo = {"entities": [
-        {"id": "b1", "type": "solid", "name": "housing", "bounding_box": [0, 0, 0, 120, 80, 60], "volume": 140000.0},
+        {"id": "b1", "type": "solid", "name": "product_body", "bounding_box": [0, 0, 0, 120, 80, 60], "volume": 140000.0},
     ]}
-    fid = assess_modeling_fidelity(topo, _fg([("housing", 18, "b1")], adv=("fillet",)))
+    fid = assess_modeling_fidelity(topo, _fg([("product_body", 18, "b1")], adv=("fillet",)))
     assert fid["level"] == "designed"
     assert fid["score"] >= 90  # mild -5 for no-loft, nothing else
     assert any(f["rule"] == "primitive_stacking_only" for f in fid["findings"])  # still noted, just mild
@@ -109,6 +113,37 @@ def test_critique_geometry_includes_fidelity_block() -> None:
     assert out["fidelity"]["level"] in {"designed", "basic", "crude"}
     # DfM verdict stays a separate axis from fidelity (a crude box still "passes" DfM)
     assert out["verdict"] in {"passes", "passes_with_notes", "passes_with_warnings", "fails_audit"}
+
+
+def test_mechanical_bracket_is_not_flagged_crude() -> None:
+    # A sharp-edged CNC L-bracket (base_plate + rib_main) is a legitimate
+    # engineering part. Without fillets/loft it must NOT score 'crude'.
+    topo = {"entities": [
+        {"id": "b1", "type": "solid", "name": "base_plate", "bounding_box": [0, 0, 0, 100, 60, 8], "volume": 48000.0},
+        {"id": "b2", "type": "solid", "name": "rib_main", "bounding_box": [0, 10, 8, 80, 12, 40], "volume": 22000.0},
+    ]}
+    fg = _fg([
+        ("base_plate", 10, "b1"),
+        ("rib_main", 8, "b2"),
+    ])
+    fid = assess_modeling_fidelity(topo, fg)
+    assert fid["level"] == "designed"
+    assert fid["score"] == 100
+    rules = {f["rule"] for f in fid["findings"]}
+    assert "no_edge_breaking" not in rules
+    assert "primitive_stacking_only" not in rules
+
+
+def test_mechanical_intent_by_model_kind_suppresses_fidelity_noise() -> None:
+    # Even with generic labels, an explicit model_kind='mechanical' should stop
+    # the organic-ID heuristic from penalizing sharp, prismatic geometry.
+    topo = _topo([("body_001", "block", [0, 0, 0, 80, 60, 10])])
+    fid = assess_modeling_fidelity(topo, {"features": [], "model_kind": "mechanical"})
+    assert fid["level"] == "designed"
+    assert fid["score"] == 100
+    rules = {f["rule"] for f in fid["findings"]}
+    assert "no_edge_breaking" not in rules
+    assert "primitive_stacking_only" not in rules
 
 
 def test_empty_model_fidelity_skipped() -> None:

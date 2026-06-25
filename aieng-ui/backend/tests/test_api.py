@@ -2198,6 +2198,46 @@ def test_merge_object_creates_file_when_absent_and_accepts_content_key() -> None
     assert doc2 == {"a": 1, "b": 2}
 
 
+def test_replace_json_accepts_payload_key_as_value_alias() -> None:
+    """cae.apply_setup_patch replace_json accepts the `payload` key that the tool
+    schema documented, not only `value` / `content`. Regression from #378."""
+    import json
+    from app.project_io import _apply_single_patch
+
+    existing = json.dumps({"settings": {"solver": "foo"}}).encode()
+    op = {
+        "action_type": "replace_json",
+        "path": "simulation/solver_settings.json",
+        "pointer": "/settings/solver",
+        "payload": "CalculiX",
+    }
+    doc = json.loads(_apply_single_patch(existing, op, op["path"]))
+    assert doc["settings"]["solver"] == "CalculiX"
+
+    # whole-document replace with `payload` also works
+    op2 = {
+        "action_type": "replace_json",
+        "path": "x.json",
+        "payload": {"new": "doc"},
+    }
+    doc2 = json.loads(_apply_single_patch(existing, op2, op2["path"]))
+    assert doc2 == {"new": "doc"}
+
+
+def test_create_file_accepts_payload_key_as_content_alias() -> None:
+    """cae.apply_setup_patch create_file accepts `payload` as an alias for `content`."""
+    import json
+    from app.project_io import _apply_single_patch
+
+    op = {
+        "action_type": "create_file",
+        "path": "simulation/load_cases/load_case_001.json",
+        "payload": {"id": "load_case_001", "loads": []},
+    }
+    doc = json.loads(_apply_single_patch(None, op, op["path"]))
+    assert doc["id"] == "load_case_001"
+
+
 def test_cae_setup_patch_rejects_absolute_path(tmp_path: Path) -> None:
     """cae.apply_setup_patch rejects absolute paths."""
     from app.main import create_app, default_project, project_dir, save_project

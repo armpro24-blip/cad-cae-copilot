@@ -223,6 +223,38 @@ _FINISHING_FEATURE_TYPES = ("fillet", "chamfer")
 _SHAPED_FEATURE_TYPES = ("loft", "revolve", "sweep")
 
 
+# Engineering / mechanical intent: prismatic, sharp-edged parts are *correct* for
+# CNC/sheet-metal brackets, plates, ribs, fixtures. Don't let the organic-ID
+# fidelity heuristic nag that they are "unfinished" just because they lack
+# fillets or loft/sweep/revolve.
+_ENGINEERING_ROLE_LABELS: tuple[str, ...] = (
+    "bracket", "plate", "base_plate", "back_plate", "mount_plate",
+    "wall", "rib", "rib_main", "rib_side", "boss", "flange",
+    "mounting_hole", "bolt_hole", "clearance_hole", "tab", "lug",
+    "housing", "enclosure", "gearbox", "fixture", "jig",
+)
+
+
+def _has_engineering_role_label(feature_graph: dict[str, Any]) -> bool:
+    """True if any named part / feature reads as an engineered mechanical component."""
+    for feat in feature_graph.get("features", []) or []:
+        if not is_named_part_feature(feat):
+            continue
+        name = (feat.get("name") or "").lower()
+        if any(token in name for token in _ENGINEERING_ROLE_LABELS):
+            return True
+    return False
+
+
+def _is_mechanical_intent(feature_graph: dict[str, Any], model_kind: str | None = None) -> bool:
+    """Mechanical intent from explicit model_kind or canonical engineering labels."""
+    if str(model_kind or "").lower() == "mechanical":
+        return True
+    if feature_graph.get("model_kind") == "mechanical":
+        return True
+    return _has_engineering_role_label(feature_graph)
+
+
 def _bbox_contains(outer: list[float], inner: list[float], tol: float = 1.0) -> bool:
     """True if `outer` bbox fully contains `inner` (within tol)."""
     if len(outer) < 6 or len(inner) < 6:
@@ -248,6 +280,8 @@ _HOLLOW_FILL_RATIO = 0.6
 def assess_modeling_fidelity(
     topology_map: dict[str, Any],
     feature_graph: dict[str, Any],
+    *,
+    model_kind: str | None = None,
 ) -> dict[str, Any]:
     """Deterministic 'does this read as designed, or as a crude primitive stack?' check.
 
@@ -258,6 +292,12 @@ def assess_modeling_fidelity(
     are advisory (a crude box is a *quality* note, never a correctness failure) and
     each carries a concrete fix. Cylindrical parts (shafts/pins/bores) are NOT
     flagged as 'featureless' — a cylinder is legitimately a cylinder.
+
+    For mechanical/engineering parts (explicit ``model_kind == "mechanical"`` or
+    canonical engineering labels such as bracket/plate/rib/wall), prismatic
+    geometry with sharp edges is correct, so the ``no_edge_breaking`` and
+    ``primitive_stacking_only`` findings are suppressed rather than nagging the
+    agent to add cosmetic fillets or organic loft/sweep features.
     """
     entities = topology_map.get("entities", [])
     bodies = {e["id"]: e for e in entities if e.get("type") == "solid"}
@@ -272,7 +312,9 @@ def assess_modeling_fidelity(
     counter = 1
     score = 100
 
-    if bodies and not has_finishing:
+    mechanical_intent = _is_mechanical_intent(feature_graph, model_kind)
+
+    if bodies and not has_finishing and not mechanical_intent:
         score -= 40
         counter = _add_finding(
             findings, counter, "medium", "modeling_fidelity", "no_edge_breaking",
@@ -282,7 +324,7 @@ def assess_modeling_fidelity(
             "Break visible edges with fillet() / chamfer() applied LAST (after booleans): "
             "~5–15mm on enclosures/housings, ~1–4mm on machined parts.",
         )
-    if bodies and not has_shaped and len(bodies) >= 1:
+    if bodies and not has_shaped and len(bodies) >= 1 and not mechanical_intent:
         # A filleted/chamfered model shows finishing intent, so primitive (boxy)
         # massing is a mild note, not a heavy penalty — many good mechanical parts
         # are box-based with broken edges. Only raw, unfinished primitives are docked hard.
@@ -720,6 +762,10 @@ def critique_geometry(
         },
         "rule_source": "aieng/converters/critique_engine DfMRulePack",
         "assumptions": list(pack.notes),
-        "fidelity": assess_modeling_fidelity(topology_map, feature_graph),
+        "fidelity": assess_modeling_fidelity(
+            topology_map,
+            feature_graph,
+            model_kind=feature_graph.get("model_kind"),
+        ),
         "credibility": classify_credibility("critique"),
     }

@@ -45,7 +45,11 @@ def _fidelity_brief(topology_map: dict[str, Any], feature_graph: dict[str, Any])
     'crude' vs 'designed' immediately without a separate cad.design_review call.
     Best-effort: never breaks a build."""
     try:
-        fid = _assess_modeling_fidelity(topology_map, feature_graph)
+        fid = _assess_modeling_fidelity(
+            topology_map,
+            feature_graph,
+            model_kind=feature_graph.get("model_kind"),
+        )
     except Exception:
         return None
     return {

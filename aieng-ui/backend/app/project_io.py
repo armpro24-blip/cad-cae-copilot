@@ -736,7 +736,12 @@ def _apply_single_patch(
     patch_type = op.get("patch_type", "")
 
     if action == "create_file":
+        # Accept `payload` as a documented alias for `content` (the schema
+        # described `payload` for all patch ops while the implementation
+        # historically required `content`). `value` is not meaningful here.
         content = op.get("content")
+        if content is None:
+            content = op.get("payload")
         if content is None:
             raise ValueError("create_file requires 'content'")
         if isinstance(content, (dict, list)):
@@ -745,9 +750,13 @@ def _apply_single_patch(
 
     if action in ("replace_json", "merge_object", "append_array_item"):
         pointer_str: str = op.get("pointer", "")
-        # Accept `content` as an alias for `value`, consistent with create_file and the
-        # documented cae.apply_setup_patch examples (which use `content` for merges).
-        value: Any = op.get("value") if op.get("value") is not None else op.get("content")
+        # Accept `content` / `payload` as aliases for `value`, consistent with
+        # create_file and the documented cae.apply_setup_patch examples.
+        value: Any = op.get("value")
+        if value is None:
+            value = op.get("content")
+        if value is None:
+            value = op.get("payload")
         if existing_content is None:
             # merge_object into a missing file = create it, so the first setup write can
             # use the same merge op as later merges (the materials example does this).
