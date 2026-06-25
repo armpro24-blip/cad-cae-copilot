@@ -433,6 +433,21 @@ def _extract_solid_section_materials(source_deck_text: str) -> set[str]:
     return materials
 
 
+def _fmt_card_number(value: Any) -> str:
+    """Format a numeric value for a CalculiX card field.
+
+    CalculiX reads card fields with a fixed maximum width; an 18-digit float repr
+    (e.g. ``2.6999999999999998e-09`` produced by a unit conversion) overflows it
+    and aborts with ``*ERROR reading ...``. Clamp numbers to 8 significant figures
+    (ample engineering precision). Non-numeric values pass through as ``str``.
+    """
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, (int, float)):
+        return f"{value:.8g}"
+    return str(value)
+
+
 def _assemble_deck(
     manifest: dict[str, Any],
     run_id: str,
@@ -506,11 +521,11 @@ def _assemble_deck(
             density = mat.get("density")
             lines.append(f"*MATERIAL, NAME={name}")
             if isinstance(elastic, dict):
-                e = elastic.get("youngs_modulus", "")
-                nu = elastic.get("poisson_ratio", "")
+                e = _fmt_card_number(elastic.get("youngs_modulus", ""))
+                nu = _fmt_card_number(elastic.get("poisson_ratio", ""))
                 lines += ["*ELASTIC", f"{e}, {nu}"]
             if density is not None:
-                lines += ["*DENSITY", f"{density}"]
+                lines += ["*DENSITY", f"{_fmt_card_number(density)}"]
             lines.append("")
     else:
         lines.append("** WARNING: No material definitions available.")
