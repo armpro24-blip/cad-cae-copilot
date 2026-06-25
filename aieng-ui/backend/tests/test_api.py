@@ -5677,6 +5677,33 @@ def test_ccx_dll_crash_hint_detects_windows_access_violation() -> None:
     assert _ccx_dll_crash_hint(None, "", frd_exists=False) is None
 
 
+def test_audit_artifact_paths_normalizes_descriptor_dicts() -> None:
+    """changed_artifacts holds {path,kind,role} dicts; the audit log needs path
+    strings. _audit_artifact_paths must extract paths (not crash on .endswith)."""
+    from app.runtime_registry.cae import _audit_artifact_paths
+
+    artifacts = [
+        {"path": "simulation/runs/run_001/solver_run.json", "kind": "solver_run", "role": "artifact"},
+        {"path": "simulation/runs/run_001/outputs/result.frd", "kind": "result", "role": "artifact"},
+        "results/computed_metrics.json",  # tolerate a bare string too
+        {"kind": "no_path"},               # pathless descriptor is dropped
+    ]
+    paths = _audit_artifact_paths(artifacts)
+    assert paths == [
+        "simulation/runs/run_001/solver_run.json",
+        "simulation/runs/run_001/outputs/result.frd",
+        "results/computed_metrics.json",
+    ]
+    # The exact operation that crashed before: filtering evidence by suffix.
+    evidence = [p for p in paths if p.endswith("solver_run.json") or p.endswith(".frd")]
+    assert evidence == [
+        "simulation/runs/run_001/solver_run.json",
+        "simulation/runs/run_001/outputs/result.frd",
+    ]
+    assert _audit_artifact_paths([]) == []
+    assert _audit_artifact_paths(None) == []
+
+
 def test_runtime_capabilities_treats_malformed_ccx_cmd_as_unavailable(tmp_path: Path, monkeypatch) -> None:
     """Malformed AIENG_CCX_CMD does not crash the capabilities endpoint."""
     monkeypatch.setenv("AIENG_CCX_CMD", '"unterminated')

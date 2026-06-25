@@ -19,6 +19,22 @@ LOGGER = logging.getLogger("app.app_factory")
 _WINDOWS_CRASH_THRESHOLD = 0xC0000000
 
 
+def _audit_artifact_paths(artifacts: list) -> list[str]:
+    """Normalise a ``changed_artifacts`` list to package-internal path strings.
+
+    ``changed_artifacts`` holds artifact descriptor dicts (``{"path", "kind",
+    "role"}``), but ``build_audit_event`` expects ``list[str]`` of paths. Extract
+    the path from each dict (tolerating bare strings), dropping anything pathless —
+    so audit logging never crashes on ``str``-only operations like ``.endswith``.
+    """
+    paths: list[str] = []
+    for a in artifacts or []:
+        p = a.get("path") if isinstance(a, dict) else a
+        if isinstance(p, str) and p:
+            paths.append(p)
+    return paths
+
+
 def _ccx_dll_crash_hint(return_code: int | None, stdout: str, frd_exists: bool) -> str | None:
     """Return a remediation hint when ccx appears to have crashed on DLL load.
 
@@ -1621,10 +1637,11 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
 
                 try:
                     _rev = _read_revalidation_status(package_path) or {}
-                    _solver_artifacts = list(changed_artifacts) + [REVALIDATION_STATUS_PATH]
+                    _artifact_paths = _audit_artifact_paths(changed_artifacts)
+                    _solver_artifacts = _artifact_paths + [REVALIDATION_STATUS_PATH]
                     _evidence = [
-                        a for a in changed_artifacts
-                        if a.endswith("solver_run.json") or a.endswith(".frd")
+                        p for p in _artifact_paths
+                        if p.endswith("solver_run.json") or p.endswith(".frd")
                     ]
                     _append_audit_event_to_package(
                         package_path,
@@ -1659,7 +1676,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                             tool="cae.run_solver",
                             event_type="solver_run_failed",
                             status="failed",
-                            artifacts_written=list(changed_artifacts),
+                            artifacts_written=_audit_artifact_paths(changed_artifacts),
                             evidence_created=[],
                             state_changes={
                                 "requires_revalidation": _rev.get("requires_revalidation", True),
