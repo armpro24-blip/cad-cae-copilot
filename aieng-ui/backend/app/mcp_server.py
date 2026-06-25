@@ -44,6 +44,7 @@ from mcp.types import ToolAnnotations
 from pydantic import ConfigDict
 
 from . import mcp_approval
+from . import mcp_tool_surface
 
 logger = logging.getLogger(__name__)
 
@@ -448,6 +449,7 @@ def _apply_cli_runtime_options(
     approval_mode: str = "inherit",
     data_dir: str | None = None,
     require_guides: bool | None = None,
+    compact_surface: bool = False,
 ) -> None:
     """Apply console-script options before ``create_app()`` reads env vars."""
     global _BACKEND_URL
@@ -465,6 +467,9 @@ def _apply_cli_runtime_options(
 
     if require_guides is not None:
         os.environ["AIENG_MCP_REQUIRE_GUIDES"] = "1" if require_guides else "0"
+
+    if compact_surface:
+        os.environ["AIENG_MCP_COMPACT_SURFACE"] = "1"
 
     if approval_mode == "inherit":
         return
@@ -756,12 +761,20 @@ def _register_permission_tool(mcp: FastMCP) -> None:
         tool_obj.fn_metadata = FuncMetadata(arg_model=_PassthroughArgModel)
 
 
-def _build_mcp_server(name: str = "aieng-workbench") -> FastMCP:
-    """Instantiate FastMCP and register every runtime tool from the workbench.
+def _build_mcp_server(name: str = "aieng-workbench", *, compact_surface: bool | None = None) -> FastMCP:
+    """Instantiate FastMCP and register runtime tools from the workbench.
 
     Side effect: triggers ``create_app()`` so the runtime tool registry is
     populated before we read it. The FastAPI app is otherwise discarded.
+
+    Args:
+        compact_surface: If True, expose only the curated subset of tools for
+            clients with a small active-tool budget (e.g. Cursor). If None,
+            the value is read from ``AIENG_MCP_COMPACT_SURFACE``. The full
+            surface is exposed when both are false.
     """
+    if compact_surface is None:
+        compact_surface = mcp_tool_surface.compact_surface_enabled()
     # Import lazily so module-load doesn't pay for FastAPI when only the
     # registry shape is needed (e.g. in tests that don't need a server).
     from .app_factory import create_app
@@ -769,6 +782,8 @@ def _build_mcp_server(name: str = "aieng-workbench") -> FastMCP:
 
     create_app()  # populates runtime._REGISTRY
     tool_defs = _rt.list_tools_for_mcp()
+    if compact_surface:
+        tool_defs = [t for t in tool_defs if mcp_tool_surface.is_essential_mcp_tool(t["name"])]
 
     mcp = FastMCP(name, instructions=_SERVER_DESCRIPTION)
     _register_mcp_first_prompts_and_resources(mcp)
@@ -1038,12 +1053,22 @@ def main(argv: list[str] | None = None) -> int:
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Server log level. stdio transport requires WARNING+ so logs don't corrupt the framed protocol.",
     )
+    parser.add_argument(
+        "--compact-tool-surface",
+        action="store_true",
+        help=(
+            "Expose only the curated subset of high-frequency tools (≈30) for MCP "
+            "clients with a small active-tool budget such as Cursor. The full tool "
+            "surface remains the default."
+        ),
+    )
     args = parser.parse_args(argv)
     _apply_cli_runtime_options(
         backend_url=args.backend_url,
         approval_mode=args.approval_mode,
         data_dir=args.data_dir,
         require_guides=args.require_guides,
+        compact_surface=args.compact_tool_surface,
     )
 
     # IMPORTANT: stdio is the wire — any stray print to stdout corrupts the
@@ -1055,7 +1080,7 @@ def main(argv: list[str] | None = None) -> int:
         format="[mcp-server] %(levelname)s %(name)s: %(message)s",
     )
 
-    mcp = _build_mcp_server()
+    mcp = _build_mcp_server(compact_surface=args.compact_tool_surface)
     logger.info("registered %d tools", len(mcp._tool_manager._tools))  # type: ignore[attr-defined]
 
     if args.doctor:

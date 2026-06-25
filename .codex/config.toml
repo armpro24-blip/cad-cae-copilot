@@ -7,6 +7,8 @@ args = [
     "python",
     "-m",
     "app.mcp_server",
+    "--approval-mode",
+    "client",
 ]
 command = "conda"
 

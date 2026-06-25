@@ -149,6 +149,7 @@ command = "uvx"
 args = [
   "aieng-workbench-mcp[full]",
   "--approval-mode", "client",
+  "--compact-tool-surface",
   "--data-dir", "~/.aieng-workbench",
 ]
 ```
@@ -158,7 +159,10 @@ For a local checkout with the live viewer:
 ```toml
 [mcp_servers.aieng-workbench]
 command = "conda"
-args = ["run", "-n", "aieng311", "--no-capture-output", "python", "-m", "aieng_workbench_mcp"]
+args = [
+  "run", "-n", "aieng311", "--no-capture-output", "python", "-m", "aieng_workbench_mcp",
+  "--approval-mode", "client",
+]
 cwd = "<absolute-path-to-clone>/aieng-ui/backend"
 
 [mcp_servers.aieng-workbench.env]
@@ -179,12 +183,22 @@ Use `.vscode/mcp.json` style configuration:
       "args": [
         "aieng-workbench-mcp[full]",
         "--approval-mode", "client",
+        "--compact-tool-surface",
         "--data-dir", "~/.aieng-workbench"
       ]
     }
   }
 }
 ```
+
+### Compact tool surface
+
+The workbench registers ~90 tools. Some MCP clients (notably Cursor and Codex)
+advertise a limited active-tool budget and produce cleaner results with a
+smaller, curated surface. Pass `--compact-tool-surface` (or set
+`AIENG_MCP_COMPACT_SURFACE=1`) to expose only the ~30 high-frequency tools for
+onboarding, CAD authoring, CAE setup/solver, and materials lookup. The full
+surface remains the default for clients that can handle it (e.g. Claude Code).
 
 For Docker/full viewer mode, prefer MCP-over-HTTP if your client supports it:
 

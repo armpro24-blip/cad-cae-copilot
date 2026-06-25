@@ -823,3 +823,53 @@ def test_build_mcp_server_idempotent() -> None:
     m2 = _build_mcp_server()
     n2 = len(_tool_dict(m2))
     assert n1 == n2
+
+
+def test_compact_tool_surface_reduces_tool_count() -> None:
+    """Compact surface exposes only the curated subset of essential tools."""
+    from app import mcp_tool_surface
+
+    full = _build_mcp_server()
+    compact = _build_mcp_server(compact_surface=True)
+    full_tools = set(_tool_dict(full))
+    compact_tools = set(_tool_dict(compact))
+
+    assert len(compact_tools) <= 40, f"compact surface has {len(compact_tools)} tools"
+    assert len(compact_tools) < len(full_tools)
+
+    for name in mcp_tool_surface.ESSENTIAL_MCP_TOOLS:
+        assert _mcp_name(name) in compact_tools, f"essential tool {name} missing from compact surface"
+
+
+def test_compact_tool_surface_honours_env_var(monkeypatch: Any) -> None:
+    """AIENG_MCP_COMPACT_SURFACE=1 triggers the compact surface when no explicit arg is passed."""
+    monkeypatch.setenv("AIENG_MCP_COMPACT_SURFACE", "1")
+    mcp = _build_mcp_server()
+    compact_tools = set(_tool_dict(mcp))
+    assert len(compact_tools) <= 40, f"env-triggered compact surface has {len(compact_tools)} tools"
+
+
+def test_compact_tool_surface_keeps_onboarding_and_cad_cae_tools() -> None:
+    """The compact surface keeps the tools needed for a full CAD→CAE demo."""
+    compact = _build_mcp_server(compact_surface=True)
+    tools = set(_tool_dict(compact))
+    required = {
+        "aieng_agent_readme",
+        "aieng_guide",
+        "aieng_list_projects",
+        "aieng_agent_context",
+        "cad_execute_build123d",
+        "cad_critique",
+        "cad_edit_parameter",
+        "ai_preprocessing_run_ai_preprocessing",
+        "cae_apply_setup_patch",
+        "cae_generate_mesh",
+        "cae_prepare_solver_run",
+        "cae_generate_solver_input",
+        "cae_run_solver",
+        "cae_extract_solver_results",
+        "postprocess_refresh_cae_summary",
+        "list_materials",
+    }
+    missing = required - tools
+    assert not missing, f"compact surface missing required tools: {missing}"
