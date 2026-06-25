@@ -5408,16 +5408,67 @@ def test_split_ccx_cmd_preserves_windows_paths() -> None:
 
 
 def test_resolve_ccx_command_absolute_path(monkeypatch) -> None:
-    """An absolute ccx path resolves directly (most reliable form on Windows)."""
+    """A non-conda absolute ccx path resolves directly and unchanged."""
     from app.runtime_tool_registry import resolve_ccx_command
 
-    abs_ccx = r"C:\envs\calculix-env\Library\bin\ccx.exe"
+    abs_ccx = r"C:\tools\calculix\ccx.exe"  # not inside a conda env
     monkeypatch.setenv("AIENG_CCX_CMD", abs_ccx)
     monkeypatch.setattr("shutil.which", lambda n: n if n.endswith("ccx.exe") else None)
 
     parts, reason = resolve_ccx_command()
     assert parts == [abs_ccx]
     assert "path" in reason.lower()
+
+
+def test_resolve_ccx_command_conda_env_exe_autorewrites_to_conda_run(monkeypatch) -> None:
+    """A bare conda-env ccx.exe (set as AIENG_CCX_CMD) auto-rewrites to the
+    conda-run launcher on Windows — avoids the 0xC0000005 DLL-load crash."""
+    from app.runtime_tool_registry import resolve_ccx_command
+
+    monkeypatch.setattr("os.name", "nt")
+    abs_ccx = r"C:\anaconda3\envs\calculix-env\Library\bin\ccx.exe"
+    conda_exe = r"C:\anaconda3\Scripts\conda.exe"
+    monkeypatch.setenv("AIENG_CCX_CMD", abs_ccx)
+    monkeypatch.setenv("CONDA_EXE", conda_exe)
+    monkeypatch.setattr("shutil.which", lambda n: abs_ccx if n.endswith("ccx.exe") else None)
+    monkeypatch.setattr("os.path.exists", lambda p: p in {conda_exe, abs_ccx})
+
+    parts, reason = resolve_ccx_command()
+    assert parts == [conda_exe, "run", "-n", "calculix-env", "ccx"]
+    assert "conda" in reason.lower()
+
+
+def test_resolve_ccx_command_conda_env_exe_kept_when_conda_unresolvable(monkeypatch) -> None:
+    """If no conda launcher resolves, a conda-env ccx path is kept as-is (honest
+    fallback — the crash hint then guides the operator)."""
+    from app.runtime_tool_registry import resolve_ccx_command
+
+    monkeypatch.setattr("os.name", "nt")
+    abs_ccx = r"C:\anaconda3\envs\calculix-env\Library\bin\ccx.exe"
+    monkeypatch.setenv("AIENG_CCX_CMD", abs_ccx)
+    monkeypatch.delenv("CONDA_EXE", raising=False)
+    monkeypatch.delenv("MAMBA_EXE", raising=False)
+    monkeypatch.setattr("shutil.which", lambda n: abs_ccx if n.endswith("ccx.exe") else None)
+
+    parts, reason = resolve_ccx_command()
+    assert parts == [abs_ccx]
+
+
+def test_resolve_ccx_command_conda_env_exe_via_path_discovery(monkeypatch) -> None:
+    """With AIENG_CCX_CMD unset, a conda-env ccx discovered on PATH also rewrites
+    to conda-run (the env-var-unset failure mode)."""
+    from app.runtime_tool_registry import resolve_ccx_command
+
+    monkeypatch.setattr("os.name", "nt")
+    env_ccx = r"C:\anaconda3\envs\calculix-env\Library\bin\ccx.exe"
+    conda_exe = r"C:\anaconda3\Scripts\conda.exe"
+    monkeypatch.delenv("AIENG_CCX_CMD", raising=False)
+    monkeypatch.setenv("CONDA_EXE", conda_exe)
+    monkeypatch.setattr("shutil.which", lambda n: env_ccx if n == "ccx" else None)
+    monkeypatch.setattr("os.path.exists", lambda p: p == conda_exe)
+
+    parts, reason = resolve_ccx_command()
+    assert parts == [conda_exe, "run", "-n", "calculix-env", "ccx"]
 
 
 def test_resolve_ccx_command_conda_run_via_conda_exe(monkeypatch) -> None:

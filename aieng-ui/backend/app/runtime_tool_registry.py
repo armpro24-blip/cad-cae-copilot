@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from .legacy_app_symbols import sync_main_symbols
@@ -70,6 +71,42 @@ def _resolve_launcher(name: str) -> str | None:
     return None
 
 
+def _conda_run_for_env_ccx(exe_path: str) -> list[str] | None:
+    """If ``exe_path`` is a ccx executable inside a conda env, return a
+    ``conda run -n <env> ccx`` argv (when a conda-family launcher resolves), else None.
+
+    A bare conda-env ``ccx.exe`` invoked WITHOUT activation crashes on Windows with
+    an access violation (0xC0000005) because it cannot load its runtime DLLs;
+    prepending the env's ``Library/bin`` to PATH is not enough — full activation is
+    required. Rewriting to the conda-run launcher activates the env so ccx loads its
+    DLLs. Windows-only: on POSIX a bare conda-env ccx runs fine, so we leave it
+    unchanged to avoid the per-call ``conda run`` overhead.
+    """
+    if os.name != "nt":
+        return None
+    try:
+        p = Path(exe_path)
+    except (TypeError, ValueError):
+        return None
+    if not p.name.lower().startswith("ccx"):
+        return None
+    lowered = [seg.lower() for seg in p.parts]
+    if "envs" not in lowered:
+        return None
+    idx = lowered.index("envs")
+    if idx + 1 >= len(p.parts):
+        return None
+    env_name = p.parts[idx + 1]
+    launcher = (
+        _resolve_launcher("conda")
+        or _resolve_launcher("mamba")
+        or _resolve_launcher("micromamba")
+    )
+    if not launcher:
+        return None
+    return [launcher, "run", "-n", env_name, "ccx"]
+
+
 def resolve_ccx_command() -> tuple[list[str] | None, str]:
     """Resolve the CalculiX (ccx) command, respecting AIENG_CCX_CMD.
 
@@ -89,8 +126,19 @@ def resolve_ccx_command() -> tuple[list[str] | None, str]:
             return None, "AIENG_CCX_CMD is set but empty."
         launcher = parts[0]
         # Direct PATH hit: keep the original argv unchanged (subprocess resolves
-        # the launcher at run time, as before — no behavioral change).
-        if shutil.which(launcher):
+        # the launcher at run time, as before — no behavioral change) — EXCEPT a
+        # bare conda-env ccx.exe, which crashes on Windows (DLL load); rewrite it
+        # to the conda-run launcher that activates the env.
+        resolved_direct = shutil.which(launcher)
+        if resolved_direct:
+            if len(parts) == 1:
+                conda_form = _conda_run_for_env_ccx(resolved_direct)
+                if conda_form:
+                    return conda_form, (
+                        f"AIENG_CCX_CMD points at a conda-env ccx ({launcher!r}); "
+                        f"auto-using the conda-run launcher to avoid a Windows "
+                        f"DLL-load crash"
+                    )
             return parts, f"AIENG_CCX_CMD launcher {launcher!r} found on PATH"
         # Fallback: resolve a conda-family launcher via its *_EXE env var / .exe
         # (the Windows case where bare `conda` is a shim not on the process PATH).
@@ -107,6 +155,12 @@ def resolve_ccx_command() -> tuple[list[str] | None, str]:
     for candidate in ("ccx", "ccx_linux", "ccx2.21", "ccx_static"):
         path = shutil.which(candidate)
         if path:
+            conda_form = _conda_run_for_env_ccx(path)
+            if conda_form:
+                return conda_form, (
+                    f"found a conda-env ccx on PATH ({path}); auto-using the "
+                    f"conda-run launcher to avoid a Windows DLL-load crash"
+                )
             return [path], f"found {candidate!r} on PATH"
     return None, (
         "AIENG_CCX_CMD is not set and no ccx executable was found on PATH. "
