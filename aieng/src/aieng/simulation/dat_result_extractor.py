@@ -85,11 +85,14 @@ def _data_rows(lines: list[str], start: int) -> list[list[float]]:
 def parse_eigenfrequencies(dat_text: str) -> list[float]:
     """Return natural frequencies in Hz from a CalculiX ``*FREQUENCY`` `.dat`.
 
-    The eigenvalue table columns are: mode, eigenvalue (omega^2), frequency real
-    part (rad/time), imaginary part (rad/time), frequency (cycles/time = Hz). The
-    Hz column is preferred; if a row is short, Hz is derived from the rad/time
-    column (``f = omega / 2pi``) or from the eigenvalue (``f = sqrt(eig) / 2pi``).
-    Returns an empty list if no eigenvalue block is present.
+    The first two columns are stable across CalculiX versions: mode number, then
+    the eigenvalue ``omega^2`` in (rad/time)^2. The natural frequency is derived
+    from it directly as ``f = sqrt(eigenvalue) / 2pi`` — layout-independent and
+    equal to ccx's own CYCLES/TIME column. (The trailing frequency columns have
+    drifted: ccx 2.23 emits ``mode, eigenvalue, rad/time, cycles/time (Hz),
+    imaginary`` — so reading a fixed Hz-column index picked up the trailing
+    imaginary 0.0 and reported 0 Hz for every mode.) Returns an empty list if no
+    eigenvalue block is present.
     """
     lines = dat_text.splitlines()
     freqs: list[float] = []
@@ -97,13 +100,9 @@ def parse_eigenfrequencies(dat_text: str) -> list[float]:
         if "EIGENVALUEOUTPUT" not in _condensed(line):
             continue
         for row in _data_rows(lines, idx + 1):
-            if len(row) >= 5:
-                freqs.append(row[4])          # cycles/time (Hz)
-            elif len(row) >= 3:
-                freqs.append(row[2] / _TWO_PI)  # rad/time -> Hz
-            elif len(row) >= 2:
-                eig = row[1]
-                freqs.append(math.sqrt(eig) / _TWO_PI if eig >= 0 else 0.0)
+            if len(row) >= 2:
+                eig = row[1]                      # eigenvalue omega^2 (stable column)
+                freqs.append(math.sqrt(eig) / _TWO_PI if eig > 0 else 0.0)
         if freqs:
             break
     return freqs

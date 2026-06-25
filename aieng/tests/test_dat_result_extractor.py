@@ -23,18 +23,22 @@ from aieng.simulation.dat_result_extractor import (
 )
 
 
-# A CalculiX *FREQUENCY .dat block: columns are
-# mode, eigenvalue(omega^2), freq real (rad/time), imag (rad/time), freq (cycles/time = Hz).
+# A CalculiX 2.23 *FREQUENCY .dat block. Real column order is:
+# mode, eigenvalue(omega^2), freq real part (rad/time), freq real part (cycles/time=Hz),
+# imaginary part (rad/time, 0 for an undamped run). Hz is derived from the
+# eigenvalue (sqrt(omega^2)/2pi), so this layout — including the trailing
+# imaginary column that used to be misread as Hz — parses correctly.
 _MODAL_DAT = """\
 
      E I G E N V A L U E   O U T P U T
 
  MODE NO    EIGENVALUE                       FREQUENCY
-                                  REAL PART             IMAGINARY PART(RAD/TIME)   REAL PART(CYCLES/TIME)
+                                     REAL PART            IMAGINARY PART
+                           (RAD/TIME)      (CYCLES/TIME     (RAD/TIME)
 
-      1   0.7395882E+06           0.8599931E+03           0.0000000E+00           0.1368751E+03
-      2   0.2903163E+08           0.5388101E+04           0.0000000E+00           0.8575814E+03
-      3   0.5814411E+08           0.7625229E+04           0.0000000E+00           0.1213601E+04
+      1   0.7395882E+06   0.8599931E+03   0.1368751E+03   0.0000000E+00
+      2   0.2903163E+08   0.5388101E+04   0.8575814E+03   0.0000000E+00
+      3   0.5814411E+08   0.7625229E+04   0.1213601E+04   0.0000000E+00
 
 """
 
@@ -61,9 +65,12 @@ _BUCKLING_DAT = """\
 def test_parse_eigenfrequencies_reads_hz_column() -> None:
     freqs = parse_eigenfrequencies(_MODAL_DAT)
     assert len(freqs) == 3
-    # Hz column (cycles/time), not rad/time.
+    # Hz derived from the eigenvalue (sqrt(omega^2)/2pi) — equals ccx's CYCLES/TIME
+    # column. Regression: the trailing imaginary 0.0 column must NOT be read as Hz
+    # (that bug reported 0 Hz for every mode on real ccx 2.23).
     assert freqs[0] == pytest.approx(136.8751, rel=1e-4)
     assert freqs[1] == pytest.approx(857.5814, rel=1e-4)
+    assert all(f > 0 for f in freqs)
     assert freqs == sorted(freqs)  # ascending modes
 
 
