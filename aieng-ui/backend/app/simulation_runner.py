@@ -9,6 +9,7 @@ Graceful degradation: if Gmsh or CalculiX are not installed, returns
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import subprocess
@@ -164,6 +165,23 @@ def _mesh_with_gmsh(step_path: Path, work_dir: Path, mesh_size_mm: float) -> Pat
         gmsh.model.add("model")
         gmsh.merge(str(step_path))
         gmsh.model.occ.synchronize()
+
+        # Glue touching-but-separate solids into a conformal, connected mesh.
+        # A build123d Compound of labelled feature-solids (the modeling pattern the
+        # CAD guide teaches) imports as N independent OCC volumes that share
+        # coincident faces but no topology — Gmsh would otherwise mesh them as N
+        # disconnected bodies, so a structural solve sees the parts as free bodies
+        # (singular / invalid). OCC fragment imprints the shared faces so interface
+        # nodes are merged and load transfers across the joints. (#377)
+        occ_volumes = gmsh.model.occ.getEntities(3)
+        if len(occ_volumes) > 1:
+            try:
+                gmsh.model.occ.fragment(occ_volumes, [])
+            except Exception:
+                # Fragment can fail on pathological geometry; fall back to meshing
+                # the volumes as-is rather than aborting the whole mesh.
+                pass
+            gmsh.model.occ.synchronize()
 
         gmsh.option.setNumber("Mesh.CharacteristicLengthMax", mesh_size_mm)
         gmsh.option.setNumber("Mesh.CharacteristicLengthMin", mesh_size_mm / 4.0)
@@ -835,28 +853,312 @@ def build_source_deck_from_mesh(
     return "\n".join(lines) + "\n", empty_nsets
 
 
-def ensure_source_deck_from_mesh(package_path: Path) -> dict[str, Any]:
-    """Synthesize ``source_solver_deck.inp`` from a persisted mesh when absent.
+_PARSED_LOADS_PATH = "simulation/cae_imports/parsed_loads.json"
+_PARSED_BCS_PATH = "simulation/cae_imports/parsed_boundary_conditions.json"
+_CAE_MAPPING_PATH = "simulation/cae_mapping.json"
+_TOPOLOGY_PATH = "geometry/topology_map.json"
+_LOAD_CASES_PREFIX = "simulation/load_cases/"
+_SYNTH_MARKER_PATH = "simulation/cae_imports/.source_deck_synth.json"
 
-    No-op (``status=exists``) when a source deck is already present — an
-    explicitly imported deck always wins. Returns ``status=no_mesh`` when there is
-    no package mesh deck to build from. On success writes the source deck and
-    returns the NSET names it bound (and any that caught no nodes). Never runs a
+
+def _topology_face_ids(topology: dict[str, Any]) -> set[str]:
+    return {
+        str(e["id"])
+        for e in (topology.get("entities") or topology.get("faces") or [])
+        if isinstance(e, dict) and e.get("type") == "face" and "id" in e
+    }
+
+
+def _face_ref_from_target(value: Any, face_ids: set[str]) -> str | None:
+    """Return the topology face id a load/BC ``target`` points at, else None.
+
+    Accepts ``@face:<id>`` pointers (the product-wide convention) and bare face
+    ids that exist in the topology. A target that is already an NSET name (not a
+    face) returns None and is left untouched.
+    """
+    if not isinstance(value, str):
+        return None
+    v = value.strip()
+    if v.startswith("@face:"):
+        return v[len("@face:"):] or None
+    if v in face_ids:
+        return v
+    return None
+
+
+def _list_members(package_path: Path, prefix: str) -> list[str]:
+    try:
+        with zipfile.ZipFile(package_path) as zf:
+            return [n for n in zf.namelist() if n.startswith(prefix)]
+    except (FileNotFoundError, zipfile.BadZipFile):
+        return []
+
+
+_PARSED_MATERIALS_PATH = "simulation/cae_imports/parsed_materials.json"
+
+
+def _canonical_material(m: dict[str, Any]) -> dict[str, Any]:
+    """Coerce a material dict into the form the deck generator reads (#376).
+
+    The deck generator wants ``{name, elastic:{youngs_modulus, poisson_ratio}, density}``
+    in a **consistent mm-N-MPa-tonne** unit system (E in MPa, density in t/mm^3) —
+    but ``apply_setup_patch``'s documented example uses flat SI fields
+    (``youngs_modulus_pa``, ``density_kg_m3``). Translate the SI/flat forms (and
+    leave an already-canonical material untouched), so following the documented
+    schema still yields a deck with real ``*ELASTIC`` constants instead of a silent
+    "no elastic constants" solver abort. Unit conversions: Pa->MPa (/1e6),
+    kg/m^3 -> t/mm^3 (*1e-12).
+    """
+    out: dict[str, Any] = {"name": m.get("name") or "AIENG_MATERIAL"}
+
+    el = m.get("elastic") if isinstance(m.get("elastic"), dict) else None
+    if el and el.get("youngs_modulus") is not None:
+        E = float(el["youngs_modulus"])
+        nu = el.get("poisson_ratio", 0.3)
+    else:
+        E = None
+        nu = m.get("poisson_ratio", 0.3)
+        if m.get("youngs_modulus_pa") is not None:
+            E = float(m["youngs_modulus_pa"]) / 1e6          # Pa -> MPa
+        elif m.get("youngs_modulus_mpa") is not None:
+            E = float(m["youngs_modulus_mpa"])
+        elif m.get("youngs_modulus") is not None:
+            E = float(m["youngs_modulus"])
+            if E > 1e7:                                       # looks like Pa
+                E /= 1e6
+    if E is not None:
+        # Round to 8 significant figures: a unit conversion (e.g. 2700*1e-12) can
+        # yield an 18-digit float repr that overflows CalculiX's fixed-width field
+        # reader. 8 s.f. is well within engineering precision.
+        out["elastic"] = {"youngs_modulus": float(f"{E:.8g}"), "poisson_ratio": nu}
+
+    if m.get("density") is not None:
+        out["density"] = m["density"]
+    elif m.get("density_kg_m3") is not None:
+        out["density"] = float(f"{float(m['density_kg_m3']) * 1e-12:.8g}")  # kg/m^3 -> t/mm^3
+
+    ys = m.get("yield_strength_pa")
+    if ys is not None:
+        out["yield_strength"] = float(ys) / 1e6               # Pa -> MPa
+    elif m.get("yield_strength") is not None:
+        out["yield_strength"] = m["yield_strength"]
+    elif m.get("yield_strength_mpa") is not None:
+        out["yield_strength"] = m["yield_strength_mpa"]
+    return out
+
+
+def normalize_cae_bindings(package_path: Path) -> dict[str, Any]:
+    """Make agent-authored CAE setup runnable without a hand-written mapping (#376).
+
+    Two normalizations so the documented, pointer-centric agent path produces a
+    bound deck:
+
+    1. **Loads location.** If loads live only under ``simulation/load_cases/*.json``
+       (what ``apply_setup_patch``'s schema example suggests) but not in
+       ``parsed_loads.json`` (what the deck generator reads), copy them across.
+    2. **Face-pointer targets.** For any BC/load whose ``target`` is an
+       ``@face:<id>`` pointer (or a bare topology face id), synthesise a
+       ``cae_mapping`` entry binding a named NSET to that face and rewrite the
+       target to the NSET name — so the existing deck-generation path resolves it.
+       Explicit, already-correct mappings/targets are preserved.
+
+    Returns ``{normalized, derived_entities, loads_promoted}``. Best-effort: any
+    read/parse failure leaves the package untouched.
+    """
+    package_path = Path(package_path)
+    derived: list[str] = []
+    loads_promoted = False
+
+    topo_raw = _read_member(package_path, _TOPOLOGY_PATH)
+    topology: dict[str, Any] = json.loads(topo_raw) if topo_raw else {}
+    face_ids = _topology_face_ids(topology)
+
+    loads_raw = _read_member(package_path, _PARSED_LOADS_PATH)
+    parsed_loads: dict[str, Any] = json.loads(loads_raw) if loads_raw else {}
+    loads = parsed_loads.get("loads") if isinstance(parsed_loads, dict) else None
+
+    # 1. Promote load_cases/*.json loads into parsed_loads.json.
+    if not loads:
+        collected: list[dict[str, Any]] = []
+        for member in sorted(_list_members(package_path, _LOAD_CASES_PREFIX)):
+            if not member.endswith(".json"):
+                continue
+            raw = _read_member(package_path, member)
+            if not raw:
+                continue
+            try:
+                lc = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            for item in lc.get("loads") or []:
+                if isinstance(item, dict):
+                    collected.append(item)
+        if collected:
+            parsed_loads = {"loads": collected}
+            loads = collected
+            loads_promoted = True
+
+    bcs_raw = _read_member(package_path, _PARSED_BCS_PATH)
+    parsed_bcs: dict[str, Any] = json.loads(bcs_raw) if bcs_raw else {}
+    bcs = parsed_bcs.get("boundary_conditions") if isinstance(parsed_bcs, dict) else None
+
+    cae_raw = _read_member(package_path, _CAE_MAPPING_PATH)
+    cae_mapping: dict[str, Any] = json.loads(cae_raw) if cae_raw else {}
+    mappings: list[dict[str, Any]] = list(cae_mapping.get("mappings") or [])
+
+    # face id -> existing cae_entity, and the set of used entity names
+    face_to_entity: dict[str, str] = {}
+    used_names: set[str] = set()
+    for m in mappings:
+        ent = m.get("cae_entity")
+        if ent:
+            used_names.add(ent)
+            for fid in m.get("face_ids") or []:
+                face_to_entity.setdefault(str(fid), ent)
+
+    bcs_changed = False
+    loads_changed = False
+
+    def _bind(item: dict[str, Any], kind: str) -> bool:
+        """Rewrite item.target @face -> NSET name, adding a mapping if needed."""
+        fid = _face_ref_from_target(item.get("target"), face_ids)
+        if fid is None:
+            return False
+        entity = face_to_entity.get(fid)
+        if entity is None:
+            base = _sanitize_name(str(item.get("id") or f"{kind}_{fid}")).upper() or f"{kind.upper()}_SET"
+            entity = base
+            n = 1
+            while entity in used_names:
+                n += 1
+                entity = f"{base}_{n}"
+            used_names.add(entity)
+            face_to_entity[fid] = entity
+            mappings.append({
+                "cae_entity": entity,
+                "face_ids": [fid],
+                "maps_to": {
+                    "feature_id": item.get("id") or entity,
+                    "role": "fixed_support" if kind == "bc" else "load_application",
+                },
+            })
+            derived.append(entity)
+        item["target"] = entity
+        return True
+
+    for item in (bcs or []):
+        if isinstance(item, dict) and _bind(item, "bc"):
+            bcs_changed = True
+    for item in (loads or []):
+        if isinstance(item, dict) and _bind(item, "load"):
+            loads_changed = True
+
+    # Material normalization: coerce documented SI/flat materials into the
+    # canonical mm-MPa-tonne form with an `elastic` block the deck generator reads.
+    mats_raw = _read_member(package_path, _PARSED_MATERIALS_PATH)
+    materials_normalized = False
+    if mats_raw:
+        try:
+            mats_doc = json.loads(mats_raw)
+        except json.JSONDecodeError:
+            mats_doc = None
+        if isinstance(mats_doc, dict) and isinstance(mats_doc.get("materials"), list):
+            canon = [
+                _canonical_material(m) for m in mats_doc["materials"] if isinstance(m, dict)
+            ]
+            if canon != mats_doc["materials"]:
+                mats_doc["materials"] = canon
+                materials_normalized = True
+
+    writes: dict[str, bytes] = {}
+    if materials_normalized:
+        writes[_PARSED_MATERIALS_PATH] = json.dumps(mats_doc, indent=2).encode()
+    if derived or not cae_raw and mappings:
+        out_mapping = {
+            "schema_version": cae_mapping.get("schema_version", "0.1"),
+            "mappings": mappings,
+        }
+        topo_hash = topology.get("topology_hash") or topology.get("hash")
+        if topo_hash:
+            out_mapping["topology_hash"] = topo_hash
+        writes[_CAE_MAPPING_PATH] = json.dumps(out_mapping, indent=2).encode()
+    if loads_promoted or loads_changed:
+        writes[_PARSED_LOADS_PATH] = json.dumps(parsed_loads, indent=2).encode()
+    if bcs_changed:
+        writes[_PARSED_BCS_PATH] = json.dumps(parsed_bcs, indent=2).encode()
+
+    if writes:
+        _write_members_to_package(package_path, writes)
+
+    return {
+        "normalized": bool(writes),
+        "derived_entities": derived,
+        "loads_promoted": loads_promoted,
+        "materials_normalized": materials_normalized,
+    }
+
+
+def _source_deck_input_hash(package_path: Path) -> str:
+    """Hash the inputs that determine the synthesized source deck's NSETs/section."""
+    h = hashlib.sha256()
+    for member in (
+        "simulation/mesh/mesh.inp",
+        "simulation/mesh.inp",
+        _CAE_MAPPING_PATH,
+        _PARSED_BCS_PATH,
+        _PARSED_LOADS_PATH,
+        "simulation/setup.yaml",
+    ):
+        data = _read_member(package_path, member)
+        if data:
+            h.update(member.encode())
+            h.update(data)
+    return h.hexdigest()
+
+
+def ensure_source_deck_from_mesh(package_path: Path) -> dict[str, Any]:
+    """Synthesize ``source_solver_deck.inp`` from a persisted mesh.
+
+    First normalizes agent-authored setup (#376): promotes ``load_cases`` loads
+    into ``parsed_loads.json`` and auto-derives a ``cae_mapping`` from ``@face:``
+    targets so a hand-written mapping is not required.
+
+    Re-synthesizes when the setup inputs (mesh / mapping / BCs / loads) change so a
+    corrected mapping is not shadowed by a stale empty-NSET deck. A source deck
+    that AIENG did **not** auto-synthesize (an externally imported ``.inp``, which
+    has no synth marker) is always preserved — imported decks win. Returns
+    ``status=no_mesh`` when there is no package mesh to build from. Never runs a
     solver; safe to call before ``cae.generate_solver_input``.
     """
     package_path = Path(package_path)
-    if _read_member(package_path, SOURCE_SOLVER_DECK_PATH):
-        return {"created": False, "status": "exists"}
 
     mesh_bytes, mesh_path = _read_mesh_inp_member(package_path)
     if not mesh_bytes:
         return {"created": False, "status": "no_mesh"}
 
+    # Normalize setup BEFORE hashing/binding so derived mappings are accounted for.
+    normalization = normalize_cae_bindings(package_path)
+
+    input_hash = _source_deck_input_hash(package_path)
+    existing_deck = _read_member(package_path, SOURCE_SOLVER_DECK_PATH)
+    if existing_deck:
+        marker_raw = _read_member(package_path, _SYNTH_MARKER_PATH)
+        if not marker_raw:
+            # No synth marker => externally imported deck. Imported wins.
+            return {"created": False, "status": "exists", "reason": "imported_deck"}
+        try:
+            prior_hash = json.loads(marker_raw).get("input_hash")
+        except json.JSONDecodeError:
+            prior_hash = None
+        if prior_hash == input_hash:
+            return {"created": False, "status": "exists", "reason": "up_to_date"}
+        # else: inputs changed -> fall through and re-synthesize.
+
     setup_raw = _read_member(package_path, "simulation/setup.yaml")
     setup = (yaml.safe_load(setup_raw) or {}) if setup_raw else {}
-    cae_raw = _read_member(package_path, "simulation/cae_mapping.json")
+    cae_raw = _read_member(package_path, _CAE_MAPPING_PATH)
     cae_mapping: dict[str, Any] = json.loads(cae_raw) if cae_raw else {"mappings": []}
-    topo_raw = _read_member(package_path, "geometry/topology_map.json")
+    topo_raw = _read_member(package_path, _TOPOLOGY_PATH)
     topology: dict[str, Any] = json.loads(topo_raw) if topo_raw else {}
 
     with tempfile.TemporaryDirectory(prefix="aieng_source_deck_") as tmp_str:
@@ -872,7 +1174,20 @@ def ensure_source_deck_from_mesh(package_path: Path) -> dict[str, Any]:
     deck_text, empty_nsets = build_source_deck_from_mesh(
         mesh_bytes.decode(errors="replace"), setup, nsets
     )
-    _write_members_to_package(package_path, {SOURCE_SOLVER_DECK_PATH: deck_text.encode()})
+    marker = json.dumps({"auto": True, "input_hash": input_hash}).encode()
+    _write_members_to_package(
+        package_path,
+        {SOURCE_SOLVER_DECK_PATH: deck_text.encode(), _SYNTH_MARKER_PATH: marker},
+    )
+
+    # Map each empty NSET back to the @face pointer(s) it failed to resolve, so a
+    # caller can tell the user exactly which load/BC binding caught no mesh nodes
+    # (a silently-wrong solve otherwise — see the gate in cae.generate_solver_input).
+    entity_faces = {
+        m.get("cae_entity"): [f"@face:{fid}" for fid in (m.get("face_ids") or [])]
+        for m in cae_mapping.get("mappings") or []
+    }
+    empty_nset_faces = {name: entity_faces.get(name, []) for name in empty_nsets}
 
     return {
         "created": True,
@@ -881,6 +1196,9 @@ def ensure_source_deck_from_mesh(package_path: Path) -> dict[str, Any]:
         "mesh_path": mesh_path,
         "nset_names": [n for n in nsets if nsets[n]],
         "empty_nsets": empty_nsets,
+        "empty_nset_faces": empty_nset_faces,
+        "derived_entities": normalization["derived_entities"],
+        "loads_promoted": normalization["loads_promoted"],
     }
 
 

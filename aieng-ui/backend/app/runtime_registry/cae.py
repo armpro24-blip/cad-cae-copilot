@@ -792,6 +792,30 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         except Exception as exc:  # noqa: BLE001 — best-effort; deck gen reports the real gap
             source_deck_synthesis = {"created": False, "status": "error", "message": str(exc)}
 
+        # Honesty gate: a load/BC face that resolved to ZERO mesh nodes would
+        # otherwise yield a deck referencing an undefined NSET — a cryptic ccx
+        # abort, or worse a silently dropped load. Block here with the exact
+        # @face pointers so the caller can re-pick the face or remesh finer.
+        empty_faces = (source_deck_synthesis or {}).get("empty_nset_faces") or {}
+        empty_faces = {k: v for k, v in empty_faces.items() if k}
+        if empty_faces:
+            return {
+                "ok": False,
+                "tool": "cae.generate_solver_input",
+                "status": "error",
+                "code": "unbound_setup_faces",
+                "message": (
+                    "These load/boundary-condition face bindings resolved to zero "
+                    "mesh nodes, so the solver input cannot be built: "
+                    + "; ".join(f"{name} -> {', '.join(faces) or '(no face)'}" for name, faces in empty_faces.items())
+                    + ". The @face pointer may be wrong, or the mesh is too coarse "
+                    "to land a node on that face — re-pick the face (aieng.agent_context) "
+                    "or re-run cae.generate_mesh with a smaller mesh_size_mm."
+                ),
+                "empty_nset_faces": empty_faces,
+                "source_deck_synthesis": source_deck_synthesis,
+            }
+
         try:
             result = aieng_bridge.generate_solver_input(
                 package_path,
