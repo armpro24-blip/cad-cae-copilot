@@ -197,8 +197,9 @@ def generate_solver_input_package(
     # load), but a modal (`*FREQUENCY`) analysis solves for natural frequencies
     # of the unloaded structure, and a steady-state `thermal` analysis is driven
     # by its temperature boundary conditions (a heat flux load is optional) — so
-    # neither requires a load.
-    if not loads and analysis_type not in ("modal", "thermal"):
+    # neither requires a load (a thermal-structural run is likewise driven by its
+    # temperature field).
+    if not loads and analysis_type not in ("modal", "thermal", "thermal_structural"):
         missing.append("loads")
 
     if missing:
@@ -262,6 +263,13 @@ def _resolve_materials(
                 )
                 if k is not None:
                     entry["conductivity"] = k
+                a = (
+                    props.get("thermal_expansion_per_k")
+                    or props.get("expansion")
+                    or props.get("thermal_expansion")
+                )
+                if a is not None:
+                    entry["expansion"] = a
                 result.append(entry)
             return result
 
@@ -472,6 +480,13 @@ def _assemble_deck(
     model_id = manifest.get("model_id", "unknown_model")
     now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
+    # Strain-free reference temperature for thermal expansion (thermal-structural).
+    _ss = solver_settings if isinstance(solver_settings, dict) else {}
+    try:
+        _ref_temp = float(_ss.get("reference_temperature", _ss.get("ref_temperature", 0.0)) or 0.0)
+    except (TypeError, ValueError):
+        _ref_temp = 0.0
+
     lines: list[str] = []
 
     # ---- Header ----
@@ -529,6 +544,7 @@ def _assemble_deck(
             elastic = mat.get("elastic")
             density = mat.get("density")
             conductivity = mat.get("conductivity")
+            expansion = mat.get("expansion")
             lines.append(f"*MATERIAL, NAME={name}")
             if isinstance(elastic, dict):
                 e = _fmt_card_number(elastic.get("youngs_modulus", ""))
@@ -540,6 +556,13 @@ def _assemble_deck(
             # analysis; harmless extra material data for a structural one.
             if conductivity is not None:
                 lines += ["*CONDUCTIVITY", f"{_fmt_card_number(conductivity)}"]
+            # Thermal expansion (*EXPANSION) — drives thermal stress in a
+            # thermal-structural run. ZERO sets the strain-free reference temperature.
+            if expansion is not None:
+                lines += [
+                    f"*EXPANSION, ZERO={_fmt_card_number(_ref_temp)}",
+                    f"{_fmt_card_number(expansion)}",
+                ]
             lines.append("")
     else:
         lines.append("** WARNING: No material definitions available.")
@@ -555,6 +578,22 @@ def _assemble_deck(
             value = bc.get("value", 0.0)
             lines.append(f"{target}, {dof_start}, {dof_end}, {value}")
         lines.append("")
+
+    # ---- Initial temperature (thermal-structural) ----
+    # *EXPANSION strain is computed relative to this strain-free reference; set
+    # every node to the reference temperature so the *UNCOUPLED step's computed
+    # temperature field produces the correct (T - T_ref) thermal strain. Uses the
+    # NALL node set emitted by the source-deck builder.
+    if analysis_type == "thermal_structural":
+        lines.append("** --- Initial temperature (strain-free reference) ---")
+        lines += ["*INITIAL CONDITIONS, TYPE=TEMPERATURE", f"NALL, {_fmt_card_number(_ref_temp)}"]
+        lines.append("")
+        if not any(m.get("expansion") is not None for m in materials):
+            warnings.append(
+                "Thermal-structural analysis needs a material *EXPANSION coefficient "
+                "to produce thermal stress; none was found — the displacement field "
+                "will be zero."
+            )
 
     # A modal (*FREQUENCY) analysis needs *DENSITY to form the mass matrix.
     if analysis_type == "modal" and not any(
@@ -651,6 +690,12 @@ _ANALYSIS_TYPE_ALIASES: dict[str, str] = {
     "steady_state_thermal": "thermal",
     "thermal_steady_state": "thermal",
     "conduction": "thermal",
+    "thermal_structural": "thermal_structural",
+    "thermal_stress": "thermal_structural",
+    "thermomechanical": "thermal_structural",
+    "coupled_temperature_displacement": "thermal_structural",
+    "uncoupled_temperature_displacement": "thermal_structural",
+    "thermal_expansion": "thermal_structural",
 }
 
 
@@ -771,6 +816,28 @@ def _step_block(
                         )
                 block.append(f"{target}, 11, {per_node:.6f}")
         block += ["*NODE FILE", "NT", "*END STEP"]
+        return block
+
+    if analysis_type == "thermal_structural":
+        # Sequential thermal stress in one *UNCOUPLED step: solve the temperature
+        # field, then the displacement field it induces. Temperature BCs
+        # (*BOUNDARY DOF 11) and structural BCs (*BOUNDARY DOF 1-3) both live in
+        # the model definition; material *EXPANSION + the reference *INITIAL
+        # CONDITIONS turn (T - T_ref) into thermal strain → stress. Outputs the
+        # temperature (NT), displacement (U) and stress (S) fields.
+        block = [
+            f"*STEP, NAME={step_name}",
+            "*UNCOUPLED TEMPERATURE-DISPLACEMENT, STEADY STATE",
+        ]
+        if loads:
+            block.append("*CFLUX")
+            for load in loads:
+                target = load.get("target", "unknown")
+                total = float(load.get("value", 0.0) or 0.0)
+                n_nodes = counts.get(target, 0)
+                per_node = total / n_nodes if n_nodes > 0 else total
+                block.append(f"{target}, 11, {per_node:.6f}")
+        block += ["*NODE FILE", "NT, U", "*EL FILE", "S", "*END STEP"]
         return block
 
     # static (default)

@@ -1418,6 +1418,10 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 analysis_type = "modal"
             elif "*BUCKLE" in _deck_upper:
                 analysis_type = "buckling"
+            elif "TEMPERATURE-DISPLACEMENT" in _deck_upper:
+                # Thermal-structural (uncoupled/coupled temp-displacement) writes
+                # NDTEMP + DISP + S to the FRD — same FRD path as static.
+                analysis_type = "thermal_structural"
             elif "*HEAT TRANSFER" in _deck_upper:
                 # Steady-state thermal writes nodal temperature (NDTEMP) to the
                 # FRD — extracted via the same FRD path as static, not the .dat path.

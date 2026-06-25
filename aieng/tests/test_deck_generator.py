@@ -501,3 +501,66 @@ def test_thermal_with_no_material_conductivity_still_generates(tmp_path: Path) -
     deck = _read_deck(pkg, "run_thermal_nc")
     assert "*HEAT TRANSFER, STEADY STATE" in deck
     assert "*CONDUCTIVITY" not in deck
+
+
+# ---------------------------------------------------------------------------
+# Thermal-structural coupling (#371)
+# ---------------------------------------------------------------------------
+
+def test_thermal_structural_aliases_normalize() -> None:
+    for raw in ("thermal_structural", "thermal_stress", "thermomechanical",
+                "uncoupled_temperature_displacement"):
+        assert normalize_analysis_type({"analysis_type": raw}) == "thermal_structural"
+
+
+def test_thermal_structural_emits_uncoupled_step_expansion_initial_temp(tmp_path: Path) -> None:
+    """Thermal-structural: *UNCOUPLED TEMPERATURE-DISPLACEMENT + *EXPANSION +
+    *INITIAL CONDITIONS (ref temp) + NT/U/S output, load-optional, no *STATIC."""
+    pkg = _write_package(
+        tmp_path / "ts.aieng",
+        cae_mapping=_CAE_MAPPING_WITH_FEATURES,
+        parsed_materials={"materials": [{
+            "name": "Steel",
+            "elastic": {"youngs_modulus": 210000.0, "poisson_ratio": 0.3},
+            "conductivity": 50.0,
+            "expansion": 1.2e-5,
+        }]},
+        parsed_bcs={"boundary_conditions": [
+            {"id": "fix", "target": "N_FIX", "dof_start": 1, "dof_end": 3, "value": 0.0},
+            {"id": "hot", "target": "N_FIX", "dof_start": 11, "dof_end": 11, "value": 100.0},
+            {"id": "cold", "target": "N_LOAD", "dof_start": 11, "dof_end": 11, "value": 0.0},
+        ]},
+        # deliberately NO loads (thermal field drives it)
+        solver_settings={"analysis_type": "thermal_structural", "reference_temperature": 20.0},
+    )
+    result = generate_solver_input_package(pkg, run_id="run_ts")
+    assert result["ok"] is True
+    deck = _read_deck(pkg, "run_ts")
+    assert "*UNCOUPLED TEMPERATURE-DISPLACEMENT, STEADY STATE" in deck
+    assert "*EXPANSION, ZERO=20" in deck
+    assert "*INITIAL CONDITIONS, TYPE=TEMPERATURE" in deck
+    assert "*STATIC" not in deck
+    # outputs temperature + displacement + stress
+    assert "NT, U" in deck
+    assert "*EL FILE" in deck
+
+
+def test_thermal_structural_without_expansion_warns(tmp_path: Path) -> None:
+    """No *EXPANSION coefficient -> honest warning (displacement would be zero)."""
+    pkg = _write_package(
+        tmp_path / "ts_noexp.aieng",
+        cae_mapping=_CAE_MAPPING_WITH_FEATURES,
+        parsed_materials={"materials": [{
+            "name": "Steel",
+            "elastic": {"youngs_modulus": 210000.0, "poisson_ratio": 0.3},
+            "conductivity": 50.0,
+        }]},
+        parsed_bcs={"boundary_conditions": [
+            {"id": "fix", "target": "N_FIX", "dof_start": 1, "dof_end": 3, "value": 0.0},
+            {"id": "hot", "target": "N_FIX", "dof_start": 11, "dof_end": 11, "value": 100.0},
+        ]},
+        solver_settings={"analysis_type": "thermal_structural"},
+    )
+    result = generate_solver_input_package(pkg, run_id="run_ts_ne")
+    assert result["ok"] is True
+    assert any("expansion" in w.lower() for w in result["warnings"])

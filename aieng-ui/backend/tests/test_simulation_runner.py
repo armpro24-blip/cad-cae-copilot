@@ -1396,6 +1396,8 @@ def test_build_source_deck_from_mesh_structure() -> None:
     # Empty sets are reported, never emitted as a dangling NSET reference.
     assert "*NSET, NSET=EMPTY_SET" not in deck
     assert empty == ["EMPTY_SET"]
+    # All-nodes set for thermal-structural *INITIAL CONDITIONS (#371).
+    assert "*NSET, NSET=NALL" in deck
 
 
 # A Gmsh-style mesh mixing 3D solids (C3D4) with 2D surface elements (CPS3) and
@@ -1724,6 +1726,17 @@ def test_canonical_material_converts_si_to_mm_mpa_tonne() -> None:
     assert m["elastic"]["poisson_ratio"] == 0.33
     assert m["density"] == 2.7e-09  # kg/m^3 -> t/mm^3, clean width (no FP noise)
     assert m["yield_strength"] == 276.0  # Pa -> MPa
+
+
+def test_canonical_material_carries_thermal_properties() -> None:
+    """Thermal conductivity + expansion pass through for thermal / thermal-structural."""
+    from app import simulation_runner as sr
+
+    m = sr._canonical_material(
+        {"name": "al", "thermal_conductivity_w_mk": 167.0, "thermal_expansion_per_k": 2.4e-5}
+    )
+    assert m["conductivity"] == 167.0
+    assert m["expansion"] == 2.4e-5
 
 
 def test_canonical_material_leaves_canonical_form_untouched() -> None:

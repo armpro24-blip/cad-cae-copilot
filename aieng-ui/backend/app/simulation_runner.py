@@ -841,6 +841,15 @@ def build_source_deck_from_mesh(
     )
     lines.append(f"*SOLID SECTION, ELSET=EALL, MATERIAL={mat_name}")
 
+    # All-nodes set — a thermal-structural analysis needs it to seed the strain-free
+    # reference temperature via *INITIAL CONDITIONS, TYPE=TEMPERATURE. Harmless for
+    # other analysis types.
+    all_node_ids = [ln.split(",", 1)[0].strip() for ln in node_lines if ln.strip()]
+    if all_node_ids:
+        lines.append("*NSET, NSET=NALL")
+        for i in range(0, len(all_node_ids), 16):
+            lines.append(", ".join(all_node_ids[i : i + 16]))
+
     empty_nsets: list[str] = []
     for nset_name, node_ids in nsets.items():
         if not node_ids:
@@ -954,6 +963,15 @@ def _canonical_material(m: dict[str, Any]) -> dict[str, Any]:
         out["conductivity"] = m["thermal_conductivity_w_mk"]
     elif m.get("thermal_conductivity") is not None:
         out["conductivity"] = m["thermal_conductivity"]
+
+    # Thermal expansion coefficient (1/K) for thermal-structural analyses. Unit is
+    # the same number in SI and the mm-tonne-s system, so pass it through.
+    if m.get("expansion") is not None:
+        out["expansion"] = m["expansion"]
+    elif m.get("thermal_expansion_per_k") is not None:
+        out["expansion"] = m["thermal_expansion_per_k"]
+    elif m.get("thermal_expansion") is not None:
+        out["expansion"] = m["thermal_expansion"]
     return out
 
 

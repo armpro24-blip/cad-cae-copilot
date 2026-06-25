@@ -958,6 +958,7 @@ extraction to the right file:
 | `modal` / `frequency` | `*FREQUENCY` + `num_modes` (default 10) | material (**+ density**), constraints — **no loads** | `.dat` | `natural_frequencies_hz`, `first_natural_frequency_hz` |
 | `buckling` / `buckle` | `*BUCKLE` + `num_factors` (default 5) | material, **loads** (reference), constraints | `.dat` | `buckling_factors`, `lowest_buckling_factor` |
 | `thermal` / `heat_transfer` | `*HEAT TRANSFER, STEADY STATE` | material (**conductivity**), temperature constraints (**`*BOUNDARY` DOF 11**); heat flux load optional | `.frd` (NDTEMP) | `max_temperature`, `min_temperature` |
+| `thermal_structural` / `thermal_stress` | `*UNCOUPLED TEMPERATURE-DISPLACEMENT, STEADY STATE` | material (**conductivity + elastic + expansion**), temperature constraints (DOF 11) **and** structural constraints (DOF 1-3) | `.frd` (NDTEMP/DISP/S) | `max_temperature`, `max_displacement`, `max_von_mises_stress` |
 
 For a `thermal` analysis the material carries `thermal_conductivity_w_mk` (W/m·K,
 numerically equal to the consistent mm-tonne-s value), temperature BCs are written
@@ -965,10 +966,20 @@ as ordinary boundary conditions on **DOF 11** with the fixed temperature as thei
 `value` (e.g. `{target: "@face:...", dof_start: 11, dof_end: 11, value: 100}`), and
 an optional concentrated heat flux is a load on DOF 11 (`*CFLUX`). A steady-state
 conduction field is driven by its temperature BCs, so **no load is required**
-(like modal). Honesty boundary: steady-state linear conduction only — no transient,
-no radiation, no temperature-dependent properties, and no thermal-structural
-coupling yet (computing thermal-expansion stress from the temperature field is
-follow-up work).
+(like modal).
+
+A **`thermal_structural`** analysis adds thermal-expansion stress: it needs a
+material **expansion** coefficient (`thermal_expansion_per_k`, plus `elastic` and
+`conductivity`), an optional `reference_temperature` in `solver_settings` (the
+strain-free temperature, default 0), **and** both temperature BCs (DOF 11) and
+structural BCs (DOF 1-3) — fix the part so its restrained thermal growth produces
+stress. It runs CalculiX `*UNCOUPLED TEMPERATURE-DISPLACEMENT` (solve temperature,
+then the displacement it induces) and returns temperature, displacement and von
+Mises stress in one pass.
+
+Honesty boundary: steady-state linear conduction / sequential (one-way)
+thermal-stress only — no transient, no radiation, no temperature-dependent
+properties, and no fully-coupled (two-way) thermomechanics.
 
 Honesty boundary: modal results are **linear undamped** natural frequencies (no
 damping / prestress); buckling results are **linear (eigenvalue / Euler)** load
