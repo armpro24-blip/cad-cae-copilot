@@ -50,6 +50,7 @@ ESSENTIAL_MCP_TOOLS: frozenset[str] = frozenset({
     "cae.prepare_solver_run",
     "cae.generate_solver_input",
     "cae.run_solver",
+    "cae.run_simulation_pipeline",
     "cae.extract_solver_results",
     "cae.extract_field_regions",
     "cae.mesh_convergence",
