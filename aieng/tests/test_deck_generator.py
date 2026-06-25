@@ -22,6 +22,7 @@ from aieng.simulation.deck_generator import (
     MissingSetupError,
     SOLVER_INPUT_PATH_TEMPLATE,
     generate_solver_input_package,
+    normalize_analysis_type,
 )
 
 
@@ -446,3 +447,57 @@ def test_setup_material_renamed_to_match_solid_section(tmp_path: Path) -> None:
     with zipfile.ZipFile(pkg) as zf:
         deck = zf.read(out_path).decode("utf-8")
     assert "*MATERIAL, NAME=STEEL" in deck
+
+
+# ---------------------------------------------------------------------------
+# Steady-state thermal (#371)
+# ---------------------------------------------------------------------------
+
+def test_thermal_aliases_normalize() -> None:
+    for raw in ("thermal", "heat_transfer", "heat transfer", "steady_state_thermal", "conduction"):
+        assert normalize_analysis_type({"analysis_type": raw}) == "thermal"
+
+
+def test_thermal_step_block_emits_heat_transfer_no_load_required(tmp_path: Path) -> None:
+    """A steady-state thermal analysis needs no structural load: *HEAT TRANSFER +
+    *CONDUCTIVITY + temperature *BOUNDARY (DOF 11) + NT output, no *STATIC/*CLOAD."""
+    pkg = _write_package(
+        tmp_path / "thermal.aieng",
+        cae_mapping=_CAE_MAPPING_WITH_FEATURES,
+        parsed_materials={"materials": [{"name": "Steel", "conductivity": 50.0}]},
+        parsed_bcs={"boundary_conditions": [
+            {"id": "hot", "target": "N_FIX", "dof_start": 11, "dof_end": 11, "value": 100.0},
+            {"id": "cold", "target": "N_LOAD", "dof_start": 11, "dof_end": 11, "value": 0.0},
+        ]},
+        # deliberately NO loads
+        solver_settings={"analysis_type": "thermal"},
+    )
+    result = generate_solver_input_package(pkg, run_id="run_thermal")
+    assert result["ok"] is True  # no "missing loads" — thermal is load-optional
+    deck = _read_deck(pkg, "run_thermal")
+    assert "*HEAT TRANSFER, STEADY STATE" in deck
+    assert "*CONDUCTIVITY" in deck
+    assert "*STATIC" not in deck
+    assert "*CLOAD" not in deck
+    # nodal-temperature output requested, and the temperature BCs emitted on DOF 11
+    assert "NT" in deck
+    assert "N_FIX, 11, 11, 100.0" in deck
+
+
+def test_thermal_with_no_material_conductivity_still_generates(tmp_path: Path) -> None:
+    """Absent conductivity must not crash deck generation (solver will report it);
+    the deck simply omits *CONDUCTIVITY."""
+    pkg = _write_package(
+        tmp_path / "thermal_nocond.aieng",
+        cae_mapping=_CAE_MAPPING_WITH_FEATURES,
+        parsed_materials={"materials": [{"name": "Steel"}]},
+        parsed_bcs={"boundary_conditions": [
+            {"id": "hot", "target": "N_FIX", "dof_start": 11, "dof_end": 11, "value": 100.0},
+        ]},
+        solver_settings={"analysis_type": "thermal"},
+    )
+    result = generate_solver_input_package(pkg, run_id="run_thermal_nc")
+    assert result["ok"] is True
+    deck = _read_deck(pkg, "run_thermal_nc")
+    assert "*HEAT TRANSFER, STEADY STATE" in deck
+    assert "*CONDUCTIVITY" not in deck

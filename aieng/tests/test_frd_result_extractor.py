@@ -480,3 +480,36 @@ class TestWriteComputedMetricsPackage:
 
         with zipfile.ZipFile(pkg, "r") as zf:
             assert "results/computed_metrics.json" not in zf.namelist()
+
+
+def _make_thermal_frd(temp_nodes: dict[int, float]) -> str:
+    """Build a minimal FRD with a single NDTEMP (nodal temperature) field."""
+    lines = [
+        "    1C                                                                         1",
+        "    1UCUT.......................                                                2",
+        "    -4  NDTEMP      1    1",
+        "    -5  T           1    1    0    0",
+    ]
+    for nid, t in temp_nodes.items():
+        lines.append(_node_line(nid, [t]))
+    lines.append("    -3")
+    lines.append(" 9999")
+    return "\n".join(lines) + "\n"
+
+
+class TestThermalTemperatureExtraction:
+    """Steady-state thermal (#371): NDTEMP -> max/min temperature, no DISP/S noise."""
+
+    def test_temperature_extrema_extracted(self, tmp_path: Path) -> None:
+        frd = _write_frd(tmp_path, _make_thermal_frd({1: 100.0, 2: 37.5, 3: 0.0}))
+        result = extract_computed_metrics(frd)
+        metrics = result["load_cases"][0]["metrics"]
+        assert metrics["max_temperature"] == {"value": 100.0, "unit": "K"}
+        assert metrics["min_temperature"] == {"value": 0.0, "unit": "K"}
+
+    def test_thermal_only_frd_has_no_structural_warnings(self, tmp_path: Path) -> None:
+        frd = _write_frd(tmp_path, _make_thermal_frd({1: 100.0, 2: 0.0}))
+        result = extract_computed_metrics(frd)
+        # A pure thermal result must NOT emit "DISP/S field not found" noise.
+        assert result["warnings"] == []
+        assert "max_displacement" not in result["load_cases"][0]["metrics"]

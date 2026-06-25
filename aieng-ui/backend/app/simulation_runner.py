@@ -944,6 +944,16 @@ def _canonical_material(m: dict[str, Any]) -> dict[str, Any]:
         out["yield_strength"] = m["yield_strength"]
     elif m.get("yield_strength_mpa") is not None:
         out["yield_strength"] = m["yield_strength_mpa"]
+
+    # Thermal conductivity for heat-transfer analyses. W/(m·K) is numerically
+    # equal to mW/(mm·K), so a SI W/(m·K) value is already consistent with the
+    # mm-tonne-s system the rest of the deck uses — pass it through unchanged.
+    if m.get("conductivity") is not None:
+        out["conductivity"] = m["conductivity"]
+    elif m.get("thermal_conductivity_w_mk") is not None:
+        out["conductivity"] = m["thermal_conductivity_w_mk"]
+    elif m.get("thermal_conductivity") is not None:
+        out["conductivity"] = m["thermal_conductivity"]
     return out
 
 

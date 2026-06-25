@@ -195,8 +195,10 @@ def generate_solver_input_package(
     loads = _resolve_loads(setup, parsed_loads, cae_mapping, warnings)
     # Loads are required for static and buckling (the reference perturbation
     # load), but a modal (`*FREQUENCY`) analysis solves for natural frequencies
-    # of the unloaded structure — no load needed.
-    if not loads and analysis_type != "modal":
+    # of the unloaded structure, and a steady-state `thermal` analysis is driven
+    # by its temperature boundary conditions (a heat flux load is optional) — so
+    # neither requires a load.
+    if not loads and analysis_type not in ("modal", "thermal"):
         missing.append("loads")
 
     if missing:
@@ -253,6 +255,13 @@ def _resolve_materials(
                 rho = props.get("density_kg_m3")
                 if rho is not None:
                     entry["density"] = rho
+                k = (
+                    props.get("thermal_conductivity_w_mk")
+                    or props.get("conductivity")
+                    or props.get("thermal_conductivity")
+                )
+                if k is not None:
+                    entry["conductivity"] = k
                 result.append(entry)
             return result
 
@@ -519,6 +528,7 @@ def _assemble_deck(
             name = mat.get("name", "unnamed")
             elastic = mat.get("elastic")
             density = mat.get("density")
+            conductivity = mat.get("conductivity")
             lines.append(f"*MATERIAL, NAME={name}")
             if isinstance(elastic, dict):
                 e = _fmt_card_number(elastic.get("youngs_modulus", ""))
@@ -526,6 +536,10 @@ def _assemble_deck(
                 lines += ["*ELASTIC", f"{e}, {nu}"]
             if density is not None:
                 lines += ["*DENSITY", f"{_fmt_card_number(density)}"]
+            # Thermal conductivity (*CONDUCTIVITY) — required for a heat-transfer
+            # analysis; harmless extra material data for a structural one.
+            if conductivity is not None:
+                lines += ["*CONDUCTIVITY", f"{_fmt_card_number(conductivity)}"]
             lines.append("")
     else:
         lines.append("** WARNING: No material definitions available.")
@@ -631,6 +645,12 @@ _ANALYSIS_TYPE_ALIASES: dict[str, str] = {
     "buckling": "buckling",
     "buckle": "buckling",
     "linear_buckling": "buckling",
+    "thermal": "thermal",
+    "heat_transfer": "thermal",
+    "heat": "thermal",
+    "steady_state_thermal": "thermal",
+    "thermal_steady_state": "thermal",
+    "conduction": "thermal",
 }
 
 
@@ -725,6 +745,32 @@ def _step_block(
         if loads:
             block += _cload_lines()
         block += ["*NODE FILE", "U", "*END STEP"]
+        return block
+
+    if analysis_type == "thermal":
+        # Steady-state heat conduction. Temperature boundary conditions
+        # (`*BOUNDARY` on DOF 11) live in the model definition before the step and
+        # drive the field; a concentrated heat flux (`*CFLUX` on DOF 11) is an
+        # optional in-step driver. NT = nodal temperature output.
+        block = [f"*STEP, NAME={step_name}", "*HEAT TRANSFER, STEADY STATE"]
+        if loads:
+            block.append("*CFLUX")
+            for load in loads:
+                target = load.get("target", "unknown")
+                total = float(load.get("value", 0.0) or 0.0)
+                n_nodes = counts.get(target, 0)
+                if n_nodes > 0:
+                    per_node = total / n_nodes
+                else:
+                    per_node = total
+                    if total:
+                        warnings.append(
+                            f"Heat flux on '{target}': node count unknown, applying "
+                            f"the value per node (*CFLUX semantics) instead of "
+                            f"distributing a total — verify the magnitude."
+                        )
+                block.append(f"{target}, 11, {per_node:.6f}")
+        block += ["*NODE FILE", "NT", "*END STEP"]
         return block
 
     # static (default)

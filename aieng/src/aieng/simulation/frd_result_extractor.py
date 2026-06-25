@@ -228,9 +228,13 @@ def _extract_step_metrics(
     disp_dataset: dict[str, Any] | None,
     stress_dataset: dict[str, Any] | None,
     warnings: list[str],
+    temp_dataset: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return scalar metrics for one FRD step, appending any warnings."""
     metrics: dict[str, Any] = {}
+    # A steady-state thermal step carries NDTEMP but no DISP/S — don't emit the
+    # structural "field not found" warnings in that case.
+    thermal_only = temp_dataset is not None and not disp_dataset and not stress_dataset
 
     # --- Max displacement ---------------------------------------------------
     if disp_dataset:
@@ -271,7 +275,7 @@ def _extract_step_metrics(
             warnings.append(
                 "DISP field present but no valid displacement values could be extracted"
             )
-    else:
+    elif not thermal_only:
         warnings.append("DISP field not found in FRD file; max_displacement not computed")
 
     # --- Max von Mises stress -----------------------------------------------
@@ -300,11 +304,27 @@ def _extract_step_metrics(
             warnings.append(
                 "S field present but no valid stress tensor values could be extracted"
             )
-    else:
+    elif not thermal_only:
         warnings.append(
             "S (stress tensor) field not found in FRD file; "
             "max_von_mises_stress not computed"
         )
+
+    # --- Temperature (steady-state thermal) ---------------------------------
+    if temp_dataset:
+        node_data = temp_dataset["node_data"]
+        temps = [
+            float(vals[0])
+            for vals in node_data.values()
+            if vals and vals[0] is not None
+        ]
+        if temps:
+            metrics["max_temperature"] = {"value": round(max(temps), 4), "unit": "K"}
+            metrics["min_temperature"] = {"value": round(min(temps), 4), "unit": "K"}
+        else:
+            warnings.append(
+                "NDTEMP field present but no valid temperature values could be extracted"
+            )
 
     return metrics
 
@@ -351,7 +371,10 @@ def extract_computed_metrics(
     disp_steps = fields.get("DISP", [])
     # CalculiX names the stress field "STRESS"; some exports use "S". Accept both.
     stress_steps = fields.get("S") or fields.get("STRESS") or []
-    n_steps = max(len(disp_steps), len(stress_steps), 1)
+    # Steady-state heat transfer emits nodal temperature as NDTEMP (some exports
+    # use TEMP).
+    temp_steps = fields.get("NDTEMP") or fields.get("TEMP") or []
+    n_steps = max(len(disp_steps), len(stress_steps), len(temp_steps), 1)
 
     warnings: list[str] = []
     load_cases: list[dict[str, Any]] = []
@@ -359,7 +382,8 @@ def extract_computed_metrics(
     for step_index in range(n_steps):
         disp = disp_steps[step_index] if step_index < len(disp_steps) else None
         stress = stress_steps[step_index] if step_index < len(stress_steps) else None
-        case_metrics = _extract_step_metrics(disp, stress, warnings)
+        temp = temp_steps[step_index] if step_index < len(temp_steps) else None
+        case_metrics = _extract_step_metrics(disp, stress, warnings, temp)
         case_id = _load_case_id_for_step(
             step_index,
             provided_id=load_case_id,
