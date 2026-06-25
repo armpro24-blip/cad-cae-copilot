@@ -1180,6 +1180,15 @@ def ensure_source_deck_from_mesh(package_path: Path) -> dict[str, Any]:
         {SOURCE_SOLVER_DECK_PATH: deck_text.encode(), _SYNTH_MARKER_PATH: marker},
     )
 
+    # Map each empty NSET back to the @face pointer(s) it failed to resolve, so a
+    # caller can tell the user exactly which load/BC binding caught no mesh nodes
+    # (a silently-wrong solve otherwise — see the gate in cae.generate_solver_input).
+    entity_faces = {
+        m.get("cae_entity"): [f"@face:{fid}" for fid in (m.get("face_ids") or [])]
+        for m in cae_mapping.get("mappings") or []
+    }
+    empty_nset_faces = {name: entity_faces.get(name, []) for name in empty_nsets}
+
     return {
         "created": True,
         "status": "synthesized",
@@ -1187,6 +1196,7 @@ def ensure_source_deck_from_mesh(package_path: Path) -> dict[str, Any]:
         "mesh_path": mesh_path,
         "nset_names": [n for n in nsets if nsets[n]],
         "empty_nsets": empty_nsets,
+        "empty_nset_faces": empty_nset_faces,
         "derived_entities": normalization["derived_entities"],
         "loads_promoted": normalization["loads_promoted"],
     }

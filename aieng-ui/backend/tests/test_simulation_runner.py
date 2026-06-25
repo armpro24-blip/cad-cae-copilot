@@ -1714,3 +1714,45 @@ def test_normalize_cae_bindings_derives_mapping_from_face_targets(tmp_path: Path
     again = sr.normalize_cae_bindings(pkg)
     assert again["derived_entities"] == []
     assert again["loads_promoted"] is False
+
+
+def test_ensure_source_deck_reports_faces_that_caught_no_nodes(tmp_path: Path) -> None:
+    """A load/BC face that resolves to zero mesh nodes is reported with its @face
+    pointer so the solver-input gate can refuse a silently-wrong solve (#376)."""
+    from app import simulation_runner as sr
+
+    mesh = (
+        "*NODE\n"
+        "1, 0,0,0\n2, 10,0,0\n3, 10,10,0\n4, 0,10,0\n"
+        "5, 0,0,10\n6, 10,0,10\n7, 10,10,10\n8, 0,10,10\n"
+        "*ELEMENT, TYPE=C3D8, ELSET=EALL\n1, 1,2,3,4,5,6,7,8\n"
+    )
+    pkg = tmp_path / "p.aieng"
+    with zipfile.ZipFile(pkg, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("manifest.json", json.dumps({"schema_version": "0.1"}))
+        zf.writestr("simulation/mesh/mesh.inp", mesh)
+        zf.writestr(
+            "geometry/topology_map.json",
+            json.dumps({"entities": [
+                {"type": "face", "id": "face_bottom", "surface_type": "plane",
+                 "normal": [0, 0, -1], "center": [5, 5, 0],
+                 "bounding_box": [0, 0, 0, 10, 10, 0]},
+                {"type": "face", "id": "face_ghost", "surface_type": "plane",
+                 "normal": [0, 0, 1], "center": [5, 5, 1000],
+                 "bounding_box": [0, 0, 1000, 10, 10, 1000]},  # far from every node
+            ]}),
+        )
+        zf.writestr(
+            "simulation/cae_mapping.json",
+            json.dumps({"schema_version": "0.1", "mappings": [
+                {"cae_entity": "BASE", "face_ids": ["face_bottom"], "maps_to": {"feature_id": "f1"}},
+                {"cae_entity": "LOAD", "face_ids": ["face_ghost"], "maps_to": {"feature_id": "f2"}},
+            ]}),
+        )
+
+    result = sr.ensure_source_deck_from_mesh(pkg)
+
+    assert result["status"] == "synthesized"
+    assert "BASE" in result["nset_names"]  # bottom face caught the 4 z=0 nodes
+    assert result["empty_nsets"] == ["LOAD"]  # ghost face caught nothing
+    assert result["empty_nset_faces"]["LOAD"] == ["@face:face_ghost"]
