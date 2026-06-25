@@ -2130,6 +2130,167 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         input_schema=_schema("cae.import_solver_evidence"),
     )
 
+    def _tool_cae_run_simulation_pipeline(inp: dict[str, Any], _ctx: dict[str, Any]) -> dict[str, Any]:
+        """Run the full CAE pipeline from setup to results.
+
+        Chains AI preprocessing (optional), mesh generation, solver-input generation,
+        CalculiX execution, result extraction, and summary refresh in one call. The
+        whole pipeline is approval-gated because it runs the external solver.
+
+        Sub-tools are invoked through the runtime registry so the pipeline is
+        testable by monkeypatching ``runtime.invoke_tool`` and so each stage's
+        existing error handling is reused unchanged.
+        """
+        from .. import runtime as _rt
+
+        project_id = str(inp.get("project_id") or "").strip()
+        if not project_id:
+            return {
+                "status": "error",
+                "code": "missing_project_id",
+                "message": "project_id is required.",
+                "tool": "cae.run_simulation_pipeline",
+            }
+
+        run_id: str = inp.get("runId") or inp.get("run_id") or "pipeline_run_001"
+        load_case_id: str = inp.get("loadCaseId") or inp.get("load_case_id") or "load_case_001"
+        task_description = str(inp.get("task_description") or "").strip()
+        mesh_size_raw = inp.get("mesh_size_mm", inp.get("meshSizeMm"))
+        timeout_seconds: int = int(inp.get("timeout_seconds", inp.get("timeoutSeconds", 180)))
+        overwrite: bool = bool(inp.get("overwrite", True))
+
+        # Resolve package path once.
+        proj = get_project(active_settings, project_id)
+        package_path = resolve_project_path(active_settings, project_id, proj.get("aieng_file"))
+        if package_path is None or not package_path.exists():
+            return {
+                "status": "error",
+                "code": "package_not_found",
+                "message": f"Project {project_id} has no .aieng package.",
+                "tool": "cae.run_simulation_pipeline",
+            }
+
+        phase_results: dict[str, Any] = {}
+
+        def _invoke(tool: str, payload: dict[str, Any]) -> Any:
+            return _rt.invoke_tool(tool, payload)
+
+        # Optional AI preprocessing: derives setup.yaml + cae_mapping.json from geometry.
+        if task_description:
+            preprocess_inp = {
+                "project_id": project_id,
+                "task_description": task_description,
+                "write_files": True,
+                "write_brep_graph": True,
+                "use_brep_graph": True,
+            }
+            material_hint = str(inp.get("material_hint") or "").strip()
+            mesh_hint = str(inp.get("mesh_hint") or "").strip()
+            if material_hint:
+                preprocess_inp["material_hint"] = material_hint
+            if mesh_hint:
+                preprocess_inp["mesh_hint"] = mesh_hint
+            try:
+                preprocess_result = _invoke("ai_preprocessing.run_ai_preprocessing", preprocess_inp)
+                phase_results["ai_preprocessing"] = {
+                    "ok": bool(preprocess_result.get("status") == "ok"),
+                    "written_artifacts": preprocess_result.get("written_artifacts", []),
+                    "warnings": preprocess_result.get("all_warnings", []),
+                }
+            except Exception as exc:  # noqa: BLE001
+                return {
+                    "status": "error",
+                    "code": "preprocessing_failed",
+                    "message": f"AI preprocessing failed: {type(exc).__name__}: {exc}",
+                    "tool": "cae.run_simulation_pipeline",
+                    "phase_results": phase_results,
+                }
+
+        # Check whether a mesh already exists and whether the caller wants to override it.
+        import zipfile as _zipfile
+
+        mesh_required = mesh_size_raw is not None
+        if not mesh_required:
+            try:
+                with _zipfile.ZipFile(package_path, "r") as zf:
+                    mesh_required = "simulation/mesh/mesh.inp" not in set(zf.namelist())
+            except Exception:
+                mesh_required = True
+
+        if mesh_required:
+            mesh_inp: dict[str, Any] = {"project_id": project_id}
+            if mesh_size_raw is not None:
+                try:
+                    mesh_inp["mesh_size_mm"] = float(mesh_size_raw)
+                except (TypeError, ValueError):
+                    return {
+                        "status": "error",
+                        "code": "bad_input",
+                        "message": f"mesh_size_mm must be a number, got {mesh_size_raw!r}.",
+                        "tool": "cae.run_simulation_pipeline",
+                        "phase_results": phase_results,
+                    }
+            mesh_result = _invoke("cae.generate_mesh", mesh_inp)
+            phase_results["generate_mesh"] = mesh_result
+            if not mesh_result.get("ok"):
+                return {
+                    "status": "error",
+                    "code": "mesh_failed",
+                    "message": mesh_result.get("message") or "Mesh generation failed.",
+                    "tool": "cae.run_simulation_pipeline",
+                    "phase_results": phase_results,
+                }
+
+        # Generate the solver input deck.
+        deck_result = _invoke(
+            "cae.generate_solver_input",
+            {"project_id": project_id, "run_id": run_id, "overwrite": overwrite},
+        )
+        phase_results["generate_solver_input"] = deck_result
+        if not deck_result.get("ok"):
+            return {
+                "status": "error",
+                "code": "deck_generation_failed",
+                "message": deck_result.get("message") or "Solver deck generation failed.",
+                "tool": "cae.run_simulation_pipeline",
+                "phase_results": phase_results,
+            }
+
+        # Run the solver.
+        input_deck_path = f"simulation/runs/{run_id}/solver_input.inp"
+        solver_result = _invoke(
+            "cae.run_solver",
+            {
+                "project_id": project_id,
+                "run_id": run_id,
+                "load_case_id": load_case_id,
+                "input_deck_path": input_deck_path,
+                "timeout_seconds": timeout_seconds,
+                "extract_results": True,
+                "refresh_summary": True,
+                "auto_import_evidence": True,
+                "overwrite": overwrite,
+            },
+        )
+        phase_results["run_solver"] = solver_result
+
+        ok = bool(solver_result.get("ok")) and bool(solver_result.get("solver_execution_performed"))
+        return {
+            "status": "ok" if ok else (solver_result.get("status") or "error"),
+            "tool": "cae.run_simulation_pipeline",
+            "ok": ok,
+            "project_id": project_id,
+            "run_id": run_id,
+            "load_case_id": load_case_id,
+            "solver_execution_performed": solver_result.get("solver_execution_performed", False),
+            "phase_results": phase_results,
+            "message": (
+                "Simulation pipeline completed."
+                if ok
+                else solver_result.get("message") or "Solver stage did not complete successfully."
+            ),
+        }
+
     def _tool_cae_mesh_convergence(inp: dict[str, Any], _ctx: dict[str, Any]) -> dict[str, Any]:
         """Solve the project's current static geometry at several mesh sizes and report,
         per metric, the apparent order of convergence, the Richardson-extrapolated
@@ -2158,6 +2319,22 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         except Exception as exc:  # noqa: BLE001
             return {"status": "error", "code": "convergence_failed", "message": f"{type(exc).__name__}: {exc}"}
 
+    rt.register_tool(
+        "cae.run_simulation_pipeline",
+        _tool_cae_run_simulation_pipeline,
+        requires_approval=True,
+        read_only=False,
+        description=(
+            "[APPROVAL REQUIRED] Run the full CAE simulation pipeline in one call: "
+            "optionally derive the FEA setup with AI preprocessing, generate the FE mesh, "
+            "assemble the CalculiX solver deck, run the solver, extract results, and refresh "
+            "the result summary. Pass task_description to auto-derive simulation/setup.yaml "
+            "and simulation/cae_mapping.json from geometry; omit it when a setup already "
+            "exists. Typical input: {project_id, task_description: 'Bracket fixed at bolt holes, "
+            "500 N downward on top face', mesh_size_mm: 2.5, run_id: 'pipeline_run_001'}."
+        ),
+        input_schema=_schema("cae.run_simulation_pipeline"),
+    )
     rt.register_tool(
         "cae.mesh_convergence",
         _tool_cae_mesh_convergence,

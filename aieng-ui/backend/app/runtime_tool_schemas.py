@@ -1833,6 +1833,37 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "additionalProperties": True,
     },
 
+    # ── simulation pipeline ──────────────────────────────────────────────────
+    "cae.run_simulation_pipeline": {
+        "type": "object",
+        "required": ["project_id"],
+        "description": (
+            "[APPROVAL REQUIRED] Run the full CAE simulation pipeline in one call: "
+            "optional AI preprocessing, mesh generation, solver deck assembly, CalculiX "
+            "execution, result extraction, and summary refresh. Pass task_description to "
+            "auto-derive the setup; omit it when simulation/setup.yaml already exists."
+        ),
+        "properties": {
+            "project_id": {"type": "string", "description": "Workbench project ID (UUID-style)."},
+            "task_description": {
+                "type": "string",
+                "description": (
+                    "Natural-language load case and support description. When provided, "
+                    "ai_preprocessing.run_ai_preprocessing is invoked first to write "
+                    "simulation/setup.yaml and simulation/cae_mapping.json."
+                ),
+            },
+            "material_hint": {"type": "string", "description": "Optional material hint for AI preprocessing."},
+            "mesh_hint": {"type": "string", "enum": ["coarse", "medium", "fine"], "description": "Optional mesh hint for AI preprocessing."},
+            "mesh_size_mm": {"type": "number", "exclusiveMinimum": 0, "description": "Target element size (mm). Triggers mesh generation."},
+            "run_id": {"type": "string", "description": "Solver run id, default pipeline_run_001."},
+            "load_case_id": {"type": "string", "description": "Load case id, default load_case_001."},
+            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 3600, "description": "Solver timeout in seconds (default 180)."},
+            "overwrite": {"type": "boolean", "description": "Overwrite existing solver deck and run artifacts (default true)."},
+        },
+        "additionalProperties": True,
+    },
+
     # ── post-processing ──────────────────────────────────────────────────────
     "postprocess.generate_computed_metrics": {
         "type": "object",
