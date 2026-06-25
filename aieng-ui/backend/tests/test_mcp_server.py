@@ -107,6 +107,20 @@ def test_cae_tools_advertise_guided_workflow(mcp_server) -> None:
     assert "project_id" in params.get("properties", {})
 
 
+def test_ai_preprocessing_tool_is_registered(mcp_server) -> None:
+    """ai_preprocessing.run_ai_preprocessing is registered with a curated schema."""
+    tools = _tool_dict(mcp_server)
+    name = _mcp_name("ai_preprocessing.run_ai_preprocessing")
+    assert name in tools, "ai_preprocessing.run_ai_preprocessing not in MCP registry"
+    tool = tools[name]
+    assert "claude" in tool.description.lower() or "setup.yaml" in tool.description.lower()
+    params = tool.parameters or {}
+    props = params.get("properties", {})
+    assert "project_id" in props
+    assert "task_description" in props
+    assert props["task_description"].get("type") == "string"
+
+
 def test_tools_without_curated_schema_get_permissive_default(mcp_server) -> None:
     """A registered tool that has no entry in TOOL_SCHEMAS should still expose
     a usable (permissive) object schema, never a missing one."""

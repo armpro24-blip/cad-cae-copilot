@@ -5015,6 +5015,148 @@ def test_prepare_solver_run_partial_readiness_recommends_only_missing_items(tmp_
     assert "cae.run_solver" not in tools
 
 
+def _make_ai_preprocessing_package(pkg_path: Path) -> None:
+    """Create a minimal .aieng package usable by ai_preprocessing tests."""
+    pkg_path.parent.mkdir(parents=True, exist_ok=True)
+    topology: dict[str, Any] = {
+        "format_version": "0.1",
+        "entities": [
+            {"id": "body_001", "type": "solid", "bounding_box": [0.0, 0.0, 0.0, 100.0, 50.0, 10.0]},
+            {"id": "face_001", "type": "face", "surface_type": "plane", "area": 5000.0, "normal": [0.0, 0.0, -1.0], "bounding_box": [0.0, 0.0, 0.0, 100.0, 50.0, 0.0], "body_id": "body_001"},
+            {"id": "face_002", "type": "face", "surface_type": "plane", "area": 5000.0, "normal": [0.0, 0.0, 1.0], "bounding_box": [0.0, 0.0, 10.0, 100.0, 50.0, 10.0], "body_id": "body_001"},
+        ],
+    }
+    feature_graph: dict[str, Any] = {
+        "features": [
+            {"id": "feat_base_001", "type": "base_plate", "name": "Main plate", "geometry_refs": {"faces": ["face_001", "face_002"]}, "parameters": {"length_mm": 100.0, "width_mm": 50.0, "thickness_mm": 10.0}},
+        ]
+    }
+    with zipfile.ZipFile(pkg_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("manifest.json", json.dumps({"schema_version": "0.1"}))
+        zf.writestr("geometry/topology_map.json", json.dumps(topology))
+        zf.writestr("graph/feature_graph.json", json.dumps(feature_graph))
+
+
+def test_runtime_tool_ai_preprocessing_run_writes_setup(tmp_path: Path) -> None:
+    """ai_preprocessing.run_ai_preprocessing can be invoked directly and writes the CAE setup."""
+    from unittest.mock import patch
+    from app.main import create_app, default_project, project_dir, save_project
+    from starlette.testclient import TestClient
+
+    settings = _make_patch_settings(tmp_path)
+    app = create_app(settings)
+    client = TestClient(app)
+
+    project = save_project(settings, default_project("ai-preprocessing-runtime"))
+    project_id = project["id"]
+    pkg_path = project_dir(settings, project_id) / "model.aieng"
+    _make_ai_preprocessing_package(pkg_path)
+    project["aieng_file"] = "model.aieng"
+    save_project(settings, project)
+
+    mock_response = {
+        "material": "Al6061-T6",
+        "material_reason": "typical bracket material",
+        "boundary_conditions": [
+            {"id": "bc_001", "target_feature_id": "feat_base_001", "target_face_ids": ["face_001"], "target_description": "Bottom face", "type": "fixed", "reason": "fixed base"},
+        ],
+        "loads": [
+            {"id": "load_001", "target_feature_id": "feat_base_001", "target_face_ids": ["face_002"], "target_description": "Top face", "type": "force", "value_n": 500.0, "direction": [0.0, 0.0, -1.0], "reason": "downward load"},
+        ],
+        "mesh": {"target_size_mm": 2.5, "refinement_note": "", "reason": "medium"},
+        "analysis_type": "static_structural",
+        "assumptions": [],
+        "warnings": [],
+    }
+
+    with patch("app.ai_preprocessing.call_claude_for_fea_setup", return_value=mock_response):
+        resp = client.post("/api/agent/invoke-tool", json={
+            "tool": "ai_preprocessing.run_ai_preprocessing",
+            "input": {
+                "project_id": project_id,
+                "task_description": "Plate fixed on bottom, 500 N downward on top",
+            },
+        })
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "ok"
+    assert data["tool"] == "ai_preprocessing.run_ai_preprocessing"
+    assert "simulation/setup.yaml" in data["written_artifacts"]
+    assert "simulation/cae_mapping.json" in data["written_artifacts"]
+
+    with zipfile.ZipFile(pkg_path, "r") as zf:
+        setup = yaml.safe_load(zf.read("simulation/setup.yaml"))
+        assert setup["material_name"] == "Al6061-T6"
+        mapping = json.loads(zf.read("simulation/cae_mapping.json"))
+        assert mapping["ai_generated"] is True
+
+
+def test_prepare_solver_run_stale_topology_recommends_ai_preprocessing(tmp_path: Path) -> None:
+    """When CAE face references are stale, cae.prepare_solver_run recommends ai_preprocessing.run_ai_preprocessing."""
+    from app import blocked_reason_codes as _blocked_reason_codes
+    from app.main import create_app, default_project, project_dir, save_project
+    from app.project_io import compute_topology_hash
+    from starlette.testclient import TestClient
+
+    settings = _make_patch_settings(tmp_path)
+    app = create_app(settings)
+    client = TestClient(app)
+
+    topology: dict[str, Any] = {
+        "format_version": "0.1",
+        "entities": [
+            {"id": "body_001", "type": "solid", "bounding_box": [0.0, 0.0, 0.0, 100.0, 50.0, 10.0]},
+            {"id": "face_001", "type": "face", "surface_type": "plane", "area": 5000.0, "normal": [0.0, 0.0, -1.0], "bounding_box": [0.0, 0.0, 0.0, 100.0, 50.0, 0.0], "body_id": "body_001"},
+            {"id": "face_002", "type": "face", "surface_type": "plane", "area": 5000.0, "normal": [0.0, 0.0, 1.0], "bounding_box": [0.0, 0.0, 10.0, 100.0, 50.0, 10.0], "body_id": "body_001"},
+        ],
+    }
+    stale_hash = "deadbeef"
+    current_hash = compute_topology_hash(topology)
+    assert stale_hash != current_hash
+
+    project = save_project(settings, default_project("preflight-stale-topology"))
+    project_id = project["id"]
+    pkg_path = project_dir(settings, project_id) / "preflight.aieng"
+    _make_canonical_cae_package(
+        pkg_path,
+        mesh=True,
+        solver_settings=True,
+        topology=topology,
+        setup_yaml={
+            "topology_hash": stale_hash,
+            "loads": [{"id": "load_001", "type": "force", "target_feature": "feat_top", "value": 500.0}],
+            "boundary_conditions": [{"id": "bc_001", "type": "fixed", "target_feature": "feat_base"}],
+        },
+        cae_mapping={
+            "topology_hash": stale_hash,
+            "mappings": [
+                {"cae_entity": "LOAD_TOP", "maps_to": {"feature_id": "feat_top", "role": "load_application"}, "face_ids": ["face_002"]},
+                {"cae_entity": "FIXED_BASE", "maps_to": {"feature_id": "feat_base", "role": "fixed_support"}, "face_ids": ["face_001"]},
+            ],
+        },
+        input_deck=True,
+    )
+    project["aieng_file"] = "preflight.aieng"
+    save_project(settings, project)
+
+    resp = client.post("/api/runtime/runs", json={
+        "message": "prepare solver run",
+        "project_id": project_id,
+        "tool_input": {"project_id": project_id, "run_id": "run_001", "load_case_id": "load_case_001"},
+    })
+    assert resp.status_code == 200
+    result = resp.json()["tool_results"][0]["output"]
+    assert result["ok"] is True
+    assert result["preflight"]["topology_references_valid"] is False
+
+    recs = result["recommended_next_calls"]
+    ai_rec = next((r for r in recs if r.get("tool") == "ai_preprocessing.run_ai_preprocessing"), None)
+    assert ai_rec is not None, "expected ai_preprocessing.run_ai_preprocessing recommendation for stale topology"
+    assert ai_rec["input"]["project_id"] == project_id
+    assert _blocked_reason_codes.STALE_TOPOLOGY_REFERENCE in ai_rec.get("resolves_blocked_reason_codes", [])
+
+
 def test_prepare_solver_run_external_input_deck_bypasses_package_deck_check(tmp_path: Path) -> None:
     """An externally-supplied input_deck_path satisfies the input deck check even when the package has no deck."""
     from app.main import create_app, default_project, project_dir, save_project

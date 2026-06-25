@@ -1780,6 +1780,59 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "additionalProperties": True,
     },
 
+    # ── AI preprocessing ─────────────────────────────────────────────────────
+    "ai_preprocessing.run_ai_preprocessing": {
+        "type": "object",
+        "required": ["project_id", "task_description"],
+        "description": (
+            "AI-driven FEA preprocessing setup generator. Reads geometry from the project's "
+            ".aieng package, calls Claude to decide material, boundary conditions, loads, and "
+            "mesh strategy, then writes simulation/setup.yaml and simulation/cae_mapping.json "
+            "into the package atomically. Use this to recover from stale CAE topology references "
+            "after a CAD edit, or to set up a first analysis."
+        ),
+        "properties": {
+            "project_id": {"type": "string", "description": "Workbench project ID (UUID-style)."},
+            "task_description": {
+                "type": "string",
+                "description": (
+                    "Natural-language description of the load case and support conditions, "
+                    "e.g. 'Bracket bolted at 4 corner holes, 500 N downward load at the end face.'"
+                ),
+            },
+            "material_hint": {
+                "type": "string",
+                "description": "Preferred material name or description (optional).",
+            },
+            "mesh_hint": {
+                "type": "string",
+                "enum": ["coarse", "medium", "fine"],
+                "description": "Desired mesh density (optional).",
+            },
+            "write_files": {
+                "type": "boolean",
+                "description": "Write artifacts to package (default true). Pass false for a dry-run preview.",
+            },
+            "write_brep_graph": {
+                "type": "boolean",
+                "description": "Write B-Rep digest artifacts to package (default true).",
+            },
+            "use_brep_graph": {
+                "type": "boolean",
+                "description": "Include B-Rep graph context for face selection (default true).",
+            },
+            "api_key": {
+                "type": "string",
+                "description": "Optional explicit Anthropic API key. Falls back to persisted settings.",
+            },
+            "llm_config": {
+                "type": "object",
+                "description": "Optional LLM provider/model overrides.",
+            },
+        },
+        "additionalProperties": True,
+    },
+
     # ── post-processing ──────────────────────────────────────────────────────
     "postprocess.generate_computed_metrics": {
         "type": "object",

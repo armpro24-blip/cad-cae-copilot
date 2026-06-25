@@ -191,6 +191,7 @@ def register_runtime_tools(*, active_settings: Any, app_context: Any) -> Runtime
     from . import runtime_tools
     from .runtime_tool_schemas import get_schema as _schema
 
+    from .runtime_registry import ai_preprocessing as _ai_preprocessing
     from .runtime_registry import aieng as _aieng
     from .runtime_registry import cad as _cad
     from .runtime_registry import cae as _cae
@@ -198,6 +199,7 @@ def register_runtime_tools(*, active_settings: Any, app_context: Any) -> Runtime
     from .runtime_registry import standards as _standards
 
     aieng_handlers = _aieng.register_aieng_tools(_rt, active_settings, app_context, _schema)
+    _ai_preprocessing.register_ai_preprocessing_tools(_rt, active_settings, app_context, _schema)
     _cad.register_cad_tools(_rt, active_settings, app_context, _schema)
     _cae.register_cae_tools(_rt, active_settings, app_context, _schema)
     opt_handlers = _opt.register_opt_tools(_rt, active_settings, app_context, _schema)

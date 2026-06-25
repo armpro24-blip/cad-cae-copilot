@@ -1039,15 +1039,21 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             ready_to_run,
         )
         if not topology_refs_ok:
+            resolves_codes = [_blocked_reason_codes.STALE_TOPOLOGY_REFERENCE]
+            if nset_validation.get("missing_face_ids"):
+                resolves_codes.append(_blocked_reason_codes.NSET_BINDING_INVALID)
             recommendations.insert(0, {
                 "tool": "ai_preprocessing.run_ai_preprocessing",
-                "input": {"project_id": project_id or "", "task_description": "Refresh CAE face references after geometry change"},
+                "input": {
+                    "project_id": project_id or "",
+                    "task_description": "Refresh CAE face references after geometry change",
+                },
                 "reason": (
                     "CAE face references are stale relative to the current topology. "
-                    "Re-run AI preprocessing to rebind loads/BCs, or use cae.apply_setup_patch "
-                    "to update face IDs manually."
+                    "Run ai_preprocessing.run_ai_preprocessing to rebind loads/BCs to the new face IDs, "
+                    "then call cae.prepare_solver_run again to verify the setup."
                 ),
-                "resolves_blocked_reason_codes": [_blocked_reason_codes.STALE_TOPOLOGY_REFERENCE],
+                "resolves_blocked_reason_codes": resolves_codes,
             })
 
         preflight["blocked_reason_codes"] = _blocked_reason_codes.codes_for_preflight(preflight)
