@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import shutil
 import subprocess
 import tempfile
@@ -60,13 +61,22 @@ def check_simulation_tools() -> dict[str, Any]:
 
 # ── Package I/O helpers ───────────────────────────────────────────────────────
 
+LOGGER = logging.getLogger("app.simulation_runner")
+
+
 def _read_member(package_path: Path, member: str) -> bytes | None:
     try:
         with zipfile.ZipFile(package_path, "r") as zf:
             return zf.read(member)
-    except Exception:
-        pass
-    return None
+    except (FileNotFoundError, KeyError):
+        # Member or package simply does not exist — callers treat this as absent.
+        return None
+    except Exception as exc:
+        # Corrupt or unreadable package should be visible; do not hide it.
+        LOGGER.warning(
+            "Could not read %s from %s: %s", member, package_path, exc
+        )
+        return None
 
 
 CANONICAL_MESH_INP_PATH = "simulation/mesh/mesh.inp"
@@ -173,14 +183,25 @@ def _mesh_with_gmsh(step_path: Path, work_dir: Path, mesh_size_mm: float) -> Pat
         # disconnected bodies, so a structural solve sees the parts as free bodies
         # (singular / invalid). OCC fragment imprints the shared faces so interface
         # nodes are merged and load transfers across the joints. (#377)
+        # Glue touching-but-separate solids into a conformal, connected mesh.
+        # A build123d Compound of labelled feature-solids (the modeling pattern the
+        # CAD guide teaches) imports as N independent OCC volumes that share
+        # coincident faces but no topology — Gmsh would otherwise mesh them as N
+        # disconnected bodies, so a structural solve sees the parts as free bodies
+        # (singular / invalid). OCC fragment imprints the shared faces so interface
+        # nodes are merged and load transfers across the joints. (#377)
         occ_volumes = gmsh.model.occ.getEntities(3)
         if len(occ_volumes) > 1:
             try:
                 gmsh.model.occ.fragment(occ_volumes, [])
-            except Exception:
+            except Exception as exc:
                 # Fragment can fail on pathological geometry; fall back to meshing
-                # the volumes as-is rather than aborting the whole mesh.
-                pass
+                # the volumes as-is rather than aborting the whole mesh, but warn
+                # so the operator knows the mesh may be non-conformal.
+                LOGGER.warning(
+                    "Gmsh OCC fragment failed on multi-volume geometry: %s. "
+                    "Mesh may contain disconnected bodies.", exc
+                )
             gmsh.model.occ.synchronize()
 
         gmsh.option.setNumber("Mesh.CharacteristicLengthMax", mesh_size_mm)
@@ -2046,6 +2067,7 @@ def _run_simulation_core(
         displacement_max: float | None = None
         frd_bytes: bytes | None = None
         full_metrics: dict[str, Any] = {}
+        result_extraction_failed = False
 
         if frd_path:
             frd_bytes = frd_path.read_bytes()
@@ -2058,9 +2080,10 @@ def _run_simulation_core(
                 warnings.extend(extracted.get("warnings") or [])
                 full_metrics = extracted
             except Exception as exc:
+                result_extraction_failed = True
                 warnings.append(f"FRD result parsing failed: {exc}")
 
-        status = "success" if returncode == 0 and frd_path else "solver_error"
+        status = "success" if returncode == 0 and frd_path and not result_extraction_failed else "solver_error"
 
         # ── Post-processing: verdict vs design targets ────────────────────────
         verdict: dict[str, Any] = {}

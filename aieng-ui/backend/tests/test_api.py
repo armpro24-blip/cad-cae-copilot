@@ -5907,6 +5907,137 @@ def test_run_solver_timeout_records_failed_metadata(tmp_path: Path) -> None:
     assert any("timed out" in w.lower() for w in run_meta["errors"])
 
 
+def test_run_solver_subprocess_launch_failure_records_failed_metadata(tmp_path: Path) -> None:
+    """cae.run_solver records a failed solver_run.json even when the subprocess cannot start."""
+    from unittest.mock import patch
+    from app.main import create_app, default_project, project_dir, save_project
+    from starlette.testclient import TestClient
+
+    settings = _make_patch_settings(tmp_path)
+    app = create_app(settings)
+    client = TestClient(app)
+
+    project = save_project(settings, default_project("solver-launch-fail"))
+    project_id = project["id"]
+    pkg_path = project_dir(settings, project_id) / "solver.aieng"
+    _make_preflight_package(pkg_path, input_deck=True)
+    project["aieng_file"] = "solver.aieng"
+    save_project(settings, project)
+
+    with patch("app.main.shutil.which", return_value="/fake/ccx"), \
+         patch("subprocess.run", side_effect=FileNotFoundError("ccx not found")):
+        data = _execute_run_solver(client, project_id, {
+            "project_id": project_id,
+            "input_deck_path": "simulation/runs/run_001/solver_input.inp",
+            "extract_results": False,
+            "refresh_summary": False,
+        })
+
+    assert data["status"] == "completed"
+    result = data["tool_results"][0]["output"]
+    assert result["ok"] is True
+    assert result["status"] == "failed"
+    assert result["solver_execution_performed"] is True
+    assert result["return_code"] == -1
+    assert result["code"] == "solver_subprocess_error"
+    assert "subprocess" in result["message"].lower()
+
+    with zipfile.ZipFile(pkg_path, "r") as zf:
+        run_meta = json.loads(zf.read("simulation/runs/run_001/solver_run.json"))
+    assert run_meta["state"] == "failed"
+    assert run_meta["solved"] is False
+    assert run_meta["return_code"] == -1
+    assert any("subprocess" in e.lower() for e in run_meta["errors"])
+
+
+def test_run_solver_nonzero_return_code_includes_diagnosis(tmp_path: Path) -> None:
+    """cae.run_solver surfaces actionable diagnosis when ccx exits non-zero."""
+    from unittest.mock import patch, MagicMock
+    from app.main import create_app, default_project, project_dir, save_project
+    from starlette.testclient import TestClient
+
+    settings = _make_patch_settings(tmp_path)
+    app = create_app(settings)
+    client = TestClient(app)
+
+    project = save_project(settings, default_project("solver-diagnosis"))
+    project_id = project["id"]
+    pkg_path = project_dir(settings, project_id) / "solver.aieng"
+    _make_preflight_package(pkg_path, input_deck=True)
+    project["aieng_file"] = "solver.aieng"
+    save_project(settings, project)
+
+    def fake_run(cmd, **kwargs):
+        return MagicMock(
+            returncode=1,
+            stdout="*ERROR in u_singular: zero pivot\nSINGULAR MATRIX\n",
+            stderr="",
+        )
+
+    with patch("app.main.shutil.which", return_value="/fake/ccx"), \
+         patch("subprocess.run", side_effect=fake_run):
+        data = _execute_run_solver(client, project_id, {
+            "project_id": project_id,
+            "input_deck_path": "simulation/runs/run_001/solver_input.inp",
+            "extract_results": False,
+            "refresh_summary": False,
+        })
+
+    assert data["status"] == "completed"
+    result = data["tool_results"][0]["output"]
+    assert result["ok"] is True
+    assert result["status"] == "failed"
+    assert result["return_code"] == 1
+    assert result["diagnosis"]
+    assert any("singular" in d.lower() for d in result["diagnosis"])
+
+    with zipfile.ZipFile(pkg_path, "r") as zf:
+        run_meta = json.loads(zf.read("simulation/runs/run_001/solver_run.json"))
+    assert run_meta["diagnosis"]
+    assert any("singular" in d.lower() for d in run_meta["diagnosis"])
+
+
+def test_run_solver_failure_emits_package_audit_event(tmp_path: Path) -> None:
+    """cae.run_solver appends a solver_run_failed audit event to the package on failure."""
+    from unittest.mock import patch, MagicMock
+    from app.main import create_app, default_project, project_dir, save_project
+    from starlette.testclient import TestClient
+
+    settings = _make_patch_settings(tmp_path)
+    app = create_app(settings)
+    client = TestClient(app)
+
+    project = save_project(settings, default_project("solver-fail-audit"))
+    project_id = project["id"]
+    pkg_path = project_dir(settings, project_id) / "solver.aieng"
+    _make_preflight_package(pkg_path, input_deck=True)
+    project["aieng_file"] = "solver.aieng"
+    save_project(settings, project)
+
+    def fake_run(cmd, **kwargs):
+        return MagicMock(returncode=2, stdout="*ERROR\n", stderr="")
+
+    with patch("app.main.shutil.which", return_value="/fake/ccx"), \
+         patch("subprocess.run", side_effect=fake_run):
+        data = _execute_run_solver(client, project_id, {
+            "project_id": project_id,
+            "input_deck_path": "simulation/runs/run_001/solver_input.inp",
+            "extract_results": False,
+            "refresh_summary": False,
+        })
+
+    result = data["tool_results"][0]["output"]
+    assert result["status"] == "failed"
+
+    with zipfile.ZipFile(pkg_path, "r") as zf:
+        audit_raw = zf.read("audit/events.jsonl")
+    events = [json.loads(line) for line in audit_raw.decode().splitlines() if line.strip()]
+    fail_events = [e for e in events if e.get("event_type") == "solver_run_failed"]
+    assert len(fail_events) == 1
+    assert fail_events[0]["tool"] == "cae.run_solver"
+    assert fail_events[0]["status"] == "failed"
+
+
 def test_run_solver_registered_in_introspection(tmp_path: Path) -> None:
     """cae.run_solver appears in /api/runtime/tools with requires_approval=true."""
     from app.main import create_app

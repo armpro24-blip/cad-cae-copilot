@@ -115,6 +115,7 @@ def _validate_cae_mapping_for_solver(package_path: Path) -> dict[str, Any]:
                 all_mapped_face_ids.add(str(fid))
 
     valid_face_ids: set[str] = set()
+    topology_parse_ok = True
     if topo_raw:
         try:
             topology = _json.loads(topo_raw)
@@ -123,10 +124,17 @@ def _validate_cae_mapping_for_solver(package_path: Path) -> dict[str, Any]:
                 for e in (topology.get("entities") or [])
                 if isinstance(e, dict) and e.get("type") == "face" and e.get("id")
             }
-        except _json.JSONDecodeError:
-            pass
+        except _json.JSONDecodeError as exc:
+            topology_parse_ok = False
+            result["warnings"].append(
+                f"geometry/topology_map.json is not valid JSON: {exc}"
+            )
 
-    result["missing_face_ids"] = sorted(all_mapped_face_ids - valid_face_ids)
+    if topology_parse_ok:
+        result["missing_face_ids"] = sorted(all_mapped_face_ids - valid_face_ids)
+    else:
+        # Cannot verify face IDs against a broken topology file.
+        result["missing_face_ids"] = sorted(all_mapped_face_ids)
     if result["missing_face_ids"]:
         result["warnings"].append(
             f"cae_mapping.json references face IDs not in topology: {result['missing_face_ids']}"
@@ -139,8 +147,8 @@ def _validate_cae_mapping_for_solver(package_path: Path) -> dict[str, Any]:
         try:
             import yaml as _yaml
             setup = _yaml.safe_load(setup_raw) or {}
-        except Exception:
-            setup = {}
+        except Exception as exc:
+            result["warnings"].append(f"simulation/setup.yaml could not be parsed: {exc}")
 
     for bc in setup.get("boundary_conditions") or []:
         if isinstance(bc, dict):
@@ -167,13 +175,17 @@ def _validate_cae_mapping_for_solver(package_path: Path) -> dict[str, Any]:
     if bcs_raw:
         try:
             parsed_bcs = _json.loads(bcs_raw)
-        except _json.JSONDecodeError:
-            pass
+        except _json.JSONDecodeError as exc:
+            result["warnings"].append(
+                f"simulation/cae_imports/parsed_boundary_conditions.json is not valid JSON: {exc}"
+            )
     if loads_raw:
         try:
             parsed_loads = _json.loads(loads_raw)
-        except _json.JSONDecodeError:
-            pass
+        except _json.JSONDecodeError as exc:
+            result["warnings"].append(
+                f"simulation/cae_imports/parsed_loads.json is not valid JSON: {exc}"
+            )
     for bc in parsed_bcs.get("boundary_conditions") or []:
         if isinstance(bc, dict) and bc.get("target"):
             referenced.add(str(bc["target"]))
@@ -215,6 +227,7 @@ def _validate_cae_mapping_for_solver(package_path: Path) -> dict[str, Any]:
 
     result["valid"] = (
         result["cae_mapping_exists"]
+        and topology_parse_ok
         and not result["undefined_nsets"]
         and not result["unmapped_features"]
         and not result["empty_nsets"]
@@ -1352,6 +1365,8 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         return_code: int | None = None
         stdout = ""
         stderr = ""
+        solver_subprocess_error: str | None = None
+        analysis_type = "static"
 
         try:
             stem = _Path(input_deck_path_str).stem
@@ -1377,14 +1392,9 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 errors.append(f"Solver timed out after {timeout_seconds} seconds.")
                 warnings.append("Solver execution was terminated due to timeout.")
             except Exception as exc:
-                return _with_run_solver_receipt({
-                    "ok": False,
-                    "tool": "cae.run_solver",
-                    "status": "error",
-                    "code": "solver_subprocess_error",
-                    "message": f"Failed to run solver subprocess: {exc}",
-                    "solver_execution_performed": False,
-                })
+                return_code = -1
+                solver_subprocess_error = f"Failed to run solver subprocess: {exc}"
+                errors.append(solver_subprocess_error)
 
             finished_at = datetime.now(timezone.utc).isoformat()
             duration_seconds = round(_time.monotonic() - start_ts, 3)
@@ -1431,6 +1441,13 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             result_dat = work_dir / f"{stem}.dat"
             dat_path = result_dat if result_dat.exists() else None
 
+            # Build diagnosis from solver log when the solve did not succeed.
+            from ..simulation_runner import _diagnose_solver_log
+
+            diagnosis: list[str] = []
+            if not solved:
+                diagnosis = _diagnose_solver_log(stdout + "\n" + stderr)
+
             # Build solver_run.json
             solver_run = {
                 "run_id": run_id,
@@ -1447,6 +1464,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 "log_file": f"simulation/runs/{run_id}/solver_log.txt",
                 "warnings": warnings,
                 "errors": errors,
+                "diagnosis": diagnosis,
             }
             if frd_path:
                 solver_run["output_files"].append(f"simulation/runs/{run_id}/outputs/result.frd")
@@ -1482,6 +1500,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
 
             # Extract results if requested — route by analysis type: modal/buckling
             # read the .dat (eigenfrequencies / buckling factors), static reads FRD.
+            extraction_failed = False
             extracted_metrics: dict[str, Any] | None = None
             if extract_results and analysis_type in ("modal", "buckling") and dat_path:
                 try:
@@ -1497,6 +1516,8 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                     extracted_metrics = ext_result.get("metrics")
                     changed_artifacts.extend(ext_result.get("artifacts", []))
                 except Exception as exc:
+                    extraction_failed = True
+                    errors.append(f"DAT extraction failed: {exc}")
                     warnings.append(f"DAT extraction failed: {exc}")
             elif extract_results and frd_path:
                 try:
@@ -1511,6 +1532,8 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                     extracted_metrics = ext_result.get("metrics")
                     changed_artifacts.extend(ext_result.get("artifacts", []))
                 except Exception as exc:
+                    extraction_failed = True
+                    errors.append(f"FRD extraction failed: {exc}")
                     warnings.append(f"FRD extraction failed: {exc}")
 
             # Auto-import solver evidence (.dat) if solver succeeded and file exists
@@ -1619,10 +1642,39 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 except Exception as _exc:
                     warnings.append(f"Could not write audit event: {_exc}")
 
+            # Always emit a solver-run audit event. On failure it carries the
+            # diagnosis so the package timeline / activity stream stays honest.
+            if not solved:
+                try:
+                    _rev = _read_revalidation_status(package_path) or {}
+                    _append_audit_event_to_package(
+                        package_path,
+                        _build_audit_event(
+                            tool="cae.run_solver",
+                            event_type="solver_run_failed",
+                            status="failed",
+                            artifacts_written=list(changed_artifacts),
+                            evidence_created=[],
+                            state_changes={
+                                "requires_revalidation": _rev.get("requires_revalidation", True),
+                                "last_validated_geometry_revision": _rev.get(
+                                    "last_validated_geometry_revision"
+                                ),
+                                "current_geometry_revision": _rev.get("current_geometry_revision"),
+                                "errors": errors,
+                                "diagnosis": diagnosis,
+                            },
+                            geometry_revision=_rev.get("current_geometry_revision"),
+                            revalidation_status="stale" if _rev.get("requires_revalidation") else "fresh",
+                        ),
+                    )
+                except Exception as _exc:
+                    warnings.append(f"Could not write failure audit event: {_exc}")
+
             result: dict[str, Any] = {
                 "ok": True,
                 "tool": "cae.run_solver",
-                "status": "completed" if solved else "failed",
+                "status": "completed" if solved and not extraction_failed else "failed",
                 "solver_execution_performed": True,
                 "return_code": return_code,
                 "project_id": project_id,
@@ -1630,7 +1682,11 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 "changed_artifacts": changed_artifacts,
                 "warnings": warnings,
                 "errors": errors,
+                "diagnosis": diagnosis,
             }
+            if solver_subprocess_error:
+                result["code"] = "solver_subprocess_error"
+                result["message"] = solver_subprocess_error
             if extracted_metrics is not None:
                 result["extracted_metrics"] = extracted_metrics
             if refreshed_summaries:

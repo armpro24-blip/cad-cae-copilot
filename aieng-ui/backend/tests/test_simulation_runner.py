@@ -1663,6 +1663,41 @@ def test_ensure_source_deck_from_mesh_resynthesizes_when_mesh_changes(tmp_path: 
     assert _read_member(pkg, SOURCE_SOLVER_DECK_PATH) != original_deck
 
 
+def test_validate_cae_mapping_flags_corrupt_package(tmp_path: Path) -> None:
+    """_validate_cae_mapping_for_solver reports invalid instead of hiding a corrupt package."""
+    from app.runtime_registry.cae import _validate_cae_mapping_for_solver
+
+    pkg = tmp_path / "corrupt.aieng"
+    pkg.write_bytes(b"not a zip")
+    result = _validate_cae_mapping_for_solver(pkg)
+    assert result["valid"] is False
+    assert any("read package" in w.lower() for w in result["warnings"])
+
+
+def test_validate_cae_mapping_flags_broken_topology(tmp_path: Path) -> None:
+    """_validate_cae_mapping_for_solver treats unverifiable face IDs as missing when topology is broken."""
+    from app.runtime_registry.cae import _validate_cae_mapping_for_solver
+
+    pkg = tmp_path / "bad-topo.aieng"
+    pkg.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(pkg, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("manifest.json", json.dumps({"model_id": "bad-topo"}))
+        zf.writestr("simulation/setup.yaml", yaml.dump({
+            "loads": [{"id": "l1", "type": "force", "target_feature": "top", "value": 100}],
+        }))
+        zf.writestr("simulation/cae_mapping.json", json.dumps({
+            "mappings": [
+                {"cae_entity": "top_nset", "maps_to": {"feature_id": "top"}, "face_ids": ["face_001"]},
+            ]
+        }))
+        zf.writestr("geometry/topology_map.json", "not valid json")
+
+    result = _validate_cae_mapping_for_solver(pkg)
+    assert result["valid"] is False
+    assert "face_001" in result["missing_face_ids"]
+    assert any("topology_map.json" in w for w in result["warnings"])
+
+
 def test_solve_package_static_refuses_rebind_when_ambiguous(tmp_path: Path) -> None:
     from app.simulation_runner import solve_package_static
 
