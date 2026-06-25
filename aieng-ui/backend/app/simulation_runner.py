@@ -9,6 +9,7 @@ Graceful degradation: if Gmsh or CalculiX are not installed, returns
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import subprocess
@@ -835,28 +836,62 @@ def build_source_deck_from_mesh(
     return "\n".join(lines) + "\n", empty_nsets
 
 
-def ensure_source_deck_from_mesh(package_path: Path) -> dict[str, Any]:
-    """Synthesize ``source_solver_deck.inp`` from a persisted mesh when absent.
+SOURCE_SOLVER_DECK_HASH_PATH = "simulation/cae_imports/source_solver_deck_inputs.hash"
 
-    No-op (``status=exists``) when a source deck is already present — an
-    explicitly imported deck always wins. Returns ``status=no_mesh`` when there is
-    no package mesh deck to build from. On success writes the source deck and
-    returns the NSET names it bound (and any that caught no nodes). Never runs a
-    solver; safe to call before ``cae.generate_solver_input``.
+
+def _source_deck_input_hash(
+    mesh_bytes: bytes,
+    setup_raw: bytes | None,
+    cae_raw: bytes | None,
+    topo_raw: bytes | None,
+) -> str:
+    """Return a stable hash of the inputs that determine a synthesized source deck."""
+    h = hashlib.sha256(mesh_bytes)
+    for raw in (setup_raw, cae_raw, topo_raw):
+        h.update(b"\x00")
+        h.update(raw or b"")
+    return h.hexdigest()
+
+
+def ensure_source_deck_from_mesh(package_path: Path) -> dict[str, Any]:
+    """Synthesize ``source_solver_deck.inp`` from a persisted mesh.
+
+    No-op (``status=exists``) when a source deck is already present and its input
+    hash (mesh + setup.yaml + cae_mapping.json + topology_map.json) has not
+    changed. Re-synthesizes when the source deck is stale so that changes to
+    cae_mapping or mesh topology are reflected. Returns ``status=no_mesh`` when
+    there is no package mesh deck to build from. On success writes the source deck
+    and returns the NSET names it bound (and any that caught no nodes). Never runs
+    a solver; safe to call before ``cae.generate_solver_input``.
     """
     package_path = Path(package_path)
-    if _read_member(package_path, SOURCE_SOLVER_DECK_PATH):
-        return {"created": False, "status": "exists"}
 
     mesh_bytes, mesh_path = _read_mesh_inp_member(package_path)
     if not mesh_bytes:
         return {"created": False, "status": "no_mesh"}
 
     setup_raw = _read_member(package_path, "simulation/setup.yaml")
-    setup = (yaml.safe_load(setup_raw) or {}) if setup_raw else {}
     cae_raw = _read_member(package_path, "simulation/cae_mapping.json")
-    cae_mapping: dict[str, Any] = json.loads(cae_raw) if cae_raw else {"mappings": []}
     topo_raw = _read_member(package_path, "geometry/topology_map.json")
+    current_hash = _source_deck_input_hash(mesh_bytes, setup_raw, cae_raw, topo_raw)
+
+    existing_deck = _read_member(package_path, SOURCE_SOLVER_DECK_PATH)
+    existing_hash_raw = _read_member(package_path, SOURCE_SOLVER_DECK_HASH_PATH)
+    if existing_deck and existing_hash_raw:
+        try:
+            stored_hash = existing_hash_raw.decode().strip()
+            if stored_hash == current_hash:
+                return {
+                    "created": False,
+                    "status": "exists",
+                    "input_hash": current_hash,
+                    "source_deck_path": SOURCE_SOLVER_DECK_PATH,
+                }
+        except Exception:
+            pass
+
+    setup = (yaml.safe_load(setup_raw) or {}) if setup_raw else {}
+    cae_mapping: dict[str, Any] = json.loads(cae_raw) if cae_raw else {"mappings": []}
     topology: dict[str, Any] = json.loads(topo_raw) if topo_raw else {}
 
     with tempfile.TemporaryDirectory(prefix="aieng_source_deck_") as tmp_str:
@@ -872,12 +907,16 @@ def ensure_source_deck_from_mesh(package_path: Path) -> dict[str, Any]:
     deck_text, empty_nsets = build_source_deck_from_mesh(
         mesh_bytes.decode(errors="replace"), setup, nsets
     )
-    _write_members_to_package(package_path, {SOURCE_SOLVER_DECK_PATH: deck_text.encode()})
+    _write_members_to_package(package_path, {
+        SOURCE_SOLVER_DECK_PATH: deck_text.encode(),
+        SOURCE_SOLVER_DECK_HASH_PATH: current_hash.encode(),
+    })
 
     return {
         "created": True,
         "status": "synthesized",
         "source_deck_path": SOURCE_SOLVER_DECK_PATH,
+        "input_hash": current_hash,
         "mesh_path": mesh_path,
         "nset_names": [n for n in nsets if nsets[n]],
         "empty_nsets": empty_nsets,

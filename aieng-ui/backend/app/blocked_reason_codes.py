@@ -18,6 +18,7 @@ MISSING_SOLVER = "missing_solver"
 SOLVER_UNAVAILABLE = "solver_unavailable"
 STALE_TOPOLOGY_REFERENCE = "stale_topology_reference"
 TARGET_NOT_FOUND = "target_not_found"
+NSET_BINDING_INVALID = "nset_binding_invalid"
 DECK_NOT_PREPARED = "deck_not_prepared"
 APPROVAL_REQUIRED = "approval_required"
 
@@ -66,6 +67,11 @@ _CODE_DETAILS: dict[str, dict[str, str]] = {
         "label": "Target not found",
         "description": "A referenced part, face, artifact, or other target could not be matched.",
         "recommended_action": "Correct the target reference before running the requested operation.",
+    },
+    NSET_BINDING_INVALID: {
+        "label": "NSET binding invalid",
+        "description": "Loads or boundary conditions reference NSETs that are undefined, empty, or point to faces outside the current topology.",
+        "recommended_action": "Update simulation/cae_mapping.json so every referenced NSET maps to at least one valid topology face.",
     },
     DECK_NOT_PREPARED: {
         "label": "Solver deck not prepared",
@@ -171,6 +177,8 @@ def codes_for_preflight(preflight: dict[str, Any]) -> list[str]:
         codes.add(SOLVER_UNAVAILABLE)
     if not preflight.get("topology_references_valid", True):
         codes.add(STALE_TOPOLOGY_REFERENCE)
+    if not preflight.get("nset_binding_valid", True):
+        codes.add(NSET_BINDING_INVALID)
     return sorted(codes)
 
 

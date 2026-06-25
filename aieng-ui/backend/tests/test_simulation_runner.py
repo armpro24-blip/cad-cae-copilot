@@ -1464,6 +1464,17 @@ def test_synthesized_deck_mesh_section_survives_deck_generator_extraction() -> N
     assert "CPS3" not in upper            # surface elements never present
 
 
+def _replace_member(pkg_path: Path, member: str, content: bytes) -> None:
+    """Replace a member inside an existing .aieng zip package atomically."""
+    tmp = pkg_path.with_suffix(".tmp.aieng")
+    with zipfile.ZipFile(pkg_path, "r") as src, zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as dst:
+        for item in src.infolist():
+            if item.filename != member:
+                dst.writestr(item, src.read(item.filename))
+        dst.writestr(member, content)
+    tmp.replace(pkg_path)
+
+
 def _build_meshed_setup_package(pkg_path: Path) -> None:
     """A package with a mesh + setup + cae_mapping but NO imported source deck."""
     from app.simulation_runner import CANONICAL_MESH_INP_PATH
@@ -1571,6 +1582,83 @@ def test_cae_generate_solver_input_synthesizes_source_deck_via_invoke(tmp_path: 
     with zipfile.ZipFile(pkg_path, "r") as zf:
         assert "simulation/cae_imports/source_solver_deck.inp" in zf.namelist()
         assert "simulation/runs/run_001/solver_input.inp" in zf.namelist()
+
+
+def test_ensure_source_deck_from_mesh_resynthesizes_when_cae_mapping_changes(tmp_path: Path) -> None:
+    """Changing cae_mapping.json invalidates the cached source deck hash and triggers re-synthesis."""
+    from app.simulation_runner import (
+        SOURCE_SOLVER_DECK_HASH_PATH,
+        SOURCE_SOLVER_DECK_PATH,
+        _read_member,
+        ensure_source_deck_from_mesh,
+    )
+
+    pkg = tmp_path / "resynth-mapping.aieng"
+    _build_meshed_setup_package(pkg)
+
+    first = ensure_source_deck_from_mesh(pkg)
+    assert first["created"] is True
+    assert first["status"] == "synthesized"
+    first_hash = first["input_hash"]
+    original_deck = _read_member(pkg, SOURCE_SOLVER_DECK_PATH)
+    assert original_deck is not None
+
+    # Mutate cae_mapping (add a new mapping) and re-run.
+    import copy
+    new_mapping = copy.deepcopy(_CAE_MAPPING)
+    new_mapping["mappings"].append({
+        "cae_entity": "EXTRA_NSET",
+        "maps_to": {"feature_id": "feat_extra", "role": "contact"},
+        "face_ids": ["face_002"],
+    })
+    _replace_member(pkg, "simulation/cae_mapping.json", json.dumps(new_mapping).encode())
+
+    second = ensure_source_deck_from_mesh(pkg)
+    assert second["created"] is True
+    assert second["status"] == "synthesized"
+    assert second["input_hash"] != first_hash
+    second_deck = _read_member(pkg, SOURCE_SOLVER_DECK_PATH)
+    assert second_deck is not None
+    assert second_deck != original_deck
+    assert b"*NSET, NSET=EXTRA_NSET" in second_deck
+
+    stored_hash = _read_member(pkg, SOURCE_SOLVER_DECK_HASH_PATH)
+    assert stored_hash is not None
+    assert stored_hash.decode().strip() == second["input_hash"]
+
+    # Same inputs again -> exists, no re-synthesis.
+    third = ensure_source_deck_from_mesh(pkg)
+    assert third["created"] is False
+    assert third["status"] == "exists"
+    assert third["input_hash"] == second["input_hash"]
+
+
+def test_ensure_source_deck_from_mesh_resynthesizes_when_mesh_changes(tmp_path: Path) -> None:
+    """Changing the mesh deck invalidates the cached source deck hash and triggers re-synthesis."""
+    from app.simulation_runner import (
+        CANONICAL_MESH_INP_PATH,
+        SOURCE_SOLVER_DECK_PATH,
+        _read_member,
+        ensure_source_deck_from_mesh,
+    )
+
+    pkg = tmp_path / "resynth-mesh.aieng"
+    _build_meshed_setup_package(pkg)
+
+    first = ensure_source_deck_from_mesh(pkg)
+    assert first["created"] is True
+    first_hash = first["input_hash"]
+    original_deck = _read_member(pkg, SOURCE_SOLVER_DECK_PATH)
+
+    # Add an extra node/element to the mesh.
+    new_mesh = _MINIMAL_MESH_INP.rstrip() + "\n6, 20.0, 5.0, 10.0\n*Element, type=C3D4, ELSET=EALL\n3, 2, 3, 4, 6\n"
+    _replace_member(pkg, CANONICAL_MESH_INP_PATH, new_mesh.encode())
+
+    second = ensure_source_deck_from_mesh(pkg)
+    assert second["created"] is True
+    assert second["status"] == "synthesized"
+    assert second["input_hash"] != first_hash
+    assert _read_member(pkg, SOURCE_SOLVER_DECK_PATH) != original_deck
 
 
 def test_solve_package_static_refuses_rebind_when_ambiguous(tmp_path: Path) -> None:

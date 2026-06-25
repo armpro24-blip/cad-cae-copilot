@@ -42,6 +42,187 @@ def _ccx_dll_crash_hint(return_code: int | None, stdout: str, frd_exists: bool) 
     )
 
 
+def _validate_cae_mapping_for_solver(package_path: Path) -> dict[str, Any]:
+    """Check that loads/BCs reference NSETs which are defined and non-empty.
+
+    Reads simulation/setup.yaml (target_feature) and the parsed_*.json fallbacks
+    (target NSET name) together with simulation/cae_mapping.json. Returns:
+      - cae_mapping_exists
+      - referenced_nsets: NSET names referenced by loads/BCs
+      - undefined_nsets: referenced but not present in cae_mapping
+      - empty_nsets: mapped but with no face_ids
+      - missing_face_ids: face_ids in mapping absent from topology
+      - valid: True when every referenced NSET is defined and non-empty
+      - warnings: human-readable notes
+    """
+    import json as _json
+    import zipfile as _zipfile
+
+    result: dict[str, Any] = {
+        "cae_mapping_exists": False,
+        "referenced_nsets": [],
+        "defined_nsets": [],
+        "undefined_nsets": [],
+        "unmapped_features": [],
+        "empty_nsets": [],
+        "missing_face_ids": [],
+        "valid": True,
+        "warnings": [],
+    }
+
+    try:
+        with _zipfile.ZipFile(package_path, "r") as zf:
+            names = set(zf.namelist())
+            cae_raw = zf.read("simulation/cae_mapping.json") if "simulation/cae_mapping.json" in names else None
+            setup_raw = zf.read("simulation/setup.yaml") if "simulation/setup.yaml" in names else None
+            bcs_raw = zf.read("simulation/cae_imports/parsed_boundary_conditions.json") if "simulation/cae_imports/parsed_boundary_conditions.json" in names else None
+            loads_raw = zf.read("simulation/cae_imports/parsed_loads.json") if "simulation/cae_imports/parsed_loads.json" in names else None
+            topo_raw = zf.read("geometry/topology_map.json") if "geometry/topology_map.json" in names else None
+    except Exception as exc:
+        result["warnings"].append(f"Could not read package for NSET validation: {exc}")
+        result["valid"] = False
+        return result
+
+    cae_mapping: dict[str, Any] = {}
+    if cae_raw:
+        try:
+            cae_mapping = _json.loads(cae_raw)
+            result["cae_mapping_exists"] = True
+        except _json.JSONDecodeError:
+            result["warnings"].append("simulation/cae_mapping.json is not valid JSON.")
+            result["valid"] = False
+            return result
+
+    # Build lookup tables from cae_mapping.
+    # cae_entity -> mapping, and feature_id -> cae_entity.
+    nset_by_entity: dict[str, dict[str, Any]] = {}
+    nset_by_feature: dict[str, str] = {}
+    all_mapped_face_ids: set[str] = set()
+    for mapping in cae_mapping.get("mappings", []) or []:
+        if not isinstance(mapping, dict):
+            continue
+        entity = str(mapping.get("cae_entity", "") or "")
+        if not entity:
+            continue
+        nset_by_entity[entity] = mapping
+        maps_to = mapping.get("maps_to")
+        if isinstance(maps_to, dict):
+            fid = maps_to.get("feature_id")
+            if fid:
+                nset_by_feature[str(fid)] = entity
+        for fid in mapping.get("face_ids") or []:
+            if fid:
+                all_mapped_face_ids.add(str(fid))
+
+    valid_face_ids: set[str] = set()
+    if topo_raw:
+        try:
+            topology = _json.loads(topo_raw)
+            valid_face_ids = {
+                str(e.get("id"))
+                for e in (topology.get("entities") or [])
+                if isinstance(e, dict) and e.get("type") == "face" and e.get("id")
+            }
+        except _json.JSONDecodeError:
+            pass
+
+    result["missing_face_ids"] = sorted(all_mapped_face_ids - valid_face_ids)
+    if result["missing_face_ids"]:
+        result["warnings"].append(
+            f"cae_mapping.json references face IDs not in topology: {result['missing_face_ids']}"
+        )
+
+    referenced: set[str] = set()
+    unmapped_features: set[str] = set()
+    setup: dict[str, Any] = {}
+    if setup_raw:
+        try:
+            import yaml as _yaml
+            setup = _yaml.safe_load(setup_raw) or {}
+        except Exception:
+            setup = {}
+
+    for bc in setup.get("boundary_conditions") or []:
+        if isinstance(bc, dict):
+            target_feature = bc.get("target_feature")
+            if not target_feature:
+                continue
+            if target_feature in nset_by_feature:
+                referenced.add(nset_by_feature[target_feature])
+            else:
+                unmapped_features.add(str(target_feature))
+    for load in setup.get("loads") or []:
+        if isinstance(load, dict):
+            target_feature = load.get("target_feature")
+            if not target_feature:
+                continue
+            if target_feature in nset_by_feature:
+                referenced.add(nset_by_feature[target_feature])
+            else:
+                unmapped_features.add(str(target_feature))
+
+    # Fallback parsed files use explicit NSET target names.
+    parsed_bcs: dict[str, Any] = {}
+    parsed_loads: dict[str, Any] = {}
+    if bcs_raw:
+        try:
+            parsed_bcs = _json.loads(bcs_raw)
+        except _json.JSONDecodeError:
+            pass
+    if loads_raw:
+        try:
+            parsed_loads = _json.loads(loads_raw)
+        except _json.JSONDecodeError:
+            pass
+    for bc in parsed_bcs.get("boundary_conditions") or []:
+        if isinstance(bc, dict) and bc.get("target"):
+            referenced.add(str(bc["target"]))
+    for load in parsed_loads.get("loads") or []:
+        if isinstance(load, dict) and load.get("target"):
+            referenced.add(str(load["target"]))
+
+    result["referenced_nsets"] = sorted(referenced)
+    result["defined_nsets"] = sorted(nset_by_entity.keys())
+    result["unmapped_features"] = sorted(unmapped_features)
+
+    undefined = sorted(referenced - set(nset_by_entity.keys()))
+    if undefined:
+        result["undefined_nsets"] = undefined
+        result["warnings"].append(
+            f"Loads/BCs reference undefined NSETs (no cae_mapping entry): {undefined}"
+        )
+
+    if unmapped_features:
+        result["warnings"].append(
+            f"Loads/BCs target features with no cae_mapping entry: {sorted(unmapped_features)}"
+        )
+
+    empty = [
+        entity
+        for entity in referenced
+        if entity in nset_by_entity and not list(nset_by_entity[entity].get("face_ids") or [])
+    ]
+    if empty:
+        result["empty_nsets"] = sorted(empty)
+        result["warnings"].append(
+            f"Mapped NSETs have no face_ids (would produce empty node sets): {sorted(empty)}"
+        )
+
+    # If no loads/BCs reference any NSET, there is nothing to bind-check yet.
+    if not result["referenced_nsets"] and not unmapped_features:
+        result["valid"] = True
+        return result
+
+    result["valid"] = (
+        result["cae_mapping_exists"]
+        and not result["undefined_nsets"]
+        and not result["unmapped_features"]
+        and not result["empty_nsets"]
+        and not result["missing_face_ids"]
+    )
+    return result
+
+
 def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema: Any) -> dict[str, Any]:
     """Register cae runtime tools."""
     sync_main_symbols(globals())
@@ -525,23 +706,73 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 "tool": "cae.apply_setup_patch",
                 "input": {
                     "project_id": project_id,
+                    "patches": [
+                        {
+                            "path": "simulation/setup.yaml",
+                            "action_type": "create_file",
+                            "content": {
+                                "loads": [{
+                                    "id": "load_001",
+                                    "type": "force",
+                                    "target_feature": "top_face",
+                                    "target_dof": {"x": 0.0, "y": 0.0, "z": 1.0},
+                                    "value": 500.0,
+                                }],
+                                "boundary_conditions": [{
+                                    "id": "bc_001",
+                                    "type": "fixed",
+                                    "target_feature": "bottom_face",
+                                }],
+                            },
+                        },
+                        {
+                            "path": "simulation/cae_mapping.json",
+                            "action_type": "create_file",
+                            "content": {
+                                "mappings": [
+                                    {
+                                        "cae_entity": "top_face_nset",
+                                        "maps_to": {"feature_id": "top_face"},
+                                        "face_ids": ["face_001"],
+                                    },
+                                    {
+                                        "cae_entity": "bottom_face_nset",
+                                        "maps_to": {"feature_id": "bottom_face"},
+                                        "face_ids": ["face_002"],
+                                    },
+                                ]
+                            },
+                        },
+                    ],
+                },
+                "reason": (
+                    "Missing loads/boundary conditions. Prefer simulation/setup.yaml plus "
+                    "simulation/cae_mapping.json for face-to-NSET binding."
+                ),
+                "resolves_blocked_reason_codes": [_blocked_reason_codes.MISSING_LOADS],
+            })
+        if not preflight.get("nset_binding_valid", True):
+            recs.append({
+                "tool": "cae.apply_setup_patch",
+                "input": {
+                    "project_id": project_id,
                     "patches": [{
-                        "path": f"simulation/load_cases/{load_case_id}.json",
+                        "path": "simulation/cae_mapping.json",
                         "action_type": "create_file",
                         "content": {
-                            "id": load_case_id,
-                            "loads": [{
-                                "id": "load_001",
-                                "type": "force",
-                                "target": "REPLACE_WITH_NSET_OR_FACE_POINTER",
-                                "dof": 2,
-                                "value": 500.0,
+                            "mappings": [{
+                                "cae_entity": "REPLACE_WITH_REFERENCED_NSET",
+                                "maps_to": {"feature_id": "REPLACE_WITH_FEATURE_ID"},
+                                "face_ids": ["face_001"],
                             }],
                         },
                     }],
                 },
-                "reason": f"Missing load case file simulation/load_cases/{load_case_id}.json.",
-                "resolves_blocked_reason_codes": [_blocked_reason_codes.MISSING_LOADS],
+                "reason": (
+                    "Loads/BCs reference NSETs that are undefined or have no face_ids. "
+                    "Add a cae_mapping.json entry mapping each referenced NSET to at least one topology face."
+                ),
+                "resolves_blocked_reason_codes": [_blocked_reason_codes.NSET_BINDING_INVALID],
             })
         if not preflight["has_input_deck"]:
             recs.append({
@@ -637,7 +868,50 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         has_mesh = mesh_artifact_path is not None
         has_mesh_metadata = "simulation/mesh/mesh_metadata.json" in names
         has_solver_settings = "simulation/solver_settings.json" in names
-        has_load_case = f"simulation/load_cases/{load_case_id}.json" in names
+        legacy_load_case = f"simulation/load_cases/{load_case_id}.json" in names
+
+        # Canonical load/BC sources: setup.yaml (preferred) or parsed imports.
+        import json as _json
+        import yaml as _yaml
+
+        has_setup_yaml = "simulation/setup.yaml" in names
+        has_parsed_bcs = "simulation/cae_imports/parsed_boundary_conditions.json" in names
+        has_parsed_loads = "simulation/cae_imports/parsed_loads.json" in names
+        has_setup_loads = False
+        has_setup_constraints = False
+        if has_setup_yaml:
+            try:
+                with _zipfile.ZipFile(package_path, "r") as zf:
+                    setup_doc = _yaml.safe_load(zf.read("simulation/setup.yaml")) or {}
+                has_setup_loads = bool(setup_doc.get("loads"))
+                has_setup_constraints = bool(setup_doc.get("boundary_conditions"))
+            except Exception:
+                pass
+
+        parsed_loads_count = 0
+        parsed_bcs_count = 0
+        if has_parsed_loads:
+            try:
+                with _zipfile.ZipFile(package_path, "r") as zf:
+                    parsed_loads_doc = _json.loads(zf.read("simulation/cae_imports/parsed_loads.json"))
+                parsed_loads_count = len(parsed_loads_doc.get("loads") or [])
+            except Exception:
+                pass
+        if has_parsed_bcs:
+            try:
+                with _zipfile.ZipFile(package_path, "r") as zf:
+                    parsed_bcs_doc = _json.loads(zf.read("simulation/cae_imports/parsed_boundary_conditions.json"))
+                parsed_bcs_count = len(parsed_bcs_doc.get("boundary_conditions") or [])
+            except Exception:
+                pass
+
+        has_load_case = (
+            legacy_load_case
+            or has_setup_loads
+            or has_setup_constraints
+            or parsed_loads_count > 0
+            or parsed_bcs_count > 0
+        )
 
         if input_deck_path_str:
             has_input_deck = Path(input_deck_path_str).exists()
@@ -654,13 +928,20 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         topology_validation = validate_cae_topology_references(package_path)
         topology_refs_ok = topology_validation["valid"]
 
+        # Validate that referenced NSETs are defined and non-empty.
+        nset_validation = _validate_cae_mapping_for_solver(package_path)
+        nset_binding_valid = nset_validation["valid"]
+
         missing_items: list[str] = []
         if not has_mesh:
             missing_items.append("simulation/mesh/mesh.inp (no mesh deck found in package)")
         if not has_solver_settings:
             missing_items.append("simulation/solver_settings.json")
         if not has_load_case:
-            missing_items.append(f"simulation/load_cases/{load_case_id}.json")
+            missing_items.append(
+                f"loads/boundary_conditions (none in simulation/setup.yaml, "
+                f"simulation/cae_imports/parsed_*.json, or simulation/load_cases/{load_case_id}.json)"
+            )
         if not has_input_deck:
             deck_hint = f" (or external: {input_deck_path_str})" if input_deck_path_str else ""
             missing_items.append(f"simulation/runs/{run_id}/solver_input.inp{deck_hint}")
@@ -670,8 +951,16 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             missing_items.append(
                 "stale_topology_references: CAE face references do not match current geometry."
             )
+        if not nset_binding_valid:
+            missing_items.append(
+                f"nset_binding_invalid: {nset_validation.get('warnings') or ['see nset_validation']}"
+            )
 
-        ready_to_run = len(missing_items) == 0 and topology_refs_ok
+        ready_to_run = (
+            len(missing_items) == 0
+            and topology_refs_ok
+            and nset_binding_valid
+        )
 
         run_prefix = f"simulation/runs/{run_id}"
         planned_artifacts: list[dict[str, str]] = [
@@ -695,6 +984,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             "This is a preflight plan only. Solver execution requires external CalculiX setup.",
         ]
         warnings.extend(topology_validation.get("warnings") or [])
+        warnings.extend(nset_validation.get("warnings") or [])
         if not ready_to_run:
             warnings.append(f"Run is not ready: {len(missing_items)} item(s) missing.")
 
@@ -704,6 +994,10 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             "has_mesh_metadata": has_mesh_metadata,
             "has_solver_settings": has_solver_settings,
             "has_load_case": has_load_case,
+            "has_setup_yaml": has_setup_yaml,
+            "has_parsed_loads": has_parsed_loads,
+            "has_parsed_bcs": has_parsed_bcs,
+            "has_legacy_load_case": legacy_load_case,
             "has_input_deck": has_input_deck,
             "ccx_available": ccx_available,
             "missing_items": missing_items,
@@ -713,6 +1007,8 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             "hash_status": topology_validation.get("hash_status"),
             "cae_mapping_stale": topology_validation.get("cae_mapping_stale"),
             "stale_topology_references": topology_validation.get("stale_references", []),
+            "nset_binding_valid": nset_binding_valid,
+            "nset_validation": nset_validation,
         }
 
         recommendations = _recommended_next_calls(
@@ -725,6 +1021,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 "has_load_case": has_load_case,
                 "has_input_deck": has_input_deck,
                 "ccx_available": ccx_available,
+                "nset_binding_valid": nset_binding_valid,
             },
             ready_to_run,
         )

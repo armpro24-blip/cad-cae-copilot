@@ -5013,6 +5013,186 @@ def test_prepare_solver_run_external_input_deck_bypasses_package_deck_check(tmp_
     assert not any("solver_input.inp" in item for item in missing_items)
 
 
+def _make_canonical_cae_package(
+    pkg_path: Path,
+    *,
+    mesh: bool = True,
+    solver_settings: bool = True,
+    setup_yaml: dict[str, Any] | None = None,
+    cae_mapping: dict[str, Any] | None = None,
+    parsed_loads: dict[str, Any] | None = None,
+    parsed_bcs: dict[str, Any] | None = None,
+    topology: dict[str, Any] | None = None,
+    input_deck: bool = False,
+    run_id: str = "run_001",
+    load_case_id: str = "load_case_001",
+) -> None:
+    """Build a .aieng package using canonical CAE setup sources."""
+    pkg_path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(pkg_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("manifest.json", json.dumps({"model_id": "canonical-cae-test", "resources": {}}))
+        if topology:
+            zf.writestr("geometry/topology_map.json", json.dumps(topology))
+        if mesh:
+            zf.writestr("simulation/mesh/mesh.inp", "*NODE\n1,0,0,0\n*ELEMENT, TYPE=C3D4, ELSET=EALL\n")
+            zf.writestr("simulation/mesh/mesh_metadata.json", json.dumps({"elements": 10, "nodes": 5}))
+        if solver_settings:
+            zf.writestr("simulation/solver_settings.json", json.dumps({"solver": "CalculiX", "analysis_type": "linear_static"}))
+        if setup_yaml is not None:
+            zf.writestr("simulation/setup.yaml", yaml.dump(setup_yaml))
+        if cae_mapping is not None:
+            zf.writestr("simulation/cae_mapping.json", json.dumps(cae_mapping))
+        if parsed_loads is not None:
+            zf.writestr("simulation/cae_imports/parsed_loads.json", json.dumps(parsed_loads))
+        if parsed_bcs is not None:
+            zf.writestr("simulation/cae_imports/parsed_boundary_conditions.json", json.dumps(parsed_bcs))
+        if input_deck:
+            zf.writestr(f"simulation/runs/{run_id}/solver_input.inp", "** CalculiX input deck placeholder\n")
+
+
+def test_prepare_solver_run_detects_setup_yaml_loads_and_constraints(tmp_path: Path) -> None:
+    """cae.prepare_solver_run treats simulation/setup.yaml loads/BCs as a valid load case."""
+    from app.main import create_app, default_project, project_dir, save_project
+    from starlette.testclient import TestClient
+
+    settings = _make_patch_settings(tmp_path)
+    app = create_app(settings)
+    client = TestClient(app)
+
+    project = save_project(settings, default_project("preflight-setup-yaml"))
+    project_id = project["id"]
+    pkg_path = project_dir(settings, project_id) / "preflight.aieng"
+    _make_canonical_cae_package(
+        pkg_path,
+        setup_yaml={
+            "loads": [{"id": "load_001", "type": "force", "target_feature": "top", "value": 500.0}],
+            "boundary_conditions": [{"id": "bc_001", "type": "fixed", "target_feature": "base"}],
+        },
+        cae_mapping={
+            "mappings": [
+                {"cae_entity": "top_nset", "maps_to": {"feature_id": "top"}, "face_ids": ["face_001"]},
+                {"cae_entity": "base_nset", "maps_to": {"feature_id": "base"}, "face_ids": ["face_002"]},
+            ]
+        },
+        topology={"entities": [
+            {"id": "face_001", "type": "face", "bounding_box": [0, 0, 10, 10, 10, 10]},
+            {"id": "face_002", "type": "face", "bounding_box": [0, 0, 0, 10, 10, 0]},
+        ]},
+    )
+    project["aieng_file"] = "preflight.aieng"
+    save_project(settings, project)
+
+    resp = client.post("/api/runtime/runs", json={
+        "message": "prepare solver run",
+        "project_id": project_id,
+        "tool_input": {"project_id": project_id},
+    })
+    assert resp.status_code == 200
+    result = resp.json()["tool_results"][0]["output"]
+    assert result["ok"] is True
+    preflight = result["preflight"]
+    assert preflight["has_load_case"] is True
+    assert preflight["has_setup_yaml"] is True
+    assert preflight["has_legacy_load_case"] is False
+    assert preflight["nset_binding_valid"] is True
+    assert "simulation/setup.yaml" not in " ".join(preflight["missing_items"])
+    assert "loads/boundary_conditions" not in " ".join(preflight["missing_items"])
+
+
+def test_prepare_solver_run_detects_parsed_loads_and_bcs(tmp_path: Path) -> None:
+    """cae.prepare_solver_run treats simulation/cae_imports/parsed_*.json as valid load cases."""
+    from app.main import create_app, default_project, project_dir, save_project
+    from starlette.testclient import TestClient
+
+    settings = _make_patch_settings(tmp_path)
+    app = create_app(settings)
+    client = TestClient(app)
+
+    project = save_project(settings, default_project("preflight-parsed"))
+    project_id = project["id"]
+    pkg_path = project_dir(settings, project_id) / "preflight.aieng"
+    _make_canonical_cae_package(
+        pkg_path,
+        parsed_loads={"loads": [{"id": "load_001", "type": "force", "target": "top_nset", "dof": 2, "value": 500.0}]},
+        parsed_bcs={"boundary_conditions": [{"id": "bc_001", "type": "fixed", "target": "base_nset"}]},
+        cae_mapping={
+            "mappings": [
+                {"cae_entity": "top_nset", "maps_to": {"feature_id": "top"}, "face_ids": ["face_001"]},
+                {"cae_entity": "base_nset", "maps_to": {"feature_id": "base"}, "face_ids": ["face_002"]},
+            ]
+        },
+        topology={"entities": [
+            {"id": "face_001", "type": "face", "bounding_box": [0, 0, 10, 10, 10, 10]},
+            {"id": "face_002", "type": "face", "bounding_box": [0, 0, 0, 10, 10, 0]},
+        ]},
+    )
+    project["aieng_file"] = "preflight.aieng"
+    save_project(settings, project)
+
+    resp = client.post("/api/runtime/runs", json={
+        "message": "prepare solver run",
+        "project_id": project_id,
+        "tool_input": {"project_id": project_id},
+    })
+    assert resp.status_code == 200
+    result = resp.json()["tool_results"][0]["output"]
+    assert result["ok"] is True
+    preflight = result["preflight"]
+    assert preflight["has_load_case"] is True
+    assert preflight["has_parsed_loads"] is True
+    assert preflight["has_parsed_bcs"] is True
+    assert preflight["nset_binding_valid"] is True
+
+
+def test_prepare_solver_run_blocks_empty_and_undefined_nsets(tmp_path: Path) -> None:
+    """cae.prepare_solver_run rejects setups whose loads/BCs map to empty or undefined NSETs."""
+    from app import blocked_reason_codes as _blocked_reason_codes
+    from app.main import create_app, default_project, project_dir, save_project
+    from starlette.testclient import TestClient
+
+    settings = _make_patch_settings(tmp_path)
+    app = create_app(settings)
+    client = TestClient(app)
+
+    project = save_project(settings, default_project("preflight-empty-nset"))
+    project_id = project["id"]
+    pkg_path = project_dir(settings, project_id) / "preflight.aieng"
+    _make_canonical_cae_package(
+        pkg_path,
+        setup_yaml={
+            "loads": [{"id": "load_001", "type": "force", "target_feature": "top", "value": 500.0}],
+            "boundary_conditions": [{"id": "bc_001", "type": "fixed", "target_feature": "base"}],
+        },
+        cae_mapping={
+            "mappings": [
+                # top is defined but has no face_ids -> empty NSET
+                {"cae_entity": "top_nset", "maps_to": {"feature_id": "top"}, "face_ids": []},
+                # base is referenced but not defined at all
+            ]
+        },
+        topology={"entities": [{"id": "face_001", "type": "face", "bounding_box": [0, 0, 0, 1, 1, 0]}]},
+    )
+    project["aieng_file"] = "preflight.aieng"
+    save_project(settings, project)
+
+    resp = client.post("/api/runtime/runs", json={
+        "message": "prepare solver run",
+        "project_id": project_id,
+        "tool_input": {"project_id": project_id},
+    })
+    assert resp.status_code == 200
+    result = resp.json()["tool_results"][0]["output"]
+    assert result["ok"] is True
+    assert result["ready_to_run"] is False
+    preflight = result["preflight"]
+    assert preflight["has_load_case"] is True
+    assert preflight["nset_binding_valid"] is False
+    nset_val = preflight["nset_validation"]
+    assert "top_nset" in nset_val["empty_nsets"]
+    assert "base" in nset_val["unmapped_features"]
+    assert _blocked_reason_codes.NSET_BINDING_INVALID in preflight["blocked_reason_codes"]
+
+
 def _execute_run_solver(client, project_id, tool_input):
     """Start a solver run via the runtime endpoint and auto-approve if gated."""
     resp = client.post("/api/runtime/runs", json={
