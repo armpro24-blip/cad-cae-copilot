@@ -200,8 +200,14 @@ def _write_source_deck(
     for name in active_nsets:
         lines.extend(_format_nset(name, nsets[name]))
 
+    # EALL is already defined by the *ELEMENT, ELSET=EALL card above; re-list it
+    # explicitly but chunk to <=16 ids per line — CalculiX rejects a card line
+    # with more than 16 entries ("*ERROR in splitline"), which silently broke
+    # every real-ccx NAFEMS case once a mesh exceeded 16 elements.
     lines.append("*ELSET, ELSET=EALL")
-    lines.append(", ".join(str(eid) for eid, *_ in elements))
+    eids = [eid for eid, *_ in elements]
+    for i in range(0, len(eids), 16):
+        lines.append(", ".join(str(eid) for eid in eids[i : i + 16]))
 
     lines.append("*SOLID SECTION, ELSET=EALL, MATERIAL=STEEL")
     lines.append("1.0")
@@ -303,9 +309,9 @@ def build_tension_rod_fixture(
     nx, ny, nz = mesh_divisions or (20, 2, 2)
     nodes, elements, nsets = _generate_hex_mesh(lx=lx, ly=ly, lz=lz, nx=nx, ny=ny, nz=nz)
 
-    # Total 1000 N tensile load in +X on the X=L end face.
-    load_face_nodes = len(nsets["N_LOAD"])
-    load_per_node = 1000.0 / load_face_nodes
+    # Total 1000 N tensile load in +X on the X=L end face. The deck generator
+    # distributes this total over the N_LOAD face nodes — do NOT pre-divide.
+    load_per_node = 1000.0
 
     source_deck = _write_source_deck(
         nodes=nodes,
@@ -336,9 +342,8 @@ def build_cantilever_end_load_fixture(
     nx, ny, nz = mesh_divisions or (20, 4, 4)
     nodes, elements, nsets = _generate_hex_mesh(lx=lx, ly=ly, lz=lz, nx=nx, ny=ny, nz=nz)
 
-    # Total 100 N in -Z on the X=L end face.
-    load_face_nodes = len(nsets["N_LOAD"])
-    load_per_node = 100.0 / load_face_nodes
+    # Total 100 N in -Z on the X=L end face (deck generator distributes the total).
+    load_per_node = 100.0
 
     source_deck = _write_source_deck(
         nodes=nodes,
@@ -369,9 +374,8 @@ def build_cantilever_udl_fixture(
     nx, ny, nz = mesh_divisions or (20, 4, 4)
     nodes, elements, nsets = _generate_hex_mesh(lx=lx, ly=ly, lz=lz, nx=nx, ny=ny, nz=nz)
 
-    # Total 100 N distributed over all top-face (Z=lz) nodes.
-    top_face_nodes = len(nsets["N_TOP"])
-    load_per_node = 100.0 / top_face_nodes
+    # Total 100 N over all top-face (Z=lz) nodes (deck generator distributes the total).
+    load_per_node = 100.0
 
     source_deck = _write_source_deck(
         nodes=nodes,
@@ -407,8 +411,8 @@ def build_fixed_fixed_udl_fixture(
     nodes, elements, nsets = _generate_hex_mesh(lx=lx, ly=ly, lz=lz, nx=nx, ny=ny, nz=nz)
 
     nsets["N_FIX"] = _both_ends_fixed_nset(nodes, lx)
-    top_face_nodes = len(nsets["N_TOP"])
-    load_per_node = 100.0 / top_face_nodes
+    # Total 100 N over the top face (deck generator distributes the total).
+    load_per_node = 100.0
 
     source_deck = _write_source_deck(
         nodes=nodes,
@@ -486,8 +490,8 @@ def build_cantilever_midspan_load_fixture(
     nodes, elements, nsets = _generate_hex_mesh(lx=lx, ly=ly, lz=lz, nx=nx, ny=ny, nz=nz)
 
     nsets["N_MID"] = _top_midspan_nset(nodes, lx, lz)
-    mid_nodes = len(nsets["N_MID"])
-    load_per_node = 100.0 / mid_nodes
+    # Total 100 N over the mid-span top line (deck generator distributes the total).
+    load_per_node = 100.0
 
     source_deck = _write_source_deck(
         nodes=nodes,
@@ -524,9 +528,8 @@ def build_cantilever_end_load_lateral_fixture(
     nx, ny, nz = mesh_divisions or (20, 4, 4)
     nodes, elements, nsets = _generate_hex_mesh(lx=lx, ly=ly, lz=lz, nx=nx, ny=ny, nz=nz)
 
-    # Total 100 N in -Y on the X=L end face.
-    load_face_nodes = len(nsets["N_LOAD"])
-    load_per_node = 100.0 / load_face_nodes
+    # Total 100 N in -Y on the X=L end face (deck generator distributes the total).
+    load_per_node = 100.0
 
     source_deck = _write_source_deck(
         nodes=nodes,
@@ -602,9 +605,8 @@ def build_column_buckling_fixture(
     nx, ny, nz = mesh_divisions or (20, 4, 4)
     nodes, elements, nsets = _generate_hex_mesh(lx=lx, ly=ly, lz=lz, nx=nx, ny=ny, nz=nz)
 
-    # Total 1000 N compressive (-X) reference load on the X=L end face.
-    load_face_nodes = len(nsets["N_LOAD"])
-    load_per_node = 1000.0 / load_face_nodes
+    # Total 1000 N compressive (-X) reference load on the X=L end face (deck generator distributes the total).
+    load_per_node = 1000.0
 
     source_deck = _write_source_deck(
         nodes=nodes,
