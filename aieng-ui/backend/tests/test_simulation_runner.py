@@ -1615,3 +1615,144 @@ def test_solve_package_static_refuses_rebind_when_ambiguous(tmp_path: Path) -> N
     assert result["solver_executed"] is False
     assert result["status"] == "stale_topology_references"
     assert "rebind_report" in result
+
+
+# ── #376: agent-surface CAE setup normalization ───────────────────────────────
+
+def test_canonical_material_converts_si_to_mm_mpa_tonne() -> None:
+    """Documented flat-SI material -> the deck generator's mm-MPa-tonne form."""
+    from app import simulation_runner as sr
+
+    m = sr._canonical_material(
+        {
+            "name": "aluminum_6061",
+            "youngs_modulus_pa": 69e9,
+            "poisson_ratio": 0.33,
+            "density_kg_m3": 2700,
+            "yield_strength_pa": 276e6,
+        }
+    )
+    assert m["elastic"]["youngs_modulus"] == 69000.0  # Pa -> MPa
+    assert m["elastic"]["poisson_ratio"] == 0.33
+    assert m["density"] == 2.7e-09  # kg/m^3 -> t/mm^3, clean width (no FP noise)
+    assert m["yield_strength"] == 276.0  # Pa -> MPa
+
+
+def test_canonical_material_leaves_canonical_form_untouched() -> None:
+    from app import simulation_runner as sr
+
+    m = sr._canonical_material(
+        {"name": "al", "elastic": {"youngs_modulus": 69000, "poisson_ratio": 0.3}, "density": 2.7e-9}
+    )
+    assert m["elastic"]["youngs_modulus"] == 69000
+    assert m["density"] == 2.7e-9
+
+
+def test_normalize_cae_bindings_derives_mapping_from_face_targets(tmp_path: Path) -> None:
+    """The documented pointer-centric agent path (no hand-written cae_mapping) is
+    normalized into a runnable setup: @face targets -> derived NSET mapping,
+    load_cases loads -> parsed_loads, SI material -> canonical material (#376)."""
+    from app import simulation_runner as sr
+
+    pkg = tmp_path / "p.aieng"
+    with zipfile.ZipFile(pkg, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("manifest.json", json.dumps({"schema_version": "0.1"}))
+        zf.writestr(
+            "geometry/topology_map.json",
+            json.dumps({"entities": [
+                {"type": "face", "id": "face_005"},
+                {"type": "face", "id": "face_016"},
+            ]}),
+        )
+        zf.writestr(
+            "simulation/cae_imports/parsed_boundary_conditions.json",
+            json.dumps({"boundary_conditions": [
+                {"id": "bc_fixed", "target": "@face:face_005", "dof_start": 1, "dof_end": 3, "value": 0}
+            ]}),
+        )
+        zf.writestr(
+            "simulation/load_cases/load_case_001.json",
+            json.dumps({"id": "load_case_001", "loads": [
+                {"id": "load_001", "target": "@face:face_016", "dof": 3, "value": -500}
+            ]}),
+        )
+        zf.writestr(
+            "simulation/cae_imports/parsed_materials.json",
+            json.dumps({"materials": [
+                {"name": "aluminum_6061", "youngs_modulus_pa": 69e9, "poisson_ratio": 0.33, "density_kg_m3": 2700}
+            ]}),
+        )
+
+    result = sr.normalize_cae_bindings(pkg)
+
+    assert result["normalized"] is True
+    assert result["loads_promoted"] is True
+    assert result["materials_normalized"] is True
+    assert len(result["derived_entities"]) == 2
+
+    mapping = json.loads(sr._read_member(pkg, "simulation/cae_mapping.json"))
+    bound = {m["cae_entity"]: m["face_ids"] for m in mapping["mappings"]}
+    assert sorted(v[0] for v in bound.values()) == ["face_005", "face_016"]
+
+    # loads promoted into parsed_loads.json with the target rewritten to the NSET
+    loads = json.loads(sr._read_member(pkg, "simulation/cae_imports/parsed_loads.json"))["loads"]
+    assert len(loads) == 1
+    assert loads[0]["target"] in bound  # an NSET name, no longer "@face:..."
+    assert not loads[0]["target"].startswith("@face")
+
+    # BC target rewritten to the NSET name too
+    bcs = json.loads(
+        sr._read_member(pkg, "simulation/cae_imports/parsed_boundary_conditions.json")
+    )["boundary_conditions"]
+    assert bcs[0]["target"] in bound
+
+    # material canonicalized with an elastic block in MPa
+    mats = json.loads(sr._read_member(pkg, "simulation/cae_imports/parsed_materials.json"))["materials"]
+    assert mats[0]["elastic"]["youngs_modulus"] == 69000.0
+
+    # idempotent: a second pass changes nothing
+    again = sr.normalize_cae_bindings(pkg)
+    assert again["derived_entities"] == []
+    assert again["loads_promoted"] is False
+
+
+def test_ensure_source_deck_reports_faces_that_caught_no_nodes(tmp_path: Path) -> None:
+    """A load/BC face that resolves to zero mesh nodes is reported with its @face
+    pointer so the solver-input gate can refuse a silently-wrong solve (#376)."""
+    from app import simulation_runner as sr
+
+    mesh = (
+        "*NODE\n"
+        "1, 0,0,0\n2, 10,0,0\n3, 10,10,0\n4, 0,10,0\n"
+        "5, 0,0,10\n6, 10,0,10\n7, 10,10,10\n8, 0,10,10\n"
+        "*ELEMENT, TYPE=C3D8, ELSET=EALL\n1, 1,2,3,4,5,6,7,8\n"
+    )
+    pkg = tmp_path / "p.aieng"
+    with zipfile.ZipFile(pkg, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("manifest.json", json.dumps({"schema_version": "0.1"}))
+        zf.writestr("simulation/mesh/mesh.inp", mesh)
+        zf.writestr(
+            "geometry/topology_map.json",
+            json.dumps({"entities": [
+                {"type": "face", "id": "face_bottom", "surface_type": "plane",
+                 "normal": [0, 0, -1], "center": [5, 5, 0],
+                 "bounding_box": [0, 0, 0, 10, 10, 0]},
+                {"type": "face", "id": "face_ghost", "surface_type": "plane",
+                 "normal": [0, 0, 1], "center": [5, 5, 1000],
+                 "bounding_box": [0, 0, 1000, 10, 10, 1000]},  # far from every node
+            ]}),
+        )
+        zf.writestr(
+            "simulation/cae_mapping.json",
+            json.dumps({"schema_version": "0.1", "mappings": [
+                {"cae_entity": "BASE", "face_ids": ["face_bottom"], "maps_to": {"feature_id": "f1"}},
+                {"cae_entity": "LOAD", "face_ids": ["face_ghost"], "maps_to": {"feature_id": "f2"}},
+            ]}),
+        )
+
+    result = sr.ensure_source_deck_from_mesh(pkg)
+
+    assert result["status"] == "synthesized"
+    assert "BASE" in result["nset_names"]  # bottom face caught the 4 z=0 nodes
+    assert result["empty_nsets"] == ["LOAD"]  # ghost face caught nothing
+    assert result["empty_nset_faces"]["LOAD"] == ["@face:face_ghost"]
