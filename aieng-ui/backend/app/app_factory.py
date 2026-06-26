@@ -16,6 +16,7 @@ from .logging_utils import configure_backend_logging
 from .project_io import ensure_dirs
 from .routers.agent import register_agent_routes
 from .routers.cad_live import register_cad_live_routes
+from .routers.catalog import register_catalog_routes
 from .routers.discovery import register_discovery_routes
 from .routers.evidence import register_evidence_routes
 from .routers.intent_planner import register_intent_planner_routes
@@ -85,6 +86,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         tool_handlers=tool_handlers,
     )
     register_cad_live_routes(app, active_settings=active_settings, app_context=app_context)
+    register_catalog_routes(app, active_settings=active_settings)
     register_project_analysis_routes(app, active_settings=active_settings)
     register_project_chat_routes(
         app,
