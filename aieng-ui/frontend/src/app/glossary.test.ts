@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { GLOSSARY, glossaryText, regressionVerdictKey } from "./glossary";
+import { GLOSSARY, credibilityTierKey, glossaryText, regressionVerdictKey } from "./glossary";
 
 describe("glossary content", () => {
   it("has a non-empty explanation for every key", () => {
@@ -37,5 +37,19 @@ describe("regressionVerdictKey", () => {
   it("returns null for an unknown verdict", () => {
     expect(regressionVerdictKey("something_else")).toBeNull();
     expect(regressionVerdictKey("")).toBeNull();
+  });
+});
+
+describe("credibilityTierKey", () => {
+  it("maps the four real tiers to glossary keys", () => {
+    expect(credibilityTierKey("critique_finding")).toBe("credibility_critique_finding");
+    expect(credibilityTierKey("surrogate_prediction")).toBe("credibility_surrogate_prediction");
+    expect(credibilityTierKey("proxy_assembly_result")).toBe("credibility_proxy_assembly_result");
+    expect(credibilityTierKey("executed_solver_result")).toBe("credibility_executed_solver_result");
+  });
+
+  it("returns null for unverified / unknown tiers", () => {
+    expect(credibilityTierKey("unverified")).toBeNull();
+    expect(credibilityTierKey("whatever")).toBeNull();
   });
 });

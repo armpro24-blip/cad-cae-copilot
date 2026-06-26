@@ -1,12 +1,14 @@
 import { ModelViewer } from "./ModelViewer";
 import { OnboardingGuide } from "./OnboardingGuide";
 import { WorkflowStepper } from "./WorkflowStepper";
+import { ResultsHero } from "./ResultsHero";
 import { FieldPicker } from "./FieldPicker";
 import { LoadCasePicker } from "./LoadCasePicker";
 import { FieldLegend } from "./FieldLegend";
 import { resultFieldLabel } from "./viewer/resultFields";
 import type { BrepGraphSnapshot, CadGenerationProgress, PickedFace } from "../appTypes";
 import type { CaeSetupOverlayResponse, FieldOverlayConfig, ProjectRecord, SolverFieldDescriptor } from "../types";
+import type { ResultsHeroView } from "../app/resultsHero";
 
 type LoadCaseOption = {
   id: string;
@@ -28,6 +30,7 @@ type ViewerPaneProps = {
   caeSetupOverlay?: CaeSetupOverlayResponse | null;
   caeResultsAvailable: boolean;
   caeSetupComplete: boolean;
+  resultsHero: ResultsHeroView | null;
   effectiveViewerUrl?: string | null;
   pickedFaces: PickedFace[];
   onAddPickedFace(face: PickedFace): void;
@@ -58,6 +61,7 @@ export function ViewerPane({
   caeSetupOverlay,
   caeResultsAvailable,
   caeSetupComplete,
+  resultsHero,
   effectiveViewerUrl,
   pickedFaces,
   onAddPickedFace,
@@ -93,6 +97,7 @@ export function ViewerPane({
           hasCaeSetup={caeSetupComplete}
           hasResults={caeResultsAvailable}
         />
+        <ResultsHero hero={resultsHero} />
       </div>
 
       <div className="viewer-stage-shell">

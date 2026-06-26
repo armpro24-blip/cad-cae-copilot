@@ -192,6 +192,7 @@ export function AppChrome({ app }: AppChromeProps) {
             caeSetupOverlay={app.caeSetupOverlay}
             caeResultsAvailable={app.caeResultsAvailable}
             caeSetupComplete={app.caeSetupComplete}
+            resultsHero={app.resultsHero}
             effectiveViewerUrl={app.effectiveViewerUrl}
             fieldOverlayConfig={app.fieldOverlayConfig}
             onFieldOverlayConfigChange={app.setFieldOverlayConfig}

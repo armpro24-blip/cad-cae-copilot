@@ -65,3 +65,19 @@ export function regressionVerdictKey(verdict: string): GlossaryKey | null {
       return null;
   }
 }
+
+/** Map a credibility tier string to its glossary key (null for `unverified`). */
+export function credibilityTierKey(tier: string): GlossaryKey | null {
+  switch (tier) {
+    case "critique_finding":
+      return "credibility_critique_finding";
+    case "surrogate_prediction":
+      return "credibility_surrogate_prediction";
+    case "proxy_assembly_result":
+      return "credibility_proxy_assembly_result";
+    case "executed_solver_result":
+      return "credibility_executed_solver_result";
+    default:
+      return null;
+  }
+}
