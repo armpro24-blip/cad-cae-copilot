@@ -8750,8 +8750,12 @@ button:has(.button-icon) {
   --text-primary: #e5e5e5;
   --text-secondary: #a3a3a3;
   --text-tertiary: #737373;
-  --accent: #d97706;
-  --accent-soft: rgba(217, 119, 6, 0.12);
+  /* Brand accent unified to the blue-cyan family (#394) — was amber #d97706,
+     which fought the blue-cyan used by the workflow stepper, onboarding,
+     command handoff, results hero, and input focus rings. Semantic amber
+     (caution / warning / "changes geometry") stays amber on its own tokens. */
+  --accent: #4cc4f0;
+  --accent-soft: rgba(76, 196, 240, 0.14);
   --success: #22c55e;
   --danger: #ef4444;
   --warning: #f59e0b;
@@ -9731,9 +9735,9 @@ textarea:focus,
 }
 
 .app-topbar-btn.active {
-  background: var(--accent-soft, rgba(217, 119, 6, 0.12));
-  border-color: var(--accent, #d97706);
-  color: var(--accent, #d97706);
+  background: var(--accent-soft, rgba(76, 196, 240, 0.14));
+  border-color: var(--accent, #4cc4f0);
+  color: var(--accent, #4cc4f0);
 }
 
 /* ── Main content area ── */
