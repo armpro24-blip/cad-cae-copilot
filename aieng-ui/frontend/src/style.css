@@ -12096,3 +12096,14 @@ textarea:focus,
 .workspace-inspector > * {
   pointer-events: auto;
 }
+
+/* Keep the 3D viewer (the product's hero) from being crowded out by a tall
+   header (#401). On narrow/short viewports the workflow stepper + results hero
+   can wrap tall enough to starve the flex:1 stage below it; cap the header and
+   let it scroll internally so the stage always keeps the majority of the pane.
+   No effect on roomy desktop layouts (header is well under 52vh there). */
+.viewer-header {
+  max-height: 52vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
