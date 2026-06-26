@@ -1,4 +1,5 @@
 import { ModelViewer } from "./ModelViewer";
+import { OnboardingGuide } from "./OnboardingGuide";
 import { FieldPicker } from "./FieldPicker";
 import { LoadCasePicker } from "./LoadCasePicker";
 import { FieldLegend } from "./FieldLegend";
@@ -36,6 +37,9 @@ type ViewerPaneProps = {
   onClearHighlightedFaces(): void;
   fieldOverlayConfig?: FieldOverlayConfig | null;
   onFieldOverlayConfigChange?(config: FieldOverlayConfig | null): void;
+  hasProjects: boolean;
+  welcomeDismissed: boolean;
+  onDismissWelcome(): void;
 };
 
 export function ViewerPane({
@@ -62,6 +66,9 @@ export function ViewerPane({
   onClearHighlightedFaces,
   fieldOverlayConfig,
   onFieldOverlayConfigChange,
+  hasProjects,
+  welcomeDismissed,
+  onDismissWelcome,
 }: ViewerPaneProps) {
   return (
     <section className="viewer-pane">
@@ -120,6 +127,13 @@ export function ViewerPane({
             highlightedFaceIds={highlightedFaceIds}
             brepSnapshot={brepSnapshot}
             onClearHighlightedFaces={onClearHighlightedFaces}
+          />
+          <OnboardingGuide
+            hasProjects={hasProjects}
+            hasViewerAsset={Boolean(effectiveViewerUrl)}
+            selectedProjectName={selectedProject?.name ?? null}
+            welcomeDismissed={welcomeDismissed}
+            onDismissWelcome={onDismissWelcome}
           />
         </div>
       </div>

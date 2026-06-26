@@ -18,6 +18,7 @@ import { MeshConvergencePanel } from "../components/MeshConvergencePanel";
 import { GlobalSettingsDrawer } from "../components/settings/GlobalSettingsDrawer";
 import { RuntimeSettingsDrawer } from "../components/settings/RuntimeSettingsDrawer";
 import { isEmbedMode } from "./embed";
+import { useBrowserStorageState } from "./useBrowserStorageState";
 import type { useWorkbenchApp } from "./useWorkbenchApp";
 
 type LibraryTab = "materials" | "standards" | "bom";
@@ -29,6 +30,11 @@ type AppChromeProps = {
 export function AppChrome({ app }: AppChromeProps) {
   const embed = isEmbedMode();
   const [libraryTab, setLibraryTab] = useState<LibraryTab | null>(null);
+  const [welcomeDismissed, setWelcomeDismissed] = useBrowserStorageState<boolean>(
+    "aieng.onboarding.welcomeDismissed",
+    false,
+    { storage: "local" },
+  );
 
   // In embed mode (VS Code webview iframe), relay the picked faces to the host
   // shell so its "Copy modify" handoff can target the selected @face: pointers.
@@ -175,6 +181,9 @@ export function AppChrome({ app }: AppChromeProps) {
             highlightedFaceIds={app.highlightedFaceIds}
             brepSnapshot={app.brepSnapshot}
             onClearHighlightedFaces={app.clearHighlightedFaces}
+            hasProjects={app.projects.length > 0}
+            welcomeDismissed={welcomeDismissed}
+            onDismissWelcome={() => setWelcomeDismissed(true)}
           />
 
           <PendingApprovals
