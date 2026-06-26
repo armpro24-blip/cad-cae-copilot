@@ -642,12 +642,32 @@ def _assemble_deck(
     return "\n".join(lines) + "\n"
 
 
-def _extract_mesh_section(source_deck_text: str) -> str:
-    """Extract mesh-related lines from a CalculiX deck.
+def _keyword_head(line: str) -> str:
+    """Bare keyword of a CalculiX card line, handling a comma-attached first
+    parameter (gmsh emits `*ELSET,ELSET=EALL` with no space)."""
+    tokens = line.upper().strip().split()
+    return tokens[0].split(",")[0] if tokens else ""
 
-    Preserves *NODE, *ELEMENT, *NSET, *ELSET, *SOLID SECTION, *SURFACE,
-    and their data lines.  Stops at non-mesh keywords (e.g. *MATERIAL,
-    *BOUNDARY, *STEP).
+
+def _element_type(header: str) -> str:
+    """Parse the TYPE= value from an *ELEMENT header (case-insensitive)."""
+    for part in header.upper().replace(" ", "").split(","):
+        if part.startswith("TYPE="):
+            return part[len("TYPE=") :]
+    return ""
+
+
+def _extract_mesh_section(source_deck_text: str) -> str:
+    """Extract the SOLID mesh section from a CalculiX deck.
+
+    Preserves *NODE, 3D-solid *ELEMENT (``C3D*``) blocks, *NSET, *SOLID/*SHELL/
+    *BEAM SECTION and *SURFACE, plus *ELSET blocks filtered to the surviving
+    solid element ids. 2D/plane/shell element blocks (``CPS*``, ``CPE*``,
+    ``CAX*``, ``S3``/``S4``…, ``B*``…) are dropped — ccx's ``gen3delem`` aborts
+    on plane-stress/strain/axisymmetric elements in a 3D model — along with any
+    *ELSET that referenced only those elements (e.g. gmsh's ``Surface*`` sets).
+    Stops at non-mesh keywords (e.g. *MATERIAL, *BOUNDARY, *STEP). Mirrors the
+    solid-only synthesis path so imported raw-gmsh source decks are solvable.
     """
 
     def _is_mesh_keyword(line: str) -> bool:
@@ -655,45 +675,94 @@ def _extract_mesh_section(source_deck_text: str) -> str:
         tokens = upper.split()
         if not tokens:
             return False
-        # The keyword may be comma-attached to its first parameter — gmsh emits
-        # `*ELSET,ELSET=EALL` with no space — so strip the parameter off the
-        # first whitespace token to recover the bare keyword. The space-after-
-        # comma form (`*SOLID SECTION, ELSET=EALL`) already tokenized cleanly;
-        # the comma-attached form did not, silently dropping the
-        # `*ELSET,ELSET=EALL` definition and leaving EALL undefined for ccx.
         head = tokens[0].split(",")[0]
-
-        # *NODE by itself (or with NSET=...) is a mesh keyword.
-        # *NODE FILE, *NODE PRINT, *NODE OUTPUT are output requests — not mesh.
         if head == "*NODE":
             second = tokens[1].split(",")[0] if len(tokens) > 1 else ""
             return second not in {"FILE", "PRINT", "OUTPUT"}
-
         return head in _MESH_KEYWORDS
 
     lines = source_deck_text.splitlines()
-    mesh_lines: list[str] = []
-    in_mesh_block = False
+
+    # Pass 1: collect the ids of elements in kept (3D solid) *ELEMENT blocks.
+    solid_ids: set[str] = set()
+    in_solid_elem = False
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("**"):
+            continue
+        if stripped.startswith("*"):
+            in_solid_elem = (
+                _keyword_head(stripped) == "*ELEMENT"
+                and _element_type(stripped).startswith("C3D")
+            )
+            continue
+        if in_solid_elem:
+            first = stripped.split(",")[0].strip()
+            if first:
+                solid_ids.add(first)
+
+    # Pass 2: emit the solid mesh section, filtering *ELSET id lists.
+    out: list[str] = []
+    block: str | None = None  # "keep" | "skip" | "elset" | None
+    elset_header: str | None = None
+    elset_generate = False
+    elset_ids: list[str] = []
+
+    def _flush_elset() -> None:
+        nonlocal elset_header, elset_ids, elset_generate
+        if elset_header is not None:
+            if elset_generate:
+                # Cannot membership-filter a GENERATE range; keep verbatim.
+                out.append(elset_header)
+                out.extend(elset_ids)
+            else:
+                kept = [i for i in elset_ids if i in solid_ids]
+                if kept:
+                    out.append(elset_header)
+                    for k in range(0, len(kept), 16):
+                        out.append(", ".join(kept[k : k + 16]))
+        elset_header = None
+        elset_ids = []
+        elset_generate = False
 
     for line in lines:
         stripped = line.strip()
         if not stripped or stripped.startswith("**"):
-            if in_mesh_block:
-                mesh_lines.append(line)
+            if block == "keep":
+                out.append(line)
             continue
 
         if stripped.startswith("*"):
-            if _is_mesh_keyword(stripped):
-                in_mesh_block = True
-                mesh_lines.append(line)
+            _flush_elset()
+            head = _keyword_head(stripped)
+            if head == "*ELEMENT":
+                if _element_type(stripped).startswith("C3D"):
+                    block = "keep"
+                    out.append(line)
+                else:
+                    block = "skip"
+            elif head == "*ELSET":
+                block = "elset"
+                elset_header = line
+                elset_ids = []
+                elset_generate = "GENERATE" in stripped.upper()
+            elif _is_mesh_keyword(stripped):
+                block = "keep"
+                out.append(line)
             else:
-                in_mesh_block = False
+                block = None
             continue
 
-        if in_mesh_block:
-            mesh_lines.append(line)
+        if block == "keep":
+            out.append(line)
+        elif block == "elset":
+            if elset_generate:
+                elset_ids.append(line)
+            else:
+                elset_ids.extend(t.strip() for t in stripped.split(",") if t.strip())
 
-    return "\n".join(mesh_lines)
+    _flush_elset()
+    return "\n".join(out)
 
 
 def _resolve_step_name(solver_settings: dict[str, Any] | None) -> str:

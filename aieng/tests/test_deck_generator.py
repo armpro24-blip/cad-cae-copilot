@@ -54,6 +54,48 @@ def test_extract_mesh_section_keeps_comma_attached_elset() -> None:
     assert "*MATERIAL" not in mesh.upper()
 
 
+def test_extract_mesh_section_drops_2d_surface_elements() -> None:
+    """Regression (#418): raw-gmsh source decks carry 2D surface element blocks
+    (CPS3) alongside the C3D4 solids. ccx's gen3delem aborts on plane-stress
+    elements in a 3D model, so the extractor must keep only solid elements,
+    drop the surface element blocks, and drop *ELSET sets that referenced only
+    those surface elements (while keeping the solid-only EALL)."""
+    deck = "\n".join(
+        [
+            "*NODE",
+            "1, 0.0, 0.0, 0.0",
+            "2, 1.0, 0.0, 0.0",
+            "*ELEMENT, type=CPS3, ELSET=Surface1",
+            "1, 1, 2, 3",
+            "2, 2, 3, 4",
+            "*ELEMENT, type=C3D4, ELSET=Volume1",
+            "1007, 1, 2, 3, 4",
+            "1008, 2, 3, 4, 5",
+            "*ELSET,ELSET=SURF1",   # references the dropped CPS3 elements
+            "1, 2",
+            "*ELSET,ELSET=EALL",    # references only the solid elements
+            "1007, 1008",
+            "*NSET, NSET=FIXED_END",
+            "1, 2",
+            "*SOLID SECTION, ELSET=EALL, MATERIAL=AIENG_MATERIAL",
+            "*MATERIAL, NAME=AIENG_MATERIAL",
+        ]
+    )
+    mesh = _extract_mesh_section(deck)
+    flat = mesh.replace(" ", "")
+    # 2D surface elements and their surface-only elset are gone.
+    assert "CPS3" not in mesh.upper()
+    assert "ELSET=SURF1" not in flat.upper()
+    # Solid elements + their solid-only EALL survive.
+    assert "C3D4" in mesh.upper()
+    assert "*ELSET,ELSET=EALL" in flat
+    assert "1007" in flat and "1008" in flat
+    # NSET + section preserved.
+    assert "NSET=FIXED_END" in flat
+    assert "*SOLIDSECTION,ELSET=EALL" in flat
+    assert "*MATERIAL" not in mesh.upper()
+
+
 # ---------------------------------------------------------------------------
 # Fixture helpers
 # ---------------------------------------------------------------------------
