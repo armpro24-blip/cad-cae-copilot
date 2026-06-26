@@ -1,8 +1,50 @@
+/* Single canonical token set (#394). The stylesheet was built up over several
+   iterations that each appended their own `:root` block; later blocks won, so
+   these are the *currently-winning* values consolidated into one place
+   (font-family from the warm pass, color/background from the glass pass, the
+   surface/text/accent/radius tokens from the latest pass). Behaviour is
+   unchanged — this only removes the cascade duplication. */
 :root {
-  font-family: Inter, "Segoe UI", sans-serif;
-  color: #dbe7fb;
-  background: #020617;
+  font-family: Aptos, "Noto Sans SC", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  color: var(--glass-ink);
+  background: #070a0f;
   color-scheme: dark;
+
+  /* glass surface tokens */
+  --glass-ink: #f4f7fb;
+  --glass-muted: #9ca8b7;
+  --glass-soft: #cbd5e1;
+  --glass-line: rgba(180, 196, 218, 0.16);
+  --glass-line-strong: rgba(216, 226, 239, 0.24);
+  --glass-panel: rgba(13, 18, 27, 0.68);
+  --glass-panel-strong: rgba(17, 24, 37, 0.82);
+  --glass-panel-soft: rgba(255, 255, 255, 0.065);
+  --glass-accent: #8ecae6;
+  --glass-amber: #d9a441;
+  --glass-green: #73d6a2;
+  --glass-red: #ff8f8f;
+
+  /* surface / text / radius tokens */
+  --bg-root: #0d0d0d;
+  --bg-surface: #111111;
+  --bg-elevated: #1a1a1a;
+  --bg-hover: #222222;
+  --border-subtle: rgba(255, 255, 255, 0.06);
+  --border-medium: rgba(255, 255, 255, 0.10);
+  --text-primary: #e5e5e5;
+  --text-secondary: #a3a3a3;
+  --text-tertiary: #737373;
+  --success: #22c55e;
+  --danger: #ef4444;
+  --warning: #f59e0b;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+
+  /* Brand accent — blue-cyan family (#408/#394). Semantic amber (caution /
+     warning / "changes geometry") stays amber on its own tokens. */
+  --accent: #4cc4f0;
+  --accent-soft: rgba(76, 196, 240, 0.14);
 }
 
 * {
@@ -3729,11 +3771,7 @@ input[type="file"] {
 }
 
 /* Modern control-surface refresh */
-:root {
-  font-family: Aptos, "Noto Sans SC", "Microsoft YaHei UI", "PingFang SC", sans-serif;
-  color: #e8edf2;
-  background: #111418;
-}
+/* tokens consolidated into the single :root at the top of this file (#394) */
 
 body {
   background:
@@ -4341,22 +4379,7 @@ textarea {
 }
 
 /* Deep glass control-surface correction */
-:root {
-  --glass-ink: #f4f7fb;
-  --glass-muted: #9ca8b7;
-  --glass-soft: #cbd5e1;
-  --glass-line: rgba(180, 196, 218, 0.16);
-  --glass-line-strong: rgba(216, 226, 239, 0.24);
-  --glass-panel: rgba(13, 18, 27, 0.68);
-  --glass-panel-strong: rgba(17, 24, 37, 0.82);
-  --glass-panel-soft: rgba(255, 255, 255, 0.065);
-  --glass-accent: #8ecae6;
-  --glass-amber: #d9a441;
-  --glass-green: #73d6a2;
-  --glass-red: #ff8f8f;
-  color: var(--glass-ink);
-  background: #070a0f;
-}
+/* tokens consolidated into the single :root at the top of this file (#394) */
 
 body {
   background:
@@ -8740,29 +8763,7 @@ button:has(.button-icon) {
    Clean, dark, low-chroma — no gradients, no heavy shadows, generous whitespace
    ═══════════════════════════════════════════════════════════════════════════ */
 
-:root {
-  --bg-root: #0d0d0d;
-  --bg-surface: #111111;
-  --bg-elevated: #1a1a1a;
-  --bg-hover: #222222;
-  --border-subtle: rgba(255, 255, 255, 0.06);
-  --border-medium: rgba(255, 255, 255, 0.10);
-  --text-primary: #e5e5e5;
-  --text-secondary: #a3a3a3;
-  --text-tertiary: #737373;
-  /* Brand accent unified to the blue-cyan family (#394) — was amber #d97706,
-     which fought the blue-cyan used by the workflow stepper, onboarding,
-     command handoff, results hero, and input focus rings. Semantic amber
-     (caution / warning / "changes geometry") stays amber on its own tokens. */
-  --accent: #4cc4f0;
-  --accent-soft: rgba(76, 196, 240, 0.14);
-  --success: #22c55e;
-  --danger: #ef4444;
-  --warning: #f59e0b;
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
-}
+/* tokens consolidated into the single :root at the top of this file (#394) */
 
 body {
   background: var(--bg-root);
