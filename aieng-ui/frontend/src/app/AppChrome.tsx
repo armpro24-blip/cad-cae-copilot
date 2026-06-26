@@ -216,36 +216,47 @@ export function AppChrome({ app }: AppChromeProps) {
             onResolve={app.resolveApproval}
           />
 
-          <ProjectTimelinePanel
-            timeline={app.projectTimeline}
-            onRestoreSnapshot={app.restoreCadSnapshot}
-            onApproveRun={app.approveTimelineRun}
-            onRejectRun={app.rejectTimelineRun}
-            onCopyNextAction={app.copyPointerText}
-          />
-
           {!embed && <CommandReference open={commandRefOpen} onClose={() => setCommandRefOpen(false)} />}
 
-          <EditDiffPanel editDiff={app.editDiff} />
+          {/*
+            Inspector rail (#396): these data-driven panels used to render as
+            in-flow children of the `.app-main` grid with no column assignment —
+            grid orphans that auto-flowed into clipped extra rows when they had
+            data. Wrapping them in one absolutely-positioned, scrollable,
+            click-through rail gives them a predictable home and takes them out
+            of the grid flow. Each panel still self-hides when empty, so the rail
+            is invisible (and does not block the viewer) in the common case.
+          */}
+          <aside className="workspace-inspector" aria-label="Project inspector">
+            <ProjectTimelinePanel
+              timeline={app.projectTimeline}
+              onRestoreSnapshot={app.restoreCadSnapshot}
+              onApproveRun={app.approveTimelineRun}
+              onRejectRun={app.rejectTimelineRun}
+              onCopyNextAction={app.copyPointerText}
+            />
 
-          <OptimizationPanel
-            study={app.optimizationStudy}
-            surrogate={app.surrogateProposals}
-            convergence={app.optimizationConvergence}
-            onRunCandidates={app.runDesignStudyCandidates}
-            running={app.busy}
-            onUseInChat={draftNotice("Draft ready")}
-          />
+            <EditDiffPanel editDiff={app.editDiff} />
 
-          <SizingSweepPanel
-            report={app.sizingSweepReport}
-            onUseInChat={draftNotice("Sizing sweep draft")}
-          />
+            <OptimizationPanel
+              study={app.optimizationStudy}
+              surrogate={app.surrogateProposals}
+              convergence={app.optimizationConvergence}
+              onRunCandidates={app.runDesignStudyCandidates}
+              running={app.busy}
+              onUseInChat={draftNotice("Draft ready")}
+            />
 
-          <MeshConvergencePanel
-            report={app.meshConvergenceReport}
-            onUseInChat={draftNotice("Mesh convergence draft")}
-          />
+            <SizingSweepPanel
+              report={app.sizingSweepReport}
+              onUseInChat={draftNotice("Sizing sweep draft")}
+            />
+
+            <MeshConvergencePanel
+              report={app.meshConvergenceReport}
+              onUseInChat={draftNotice("Mesh convergence draft")}
+            />
+          </aside>
 
           {libraryTab && !embed && (
             <aside className="library-pane" aria-label="Library panel">

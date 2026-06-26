@@ -12071,3 +12071,28 @@ textarea:focus,
   line-height: 1.4;
   color: rgba(200, 212, 228, 0.85);
 }
+
+/* Inspector rail (#396): a single contained home for the data-driven panels
+   (timeline, edit-diff, optimization, sizing sweep, mesh convergence) that
+   previously rendered as `.app-main` grid orphans. Anchored bottom-right so it
+   clears the viewer header / results hero, stacks upward, and scrolls when
+   tall. pointer-events:none on the empty container keeps the 3D viewer
+   click-through when no panel has data (each panel self-hides). */
+.workspace-inspector {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  z-index: 20;
+  width: clamp(300px, 24vw, 380px);
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 140px);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 12px;
+  overflow-y: auto;
+  pointer-events: none;
+}
+.workspace-inspector > * {
+  pointer-events: auto;
+}
