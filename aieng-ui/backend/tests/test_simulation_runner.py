@@ -1672,6 +1672,53 @@ def test_generate_solver_input_consumes_synthesized_source_deck(tmp_path: Path) 
     assert "*STATIC" in text
 
 
+def _parse_physics_cards(deck: str) -> dict[str, Any]:
+    """Extract the solver-result-bearing cards from a CalculiX deck so the two
+    assemblers can be compared structurally (#352): elastic constants, density,
+    and the normalized *set* of *BOUNDARY / *CLOAD lines (target NSET, DOFs,
+    value). Comparing the full sets — not just a sample substring — catches any
+    drift in DOF mapping, force-per-node distribution, or unit conversion."""
+    cards: dict[str, Any] = {"elastic": None, "density": None, "boundary": set(), "cload": set()}
+    section: str | None = None
+    for raw in deck.splitlines():
+        ln = raw.strip()
+        if not ln or ln.startswith("**"):
+            continue
+        up = ln.upper()
+        if up.startswith("*ELASTIC"):
+            section = "elastic"
+            continue
+        if up.startswith("*DENSITY"):
+            section = "density"
+            continue
+        if up.startswith("*BOUNDARY"):
+            section = "boundary"
+            continue
+        if up.startswith("*CLOAD"):
+            section = "cload"
+            continue
+        if ln.startswith("*"):
+            section = None
+            continue
+        parts = [p.strip() for p in ln.split(",")]
+        if section == "elastic" and cards["elastic"] is None:
+            cards["elastic"] = (float(parts[0]), float(parts[1]))
+        elif section == "density" and cards["density"] is None:
+            cards["density"] = float(parts[0])
+        elif section == "boundary":
+            target = parts[0].upper()
+            dof_start = int(float(parts[1]))
+            dof_end = int(float(parts[2])) if len(parts) > 2 else dof_start
+            value = float(parts[3]) if len(parts) > 3 else 0.0
+            cards["boundary"].add((target, dof_start, dof_end, round(value, 6)))
+        elif section == "cload":
+            target = parts[0].upper()
+            dof = int(float(parts[1]))
+            value = float(parts[2])
+            cards["cload"].add((target, dof, round(value, 6)))
+    return cards
+
+
 def test_legacy_and_core_static_deck_semantics_match(tmp_path: Path) -> None:
     """Regression guard for #352: the legacy REST runner and canonical MCP deck
     path must agree on the static setup semantics that affect solver results."""
@@ -1715,6 +1762,22 @@ def test_legacy_and_core_static_deck_semantics_match(tmp_path: Path) -> None:
     # The downward setup load must remain negative and distributed over the NSET.
     assert "FEAT_BASE_001_L, 3, -500.000000" in legacy_deck
     assert "FEAT_BASE_001_L, 3, -500.000000" in core_deck
+
+    # Structural parity: the two assemblers must emit the SAME set of
+    # result-bearing cards, not merely share a sampled substring. Any future
+    # drift in elastic constants, density units, the DOF range of a constraint,
+    # or the per-node force distribution now fails this guard.
+    legacy_cards = _parse_physics_cards(legacy_deck)
+    core_cards = _parse_physics_cards(core_deck)
+    assert legacy_cards["elastic"] == core_cards["elastic"], (legacy_cards, core_cards)
+    assert legacy_cards["density"] == core_cards["density"], (legacy_cards, core_cards)
+    assert legacy_cards["boundary"] == core_cards["boundary"], (legacy_cards, core_cards)
+    assert legacy_cards["cload"] == core_cards["cload"], (legacy_cards, core_cards)
+
+    # Pin the expected physics so a silent same-on-both-sides regression is caught too.
+    assert core_cards["elastic"] == (69000.0, 0.33)
+    assert core_cards["boundary"] == {("FEAT_HOLE_001", 1, 3, 0.0)}
+    assert core_cards["cload"] == {("FEAT_BASE_001_L", 3, -500.0)}
 
 
 def test_cae_generate_solver_input_synthesizes_source_deck_via_invoke(tmp_path: Path) -> None:
