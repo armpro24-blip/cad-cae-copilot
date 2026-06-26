@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { api } from "../api";
+import { humanizeApiError } from "../app/apiError";
 import type { BOMData } from "../types/bom";
 
 type BOMExportFormat = "csv" | "json" | "xlsx";
@@ -114,7 +115,7 @@ export function BOMPanel({ projectId, onNotice }: BOMPanelProps) {
             fontSize: "12px",
           }}
         >
-          {error}
+          {humanizeApiError(error, "Couldn't generate the bill of materials.")}
         </div>
       )}
 

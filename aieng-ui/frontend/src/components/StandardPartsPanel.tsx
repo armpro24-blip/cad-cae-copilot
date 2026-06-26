@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { api } from "../api";
+import { humanizeApiError } from "../app/apiError";
 import type { StandardPartCategory, StandardPartSpec, InsertResult } from "../types/standards";
 import { StandardPartCard } from "./StandardPartCard";
 
@@ -153,7 +154,7 @@ export function StandardPartsPanel({ projectId, onNotice }: StandardPartsPanelPr
             fontSize: "12px",
           }}
         >
-          {error}
+          {humanizeApiError(error, "Couldn't load standard parts.")}
         </div>
       )}
 

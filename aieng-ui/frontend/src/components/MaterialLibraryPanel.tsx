@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { api } from "../api";
+import { humanizeApiError } from "../app/apiError";
 import {
   ALL_PARTS_TARGET,
   assignmentTargets,
@@ -250,7 +251,7 @@ export function MaterialLibraryPanel({
             fontSize: "12px",
           }}
         >
-          {error}
+          {humanizeApiError(error, "Couldn't load the material library.")}
         </div>
       )}
 
@@ -273,7 +274,7 @@ export function MaterialLibraryPanel({
               }}
             />
           ))}
-          {filtered.length === 0 && (
+          {filtered.length === 0 && !error && (
             <div style={{ textAlign: "center", color: "var(--text-tertiary, #737373)", fontSize: "12px", padding: "16px" }}>
               No materials match your search.
             </div>
