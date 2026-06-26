@@ -105,6 +105,7 @@ export function AppChrome({ app }: AppChromeProps) {
                 title="Materials"
               >
                 <Database className="h-4 w-4" />
+                <span className="app-topbar-btn-label">Materials</span>
               </button>
               <button
                 type="button"
@@ -113,14 +114,16 @@ export function AppChrome({ app }: AppChromeProps) {
                 title="Standard Parts"
               >
                 <Puzzle className="h-4 w-4" />
+                <span className="app-topbar-btn-label">Parts</span>
               </button>
               <button
                 type="button"
                 className={libraryTab === "bom" ? "app-topbar-btn active" : "app-topbar-btn"}
                 onClick={() => setLibraryTab((t) => (t === "bom" ? null : "bom"))}
-                title="BOM"
+                title="Bill of materials"
               >
                 <List className="h-4 w-4" />
+                <span className="app-topbar-btn-label">BOM</span>
               </button>
               <button
                 type="button"
@@ -130,6 +133,7 @@ export function AppChrome({ app }: AppChromeProps) {
                 title="Open engineering report"
               >
                 <FileText className="h-4 w-4" />
+                <span className="app-topbar-btn-label">Report</span>
               </button>
               <button
                 type="button"
@@ -138,6 +142,7 @@ export function AppChrome({ app }: AppChromeProps) {
                 title="Commands — what to type to your agent"
               >
                 <Terminal className="h-4 w-4" />
+                <span className="app-topbar-btn-label">Commands</span>
               </button>
               <button
                 type="button"
@@ -146,6 +151,7 @@ export function AppChrome({ app }: AppChromeProps) {
                 title="Settings"
               >
                 <Settings className="h-4 w-4" />
+                <span className="app-topbar-btn-label">Settings</span>
               </button>
             </div>
           </header>

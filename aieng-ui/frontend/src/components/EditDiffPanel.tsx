@@ -3,6 +3,8 @@ import { useMemo } from "react";
 import { shapeEditDiff } from "../app/editDiff";
 import type { EntitySurvivalView } from "../app/editDiff";
 import type { EditDiffResponse } from "../types";
+import { InfoTip } from "./InfoTip";
+import { glossaryText, regressionVerdictKey } from "../app/glossary";
 
 type EditDiffPanelProps = {
   editDiff: EditDiffResponse | null;
@@ -35,6 +37,9 @@ export function EditDiffPanel({ editDiff }: EditDiffPanelProps) {
         <div className="editdiff-section">
           <div className={`editdiff-verdict editdiff-${view.regression.tone}`}>
             Topology: {view.regression.verdict}
+            {regressionVerdictKey(view.regression.verdict) ? (
+              <InfoTip text={glossaryText(regressionVerdictKey(view.regression.verdict)!)} />
+            ) : null}
           </div>
           <p className="editdiff-headline">{view.regression.headline}</p>
           {view.regression.changed.length > 0 ? (

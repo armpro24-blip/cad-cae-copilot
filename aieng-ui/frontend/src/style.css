@@ -11867,3 +11867,97 @@ textarea:focus,
   font-size: 12px;
   color: rgba(186, 201, 219, 0.7);
 }
+
+/* Topbar labels + inline help (#399) — no icon-only control without a label. */
+.app-topbar-btn {
+  width: auto;
+  min-width: 32px;
+  height: 32px;
+  gap: 6px;
+  padding: 0 10px;
+}
+.app-topbar-btn-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+/* Narrow viewports / embed: collapse back to icon-only to save space. */
+@media (max-width: 1080px) {
+  .app-topbar-btn-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  .app-topbar-btn {
+    width: 32px;
+    padding: 0;
+  }
+}
+
+/* InfoTip — inline ⓘ with a hover/focus popover. */
+.info-tip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  margin-left: 5px;
+  vertical-align: middle;
+}
+.info-tip-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: rgba(148, 163, 184, 0.85);
+  cursor: help;
+}
+.info-tip-trigger:hover,
+.info-tip-trigger:focus-visible {
+  color: #4cc4f0;
+  outline: none;
+}
+.info-tip-pop {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 60;
+  width: max-content;
+  max-width: 260px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  border: 1px solid rgba(76, 196, 240, 0.3);
+  background: rgba(11, 18, 32, 0.98);
+  color: #e6eefb;
+  font-size: 11.5px;
+  font-weight: 400;
+  line-height: 1.45;
+  text-transform: none;
+  letter-spacing: normal;
+  box-shadow: 0 12px 32px rgba(2, 6, 18, 0.5);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.12s ease;
+  pointer-events: none;
+}
+.info-tip:hover .info-tip-pop,
+.info-tip:focus-within .info-tip-pop {
+  opacity: 1;
+  visibility: visible;
+}
+.th-with-info {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+}

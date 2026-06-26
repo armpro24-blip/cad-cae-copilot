@@ -7,6 +7,8 @@ import {
   meshConvergenceSummary,
 } from "../app/meshConvergenceReport";
 import type { MeshConvergenceReport } from "../types";
+import { InfoTip } from "./InfoTip";
+import { glossaryText } from "../app/glossary";
 
 type MeshConvergencePanelProps = {
   report: MeshConvergenceReport | null;
@@ -62,7 +64,11 @@ export function MeshConvergencePanel({ report, onUseInChat }: MeshConvergencePan
             <tr>
               <th>Metric</th>
               <th>Verdict</th>
-              <th>GCI fine %</th>
+              <th>
+                <span className="th-with-info">
+                  GCI fine % <InfoTip text={glossaryText("gci")} label="What is GCI?" />
+                </span>
+              </th>
               <th>Order</th>
               <th>Extrapolated</th>
               <th>Change %</th>
