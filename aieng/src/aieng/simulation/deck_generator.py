@@ -652,15 +652,22 @@ def _extract_mesh_section(source_deck_text: str) -> str:
 
     def _is_mesh_keyword(line: str) -> bool:
         upper = line.upper().strip()
-        tokens = [t.strip().rstrip(",") for t in upper.split()]
+        tokens = upper.split()
         if not tokens:
             return False
-        head = tokens[0]
+        # The keyword may be comma-attached to its first parameter — gmsh emits
+        # `*ELSET,ELSET=EALL` with no space — so strip the parameter off the
+        # first whitespace token to recover the bare keyword. The space-after-
+        # comma form (`*SOLID SECTION, ELSET=EALL`) already tokenized cleanly;
+        # the comma-attached form did not, silently dropping the
+        # `*ELSET,ELSET=EALL` definition and leaving EALL undefined for ccx.
+        head = tokens[0].split(",")[0]
 
         # *NODE by itself (or with NSET=...) is a mesh keyword.
         # *NODE FILE, *NODE PRINT, *NODE OUTPUT are output requests — not mesh.
         if head == "*NODE":
-            return len(tokens) == 1 or tokens[1] not in {"FILE", "PRINT", "OUTPUT"}
+            second = tokens[1].split(",")[0] if len(tokens) > 1 else ""
+            return second not in {"FILE", "PRINT", "OUTPUT"}
 
         return head in _MESH_KEYWORDS
 

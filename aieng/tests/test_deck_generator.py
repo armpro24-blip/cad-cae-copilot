@@ -21,9 +21,37 @@ import yaml
 from aieng.simulation.deck_generator import (
     MissingSetupError,
     SOLVER_INPUT_PATH_TEMPLATE,
+    _extract_mesh_section,
     generate_solver_input_package,
     normalize_analysis_type,
 )
+
+
+def test_extract_mesh_section_keeps_comma_attached_elset() -> None:
+    """Regression: gmsh emits `*ELSET,ELSET=EALL` with the parameter
+    comma-attached to the keyword (no space). The mesh-section extractor must
+    still recognise it as a mesh keyword and preserve the EALL definition;
+    dropping it leaves `*SOLID SECTION, ELSET=EALL` referencing an undefined
+    set and ccx fails with `*ERROR reading *SOLID SECTION: element set EALL`."""
+    deck = "\n".join(
+        [
+            "*NODE",
+            "1, 0.0, 0.0, 0.0",
+            "*ELEMENT, type=C3D4, ELSET=Volume1",
+            "1, 1, 2, 3, 4",
+            "*ELSET,ELSET=EALL",          # comma-attached, no space
+            "1",
+            "*SOLID SECTION, ELSET=EALL, MATERIAL=AIENG_MATERIAL",
+            "*MATERIAL, NAME=AIENG_MATERIAL",   # non-mesh: terminates extraction
+            "*ELASTIC",
+            "69000, 0.33",
+        ]
+    )
+    mesh = _extract_mesh_section(deck)
+    assert "*ELSET,ELSET=EALL" in mesh.replace(" ", "")
+    assert "1" in mesh.splitlines()  # the EALL data line survived
+    # Non-mesh material cards are still excluded from the mesh section.
+    assert "*MATERIAL" not in mesh.upper()
 
 
 # ---------------------------------------------------------------------------
