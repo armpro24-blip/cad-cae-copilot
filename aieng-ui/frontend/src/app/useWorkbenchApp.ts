@@ -17,6 +17,7 @@ import type {
 import { useAgentActivityStream } from "./useAgentActivityStream";
 import { requestedProjectId } from "./embed";
 import { buildFallbackSummary } from "./projectSummary";
+import { isCaeSetupComplete } from "./workflowStage";
 import { useEngineeringActions } from "./useEngineeringActions";
 import { useGeometryPointers } from "./useGeometryPointers";
 import { useRuntimeSettings } from "./useRuntimeSettings";
@@ -420,6 +421,7 @@ export function useWorkbenchApp() {
       caeSummary?.result_summary?.status.has_results ||
       caeSummary?.result_summary?.status.has_fields,
   );
+  const caeSetupComplete = isCaeSetupComplete(caeSummary?.preprocessing_summary?.status);
 
   // Load-case / analysis-step selector state.  Defaults to the first load case
   // reported by the result summary (modal modes, multi-step static, etc.).
@@ -532,6 +534,7 @@ export function useWorkbenchApp() {
     fieldOverlayConfig,
     setFieldOverlayConfig,
     caeResultsAvailable: hasCaeResultArtifacts,
+    caeSetupComplete,
     effectiveViewerUrl,
     pickedFaces,
     addPickedFace,

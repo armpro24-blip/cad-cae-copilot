@@ -11637,3 +11637,79 @@ textarea:focus,
 }
 .onboarding-dismiss:hover{filter:brightness(1.08)}
 .onboarding-cmd:focus-visible,.onboarding-dismiss:focus-visible{outline:2px solid var(--ob-accent); outline-offset:2px}
+
+/* Workflow stepper (#397) — Model → Setup → Solve → Results progress strip.
+   Scoped --ws-* tokens, blue-cyan accent matching the onboarding guide. */
+.workflow-stepper {
+  --ws-accent: #4cc4f0;
+  --ws-done: #3fae7a;
+  --ws-muted: rgba(148, 163, 184, 0.55);
+  --ws-line: rgba(148, 163, 184, 0.28);
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.workflow-stepper-track {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.workflow-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ws-muted);
+}
+.workflow-step:not(:last-child)::after {
+  content: "";
+  width: 18px;
+  height: 1px;
+  background: var(--ws-line);
+  margin-left: 6px;
+}
+.workflow-step-marker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  border: 1px solid var(--ws-line);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--ws-muted);
+  background: transparent;
+}
+.workflow-step-label {
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+.workflow-step.is-done {
+  color: var(--ws-done);
+}
+.workflow-step.is-done .workflow-step-marker {
+  border-color: var(--ws-done);
+  color: #fff;
+  background: var(--ws-done);
+}
+.workflow-step.is-active {
+  color: var(--ws-accent);
+}
+.workflow-step.is-active .workflow-step-marker {
+  border-color: var(--ws-accent);
+  color: var(--ws-accent);
+  box-shadow: 0 0 0 3px rgba(76, 196, 240, 0.16);
+}
+.workflow-step-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--ws-accent);
+  opacity: 0.92;
+}

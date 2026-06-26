@@ -170,6 +170,7 @@ export function AppChrome({ app }: AppChromeProps) {
             onSelectLoadCase={app.setSelectedLoadCaseId}
             caeSetupOverlay={app.caeSetupOverlay}
             caeResultsAvailable={app.caeResultsAvailable}
+            caeSetupComplete={app.caeSetupComplete}
             effectiveViewerUrl={app.effectiveViewerUrl}
             fieldOverlayConfig={app.fieldOverlayConfig}
             onFieldOverlayConfigChange={app.setFieldOverlayConfig}

@@ -1,5 +1,6 @@
 import { ModelViewer } from "./ModelViewer";
 import { OnboardingGuide } from "./OnboardingGuide";
+import { WorkflowStepper } from "./WorkflowStepper";
 import { FieldPicker } from "./FieldPicker";
 import { LoadCasePicker } from "./LoadCasePicker";
 import { FieldLegend } from "./FieldLegend";
@@ -26,6 +27,7 @@ type ViewerPaneProps = {
   onSelectLoadCase(id: string): void;
   caeSetupOverlay?: CaeSetupOverlayResponse | null;
   caeResultsAvailable: boolean;
+  caeSetupComplete: boolean;
   effectiveViewerUrl?: string | null;
   pickedFaces: PickedFace[];
   onAddPickedFace(face: PickedFace): void;
@@ -55,6 +57,7 @@ export function ViewerPane({
   onSelectLoadCase,
   caeSetupOverlay,
   caeResultsAvailable,
+  caeSetupComplete,
   effectiveViewerUrl,
   pickedFaces,
   onAddPickedFace,
@@ -84,6 +87,12 @@ export function ViewerPane({
             )}
           </div>
         </div>
+        <WorkflowStepper
+          hasProject={Boolean(selectedProject)}
+          hasGeometry={Boolean(effectiveViewerUrl)}
+          hasCaeSetup={caeSetupComplete}
+          hasResults={caeResultsAvailable}
+        />
       </div>
 
       <div className="viewer-stage-shell">
