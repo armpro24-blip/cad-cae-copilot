@@ -12108,3 +12108,23 @@ textarea:focus,
   overflow-y: auto;
   overflow-x: hidden;
 }
+
+/* Name the inspector rail so it reads as a deliberate surface (#396). The
+   `:not(:empty)` guard means the label only appears when at least one panel has
+   rendered (each self-hides when empty), so the empty rail stays invisible and
+   click-through. ::before is generated content, not a child, so it doesn't
+   affect the :empty check. */
+.workspace-inspector:not(:empty)::before {
+  content: "Inspector";
+  align-self: flex-end;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--glass-muted, #9ca8b7);
+  background: rgba(13, 18, 27, 0.92);
+  border: 1px solid var(--glass-line, rgba(180, 196, 218, 0.16));
+  border-radius: 999px;
+  padding: 3px 10px;
+  pointer-events: none;
+}
