@@ -1,4 +1,5 @@
 import type { Notice } from "../appTypes";
+import { CommandChip } from "./CommandChip";
 
 export function NoticeCenter({ notice, onDismiss }: { notice: Notice | null; onDismiss(): void }) {
   if (!notice) return null;
@@ -13,7 +14,8 @@ export function NoticeCenter({ notice, onDismiss }: { notice: Notice | null; onD
         </div>
         <div className="notification-copy">
           <strong>{notice.title}</strong>
-          <span>{notice.detail}</span>
+          {notice.detail ? <span>{notice.detail}</span> : null}
+          {notice.command ? <CommandChip command={notice.command} /> : null}
         </div>
         <button type="button" className="notification-close" onClick={onDismiss} aria-label="Dismiss notification">
           ×

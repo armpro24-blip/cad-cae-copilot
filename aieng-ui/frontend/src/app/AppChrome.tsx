@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Settings, Database, Puzzle, List, FileText } from "lucide-react";
+import { Settings, Database, Puzzle, List, FileText, Terminal } from "lucide-react";
 
 import { api } from "../api";
 import { NoticeCenter } from "../components/common";
@@ -8,6 +8,7 @@ import { PendingApprovals } from "../components/PendingApprovals";
 import { ProjectTimelinePanel } from "../components/ProjectTimelinePanel";
 import { SessionsSidebar } from "../components/SessionsSidebar";
 import { ViewerPane } from "../components/ViewerPane";
+import { CommandReference } from "../components/CommandReference";
 import { MaterialLibraryPanel } from "../components/MaterialLibraryPanel";
 import { StandardPartsPanel } from "../components/StandardPartsPanel";
 import { BOMPanel } from "../components/BOMPanel";
@@ -30,6 +31,7 @@ type AppChromeProps = {
 export function AppChrome({ app }: AppChromeProps) {
   const embed = isEmbedMode();
   const [libraryTab, setLibraryTab] = useState<LibraryTab | null>(null);
+  const [commandRefOpen, setCommandRefOpen] = useState(false);
   const [welcomeDismissed, setWelcomeDismissed] = useBrowserStorageState<boolean>(
     "aieng.onboarding.welcomeDismissed",
     false,
@@ -56,6 +58,11 @@ export function AppChrome({ app }: AppChromeProps) {
         .filter(Boolean)
         .join(" ");
   const reportUrl = app.selectedId ? api.projectReportUrl(app.selectedId) : null;
+
+  // Read+Handoff: a drafted /command becomes a copy-able chip in the notice
+  // (the GUI never executes — the user runs it with their connected agent).
+  const draftNotice = (title: string) => (draft: string) =>
+    app.setNotice({ tone: "info", title, detail: "Copy and run this with your agent.", command: draft });
 
   function openEngineeringReport() {
     if (!reportUrl) {
@@ -123,6 +130,14 @@ export function AppChrome({ app }: AppChromeProps) {
                 title="Open engineering report"
               >
                 <FileText className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                className={commandRefOpen ? "app-topbar-btn active" : "app-topbar-btn"}
+                onClick={() => setCommandRefOpen((v) => !v)}
+                title="Commands — what to type to your agent"
+              >
+                <Terminal className="h-4 w-4" />
               </button>
               <button
                 type="button"
@@ -202,6 +217,8 @@ export function AppChrome({ app }: AppChromeProps) {
             onCopyNextAction={app.copyPointerText}
           />
 
+          {!embed && <CommandReference open={commandRefOpen} onClose={() => setCommandRefOpen(false)} />}
+
           <EditDiffPanel editDiff={app.editDiff} />
 
           <OptimizationPanel
@@ -210,17 +227,17 @@ export function AppChrome({ app }: AppChromeProps) {
             convergence={app.optimizationConvergence}
             onRunCandidates={app.runDesignStudyCandidates}
             running={app.busy}
-            onUseInChat={(draft) => app.setNotice({ tone: "info", title: "Draft ready", detail: draft })}
+            onUseInChat={draftNotice("Draft ready")}
           />
 
           <SizingSweepPanel
             report={app.sizingSweepReport}
-            onUseInChat={(draft) => app.setNotice({ tone: "info", title: "Sizing sweep draft", detail: draft })}
+            onUseInChat={draftNotice("Sizing sweep draft")}
           />
 
           <MeshConvergencePanel
             report={app.meshConvergenceReport}
-            onUseInChat={(draft) => app.setNotice({ tone: "info", title: "Mesh convergence draft", detail: draft })}
+            onUseInChat={draftNotice("Mesh convergence draft")}
           />
 
           {libraryTab && !embed && (
@@ -255,9 +272,7 @@ export function AppChrome({ app }: AppChromeProps) {
               {libraryTab === "materials" && (
                 <MaterialLibraryPanel
                   projectId={app.selectedId}
-                  onApplyAssignment={(draft) => {
-                    app.setNotice({ tone: "info", title: "Material assignment drafted", detail: draft });
-                  }}
+                  onApplyAssignment={draftNotice("Material assignment drafted")}
                   onNotice={(title, detail) => app.setNotice({ tone: "info", title, detail })}
                 />
               )}

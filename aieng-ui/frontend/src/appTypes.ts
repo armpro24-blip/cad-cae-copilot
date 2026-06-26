@@ -14,6 +14,8 @@ export type Notice = {
   tone: "success" | "error" | "info";
   title: string;
   detail: string;
+  /** When set, a drafted `/command` rendered as a one-click copy chip (Read+Handoff). */
+  command?: string;
 };
 
 export type ChatHistoryItem = {
