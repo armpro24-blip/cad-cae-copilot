@@ -66,6 +66,35 @@ class TestGenerateSimulationRunSummary:
         assert run_entry["converged"] is True
         assert run_entry["log_file"] == "simulation/runs/run_001/solver_log.txt"
 
+    def test_completed_run_top_level_fields(self, tmp_path: Path) -> None:
+        """Regression: cae.run_solver writes state/solved/converged at the TOP
+        LEVEL of solver_run.json (not nested under a `status` block). The
+        normalizer must read them there, otherwise a real executed solve is
+        reported state="unknown"/solved=None and has_completed_run stays false —
+        making a genuine run look unverified in the UI."""
+        run = json.dumps({
+            "run_id": "run_001",
+            "solver": "CalculiX",
+            "analysis_type": "static",
+            "state": "completed",      # top-level, as cae.run_solver writes it
+            "solved": True,
+            "converged": None,
+            "return_code": 0,
+            "warnings": [],
+            "errors": [],
+            "input_files": ["simulation/runs/run_001/solver_input.inp"],
+            "output_files": ["simulation/runs/run_001/outputs/result.frd"],
+        })
+        pkg = _build_package(tmp_path, {
+            "simulation/runs/run_001/solver_run.json": run.encode(),
+        })
+        result = generate_simulation_run_summary(pkg)
+        assert result["status"]["has_completed_run"] is True
+        run_entry = result["runs"][0]
+        assert run_entry["state"] == "completed"
+        assert run_entry["solved"] is True
+        assert run_entry["solver"] == "CalculiX"
+
     def test_failed_run(self, tmp_path: Path) -> None:
         run = json.dumps({
             "run_id": "run_002",

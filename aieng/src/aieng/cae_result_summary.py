@@ -164,6 +164,34 @@ def generate_cae_result_summary(package_path: str | Path) -> dict[str, Any]:
         design_targets, computed_values, artifact_presence
     )
 
+    # Credit a completed solver run: when solver_run.json evidence shows a
+    # solved run, the metrics were *computed here*, not imported from an external
+    # post-processor. Drive source/status/llm from that run so the summary stops
+    # reporting an executed solve as "external / no solver executed".
+    completed_runs = [run for run in solver_runs if _solver_run_completed(run)]
+    solver_executed = bool(completed_runs)
+    executed_solver: dict[str, Any] | None = None
+    executed_converged: bool | None = None
+    if completed_runs:
+        latest_run = completed_runs[-1]
+        executed_converged = (
+            latest_run.get("converged") if isinstance(latest_run.get("converged"), bool) else None
+        )
+        frd_outputs = [
+            str(f)
+            for run in completed_runs
+            for f in (run.get("output_files") or [])
+            if str(f).lower().endswith((".frd", ".dat"))
+        ]
+        run_solver_name = latest_run.get("solver") or "CalculiX"
+        executed_solver = {
+            "solver": run_solver_name,
+            "software": run_solver_name,
+            "source_files": frd_outputs
+            or (solver_metadata.get("source_files", []) if solver_metadata else []),
+        }
+    effective_source = executed_solver or solver_metadata
+
     # Warnings
     warnings: list[str] = []
     if mode in ("cae_result", "cae_validation") and not field_files:
@@ -179,20 +207,21 @@ def generate_cae_result_summary(package_path: str | Path) -> dict[str, Any]:
         warnings.append("results/computed_metrics.json is malformed; metrics ignored.")
 
     # Honest LLM summary
-    one_line = _build_one_line_summary(mode, detection, solver_metadata, computed_values)
-    key_findings = _build_key_findings(mode, detection, field_files, mesh_files, solver_metadata, load_cases, computed_values)
+    summary_solver_meta = effective_source if solver_executed else solver_metadata
+    one_line = _build_one_line_summary(mode, detection, summary_solver_meta, computed_values, solver_executed)
+    key_findings = _build_key_findings(mode, detection, field_files, mesh_files, summary_solver_meta, load_cases, computed_values, solver_executed)
     risks = _build_risks(mode, detection, computed_values)
     recommended_next_actions = _build_recommended_actions(mode, detection, computed_values)
-    limitations = _build_limitations(mode, detection, computed_values)
+    limitations = _build_limitations(mode, detection, computed_values, solver_executed)
 
     return {
         "schema_version": CAE_RESULT_SUMMARY_SCHEMA,
         "summary_type": "cae_postprocessing",
         "source": {
             "package_path": str(path),
-            "solver": solver_metadata["solver"] if solver_metadata else "external_or_unknown",
-            "software": solver_metadata.get("software") if solver_metadata else None,
-            "source_files": solver_metadata.get("source_files", []) if solver_metadata else [],
+            "solver": effective_source["solver"] if effective_source else "external_or_unknown",
+            "software": effective_source.get("software") if effective_source else None,
+            "source_files": effective_source.get("source_files", []) if effective_source else [],
         },
         "result_contract": result_contract,
         "status": {
@@ -202,8 +231,8 @@ def generate_cae_result_summary(package_path: str | Path) -> dict[str, Any]:
             "has_results": detection["has_results"],
             "has_fields": detection["has_fields"],
             "has_validation": detection["has_validation"],
-            "solved": None,
-            "converged": None,
+            "solved": True if solver_executed else None,
+            "converged": executed_converged,
             "warnings": warnings,
         },
         "artifacts": {
@@ -652,6 +681,7 @@ def _build_one_line_summary(
     detection: dict[str, Any],
     solver_metadata: dict[str, Any] | None,
     computed_values: dict[str, Any],
+    solver_executed: bool = False,
 ) -> str:
     if mode == "cad_only":
         return "CAD-only package; no CAE artifacts detected."
@@ -659,6 +689,8 @@ def _build_one_line_summary(
         return "CAE setup detected (constraints, materials, BCs, loads, or mapping) but no solver results found."
     if mode == "cae_result":
         solver_name = solver_metadata.get("solver") if solver_metadata else None
+        if solver_executed and computed_values.get("extrema_computed"):
+            return f"CAE results computed by an executed {solver_name or 'CalculiX'} solver run."
         if computed_values.get("extrema_computed"):
             return f"CAE result artifacts detected with imported computed metrics (solver: {solver_name or 'external'})."
         if solver_name and solver_name != "external_or_unknown":
@@ -677,6 +709,7 @@ def _build_key_findings(
     solver_metadata: dict[str, Any] | None,
     load_cases: list[dict[str, Any]],
     computed_values: dict[str, Any],
+    solver_executed: bool = False,
 ) -> list[str]:
     findings: list[str] = []
     if mode == "cad_only":
@@ -699,12 +732,17 @@ def _build_key_findings(
     if load_cases:
         findings.append(f"Load case(s) detected: {len(load_cases)}.")
     if computed_values.get("extrema_computed"):
-        findings.append("Externally computed metrics are present and imported.")
+        verb = "Computed" if solver_executed else "Imported"
+        findings.append(
+            "Metrics computed from an executed solver run."
+            if solver_executed
+            else "Externally computed metrics are present and imported."
+        )
         for metric_key in ("max_von_mises_stress", "max_displacement", "minimum_safety_factor"):
             metric = computed_values.get(metric_key)
             if metric and isinstance(metric, dict) and metric.get("value") is not None:
                 unit = metric.get("unit") or ""
-                findings.append(f"Imported {metric_key}: {metric['value']} {unit}".strip())
+                findings.append(f"{verb} {metric_key}: {metric['value']} {unit}".strip())
     return findings
 
 
@@ -751,8 +789,17 @@ def _build_limitations(
     mode: str,
     detection: dict[str, Any],
     computed_values: dict[str, Any],
+    solver_executed: bool = False,
 ) -> list[str]:
-    limitations: list[str] = [
+    if solver_executed:
+        # A real solver run produced these metrics; state the physics envelope,
+        # not "no solver executed".
+        limitations: list[str] = [
+            "Linear static analysis only — no plasticity, contact, large deflection, or dynamics.",
+            "Single-mesh result; run a mesh-convergence study to bound discretization error.",
+        ]
+        return limitations
+    limitations = [
         "This summary is based on artifact presence only. No solver was executed. No numerical fields were parsed.",
     ]
     if detection["has_fields"] and not computed_values.get("extrema_computed"):

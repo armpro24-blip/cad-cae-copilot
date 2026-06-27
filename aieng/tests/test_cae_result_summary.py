@@ -267,15 +267,28 @@ class TestGenerateCaeResultSummary:
             {
                 "simulation/runs/run_001/solver_run.json": run.encode(),
                 "results/computed_metrics.json": metrics.encode(),
+                "results/evidence_index.json": json.dumps({"evidence": []}).encode(),
             },
         )
 
-        contract = generate_cae_result_summary(pkg)["result_contract"]
+        summary = generate_cae_result_summary(pkg)
+        assert summary["status"]["mode"] == "cae_result"
+        contract = summary["result_contract"]
 
         assert contract["claim_tier"] == "executed_solver_result"
         assert contract["solver_execution_evidence"] is True
         assert contract["completed_solver_run_ids"] == ["run_001"]
         assert "simulation/runs/run_001/solver_run.json" in contract["source_artifacts"]
+
+        # The summary must credit the executed run in source/status/llm, not
+        # report it as imported/external with "no solver executed".
+        assert summary["source"]["solver"] == "CalculiX"
+        assert summary["source"]["software"] == "CalculiX"
+        assert summary["status"]["solved"] is True
+        assert "executed" in summary["llm_summary"]["one_line"].lower()
+        limitations = " ".join(summary["llm_summary"]["limitations"]).lower()
+        assert "no solver was executed" not in limitations
+        assert "linear static" in limitations
 
     def test_computed_metrics_take_priority_over_legacy_rest_summary(self, tmp_path: Path) -> None:
         metrics = json.dumps({

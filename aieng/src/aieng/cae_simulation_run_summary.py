@@ -70,16 +70,28 @@ def _read_runs_from_package(zf: zipfile.ZipFile) -> list[dict[str, Any]]:
 
 
 def _normalize_run(raw: dict[str, Any]) -> dict[str, Any]:
-    """Normalize a raw run dict into a canonical run entry."""
-    status = raw.get("status") or {}
+    """Normalize a raw run dict into a canonical run entry.
+
+    ``cae.run_solver`` writes the run record (``solver_run.json``) with
+    ``state`` / ``solved`` / ``converged`` / ``warnings`` / ``errors`` at the
+    **top level**. Older/alternate records may nest them under a ``status``
+    block. Read the top-level value first and fall back to the nested one, so a
+    real completed run is recognised — previously the nested-only read left every
+    run ``state="unknown"`` / ``solved=None``, so an executed solve looked
+    unverified and ``has_completed_run`` stayed false."""
+    status = raw.get("status")
     if not isinstance(status, dict):
         status = {}
 
-    state = status.get("state") or "unknown"
-    solved = status.get("solved") if isinstance(status.get("solved"), bool) else None
-    converged = status.get("converged") if isinstance(status.get("converged"), bool) else None
-    status_warnings = status.get("warnings") or []
-    status_errors = status.get("errors") or []
+    def _pick(key: str) -> Any:
+        value = raw.get(key)
+        return value if value is not None else status.get(key)
+
+    state = _pick("state") or "unknown"
+    solved = _pick("solved") if isinstance(_pick("solved"), bool) else None
+    converged = _pick("converged") if isinstance(_pick("converged"), bool) else None
+    status_warnings = _pick("warnings") or []
+    status_errors = _pick("errors") or []
 
     input_files = raw.get("input_files") or []
     output_files = raw.get("output_files") or []
