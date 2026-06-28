@@ -35,6 +35,7 @@ import { useCaeSetupOverlay } from "./useCaeSetupOverlay";
 import { useProjectTimeline } from "./useProjectTimeline";
 import { useSimulationReadiness } from "./useSimulationReadiness";
 import { useMeshDiagnostics } from "./useMeshDiagnostics";
+import { useEditableParameters } from "./useEditableParameters";
 
 export function useWorkbenchApp() {
   const {
@@ -138,6 +139,7 @@ export function useWorkbenchApp() {
   const { projectTimeline } = useProjectTimeline({ selectedId, geometryVersion, refreshKey: timelineRefreshKey });
   const { simulationReadiness } = useSimulationReadiness({ selectedId, geometryVersion });
   const { meshDiagnostics } = useMeshDiagnostics({ selectedId, geometryVersion });
+  const { editableParameters } = useEditableParameters({ selectedId, geometryVersion });
 
   const fallbackViewerUrl = useMemo(() => projectViewerUrl(selectedProject), [selectedProject]);
   const rawViewerUrl = cadPreviewUrl ?? summary?.viewer_url ?? fallbackViewerUrl;
@@ -582,5 +584,6 @@ export function useWorkbenchApp() {
     caeSetupOverlay,
     simulationReadiness,
     meshDiagnostics,
+    editableParameters,
   };
 }

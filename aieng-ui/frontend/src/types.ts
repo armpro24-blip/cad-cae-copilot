@@ -1445,6 +1445,70 @@ export type EditableParametersResponse = {
   summary: { total: number; by_scope: { local: number; global: number; unscoped: number } };
 };
 
+/** Structured parametric edit proposal for review before mutating CAD (#432). */
+export type ParametricEditProposalTarget = {
+  feature_id: string;
+  parameter_name: string;
+  cad_parameter_name: string;
+  feature_name?: string;
+  feature_type?: string;
+  pointer?: string;
+};
+
+export type ParametricEditProposalChange = {
+  old_value: number | string | boolean | null;
+  new_value: number | string | boolean | null;
+  unit?: string;
+  reason?: string;
+};
+
+export type ParametricEditProposalRisk = {
+  protected_features: Array<{
+    kind: string;
+    message: string;
+    [key: string]: unknown;
+  }>;
+  design_target_impacts: Array<{
+    target_id?: string;
+    label?: string;
+    metric?: string;
+    reason?: string;
+  }>;
+};
+
+export type ParametricEditProposal = {
+  status: "ok" | string;
+  proposal_id: string;
+  project_id: string;
+  approval_required: boolean;
+  target: ParametricEditProposalTarget;
+  change: ParametricEditProposalChange;
+  scope: "local" | "global" | "unscoped" | string;
+  scope_risk?: { scope: string; reason: string; confirmation_field: string } | null;
+  risks: ParametricEditProposalRisk;
+  expected_impact: {
+    mass: { status: string; [key: string]: unknown };
+    stress: { status: string; [key: string]: unknown };
+    design_targets: { affected_count: number; note: string };
+    summary: string;
+  };
+  preview: Record<string, unknown>;
+  next_action?: {
+    tool: string;
+    input: Record<string, unknown>;
+    reason: string;
+  };
+  warnings?: string[];
+};
+
+export type CreateParametricEditProposalRequest = {
+  featureId: string;
+  parameterName: string;
+  newValue: number | string | boolean;
+  reason?: string;
+  timeout?: number;
+};
+
 /** Geometry assembly-check report for the viewer overlay (from /geometry-report). */
 export type GeometrySymmetryPair = {
   pair?: [string, string] | string[];

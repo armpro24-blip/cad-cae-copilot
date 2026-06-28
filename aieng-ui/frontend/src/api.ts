@@ -1,5 +1,5 @@
 import type { ObjectRegistryResponse, SelectedGeometryContext } from "./appTypes";
-import type { AgentPlan, AgentRunResponse, ArtifactDiffResponse, ArtifactResponse, AutopilotRunState, BenchmarkRun, BenchmarkScenario, CadRecommendationsResponse, CaeArtifactDetection, CaePreprocessingSummary, CaeReviewReport, CaeSetupOverlayResponse, CaeSimulationRunSummary, CapabilityDescriptor, CapabilityPreview, ChatConnection, ChatResponse, ComputedMetricsDocument, ComputedMetricsImportPayload, ComputedMetricsResponse, CopilotLoop, CopilotLoopDemoSeedResponse, CopilotLoopDemoSmokeCheckResponse, CopilotLoopExportRequest, CopilotLoopExportResponse, CopilotLoopList, CopilotLoopReport, CopilotLoopReportDiff, CritiqueResponse, DesignTarget, DesignTargetsDocument, DesignTargetsResponse, EditableParametersResponse, EditDiffResponse, GeometryReportResponse, EngineeringTemplateAdoptTargetsResponse, MeshConvergenceReportResponse, MeshDiagnosticsResponse, MeshPreviewResponse, SimulationReadinessResponse, SizingSweepReportResponse, EngineeringTemplateCadFixtureResponse, EngineeringTemplateDetail, EngineeringTemplatePreviewResponse, EngineeringTemplateSaveDraftResponse, EngineeringTemplateSummary, FreeCadAdapterPreflightResponse, FreeCadEditParameterRequest, FreeCadEditParameterResponse, FreeCadInspectionEvidenceResponse, FreeCadInspectFeaturesRequest, FreeCadInspectFeaturesResponse, IntentActionExecuteResponse, IntentObserveResponse, IntentPlan, LLMConfig, LocalAgentCapability, ProjectHealthCheckResponse, ProjectRecord, ProjectSummary, ReviewSupportPacketResponse, RuntimeConfig, RuntimeConfigSnapshot, RuntimeEvent, RuntimeRun, RuntimeRunSummary, RuntimeToolInfo, SolverFieldDescriptor, StructuralAdapterPreflightResponse, StructuralPreparePreviewResponse, StructuralSolverInputImportResponse, TargetComparisonResponse, WorkflowDefinition, WorkflowStep } from "./types";
+import type { AgentPlan, AgentRunResponse, ArtifactDiffResponse, ArtifactResponse, AutopilotRunState, BenchmarkRun, BenchmarkScenario, CadRecommendationsResponse, CaeArtifactDetection, CaePreprocessingSummary, CaeReviewReport, CaeSetupOverlayResponse, CaeSimulationRunSummary, CapabilityDescriptor, CapabilityPreview, ChatConnection, ChatResponse, ComputedMetricsDocument, ComputedMetricsImportPayload, ComputedMetricsResponse, CopilotLoop, CopilotLoopDemoSeedResponse, CopilotLoopDemoSmokeCheckResponse, CopilotLoopExportRequest, CopilotLoopExportResponse, CopilotLoopList, CopilotLoopReport, CopilotLoopReportDiff, CreateParametricEditProposalRequest, CritiqueResponse, DesignTarget, DesignTargetsDocument, DesignTargetsResponse, EditableParametersResponse, EditDiffResponse, GeometryReportResponse, EngineeringTemplateAdoptTargetsResponse, MeshConvergenceReportResponse, MeshDiagnosticsResponse, MeshPreviewResponse, ParametricEditProposal, SimulationReadinessResponse, SizingSweepReportResponse, EngineeringTemplateCadFixtureResponse, EngineeringTemplateDetail, EngineeringTemplatePreviewResponse, EngineeringTemplateSaveDraftResponse, EngineeringTemplateSummary, FreeCadAdapterPreflightResponse, FreeCadEditParameterRequest, FreeCadEditParameterResponse, FreeCadInspectionEvidenceResponse, FreeCadInspectFeaturesRequest, FreeCadInspectFeaturesResponse, IntentActionExecuteResponse, IntentObserveResponse, IntentPlan, LLMConfig, LocalAgentCapability, ProjectHealthCheckResponse, ProjectRecord, ProjectSummary, ReviewSupportPacketResponse, RuntimeConfig, RuntimeConfigSnapshot, RuntimeEvent, RuntimeRun, RuntimeRunSummary, RuntimeToolInfo, SolverFieldDescriptor, StructuralAdapterPreflightResponse, StructuralPreparePreviewResponse, StructuralSolverInputImportResponse, TargetComparisonResponse, WorkflowDefinition, WorkflowStep } from "./types";
 
 import type { Material, MaterialComparison, MaterialProperties } from "./types/materials";
 import type { BOMData } from "./types/bom";
@@ -251,6 +251,20 @@ export const api = {
     request<ObjectRegistryResponse>(`/api/projects/${projectId}/object-registry`, { signal }),
   getEditableParameters: (projectId: string, signal?: AbortSignal) =>
     request<EditableParametersResponse>(`/api/projects/${projectId}/editable-parameters`, { signal }),
+  createParametricEditProposal: (projectId: string, payload: CreateParametricEditProposalRequest) =>
+    request<ParametricEditProposal>(`/api/projects/${projectId}/parametric-edit-proposals`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  getParametricEditProposal: (projectId: string, proposalId: string, signal?: AbortSignal) =>
+    request<ParametricEditProposal>(`/api/projects/${projectId}/parametric-edit-proposals/${proposalId}`, { signal }),
+  applyParametricEditProposal: (projectId: string, proposalId: string, confirmScopeRisk?: boolean) =>
+    request<ParametricEditProposal>(`/api/projects/${projectId}/parametric-edit-proposals/${proposalId}/apply`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirmScopeRisk }),
+    }),
   getGeometryReport: (projectId: string, signal?: AbortSignal) =>
     request<GeometryReportResponse>(`/api/projects/${projectId}/geometry-report`, { signal }),
   getCaeSetupOverlay: (projectId: string, signal?: AbortSignal) =>

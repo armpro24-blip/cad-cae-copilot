@@ -5315,6 +5315,90 @@ textarea {
   background: rgba(2, 6, 23, 0.32);
 }
 
+.editparams-preview {
+  margin-left: 4px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  background: rgba(56, 189, 248, 0.08);
+  color: #38bdf8;
+  font-size: 12px;
+  cursor: pointer;
+}
+.editparams-preview:hover { background: rgba(56, 189, 248, 0.16); }
+.editparams-proposal {
+  grid-column: 1 / -1;
+  margin-top: 6px;
+}
+
+.parametric-proposal-card {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 12px;
+  background: rgba(17, 24, 39, 0.85);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
+}
+.parametric-proposal-row {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+}
+.parametric-proposal-label {
+  min-width: 80px;
+  color: #94a3b8;
+  font-weight: 500;
+}
+.parametric-proposal-diff {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #38bdf8;
+}
+.parametric-proposal-section strong {
+  display: block;
+  margin-bottom: 4px;
+  color: #e2e8f0;
+}
+.parametric-proposal-section ul {
+  margin: 0;
+  padding-left: 18px;
+  color: #fbbf24;
+}
+.parametric-proposal-section p {
+  margin: 0;
+  color: #cbd5e1;
+}
+.parametric-proposal-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+.parametric-proposal-actions button {
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #334155);
+  background: rgba(255, 255, 255, 0.06);
+  color: inherit;
+  cursor: pointer;
+}
+.parametric-proposal-actions button:first-child {
+  background: rgba(34, 197, 94, 0.12);
+  border-color: rgba(34, 197, 94, 0.35);
+  color: #4ade80;
+}
+.parametric-proposal-actions button:first-child:hover:not(:disabled) { background: rgba(34, 197, 94, 0.2); }
+.parametric-proposal-actions button:disabled { opacity: 0.5; cursor: default; }
+.parametric-proposal-warnings {
+  color: #f87171;
+  font-size: 12px;
+}
+.parametric-proposal-error {
+  color: #f87171;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
 /* Critique panel */
 .critique-card,
 .readiness-card {

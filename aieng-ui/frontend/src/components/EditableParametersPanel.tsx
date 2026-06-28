@@ -12,11 +12,14 @@ import {
   type ParameterScope,
 } from "../app/editableParameters";
 import type { EditableParameter } from "../types";
+import { ParametricEditProposalPanel } from "./ParametricEditProposalPanel";
 
 type EditableParametersPanelProps = {
   parameters: EditableParameter[];
   /** Prefill the composer with a "/modify set <name> to <value>" draft for a parameter. */
   onUseInChat?: (draft: string) => void;
+  /** Project ID for proposal preview; when omitted the Preview button is hidden. */
+  projectId?: string;
 };
 
 /**
@@ -28,10 +31,11 @@ type EditableParametersPanelProps = {
  * panel never mutates geometry. Out-of-range / global edits show an honest,
  * non-blocking warning (the backend routes them to confirmation).
  */
-export function EditableParametersPanel({ parameters, onUseInChat }: EditableParametersPanelProps) {
-  const groups = useMemo(() => groupParametersByScope(parameters), [parameters]);
+export function EditableParametersPanel({ parameters, onUseInChat, projectId }: EditableParametersPanelProps) {
+  const safeParameters = parameters ?? [];
+  const groups = useMemo(() => groupParametersByScope(safeParameters), [safeParameters]);
 
-  if (!parameters.length) return null;
+  if (!safeParameters.length) return null;
 
   return (
     <section className="editparams-card" aria-label="Editable parameters">
@@ -55,13 +59,14 @@ export function EditableParametersPanel({ parameters, onUseInChat }: EditablePar
               key={`${param.feature_id ?? "f"}:${param.parameter_name}`}
               param={param}
               onUseInChat={onUseInChat}
+              projectId={projectId}
             />
           ))}
         </div>
       ))}
 
       <div className="editparams-foot">
-        Set a value and click <strong>Set</strong> to draft a <code>/modify</code> — edits run through approval.
+        Set a value and click <strong>Set</strong> to draft a <code>/modify</code>, or <strong>Preview</strong> to review a structured proposal.
       </div>
     </section>
   );
@@ -70,11 +75,14 @@ export function EditableParametersPanel({ parameters, onUseInChat }: EditablePar
 function ParameterRow({
   param,
   onUseInChat,
+  projectId,
 }: {
   param: EditableParameter;
   onUseInChat?: (draft: string) => void;
+  projectId?: string;
 }) {
   const [value, setValue] = useState<string>(formatNumber(param.current_value));
+  const [showPreview, setShowPreview] = useState(false);
   const range = formatRange(param.min_value, param.max_value);
   const numeric = Number(value);
   const isNumber = value.trim() !== "" && Number.isFinite(numeric);
@@ -121,12 +129,33 @@ function ParameterRow({
       >
         Set
       </button>
+      {projectId && isNumber ? (
+        <button
+          type="button"
+          className="editparams-preview"
+          onClick={() => setShowPreview((s) => !s)}
+          title="Review a structured parametric edit proposal before applying"
+        >
+          {showPreview ? "Hide" : "Preview"}
+        </button>
+      ) : null}
       {range ? <span className="editparams-range" title="allowed range">{range}</span> : null}
       <span className="editparams-feature" title={`feature ${param.feature_name}`}>
         {param.feature_name}
       </span>
       {warning ? (
         <span className="editparams-warning" role="note">⚠ {warning}</span>
+      ) : null}
+      {showPreview && projectId && isNumber ? (
+        <div className="editparams-proposal">
+          <ParametricEditProposalPanel
+            projectId={projectId}
+            param={param}
+            value={numeric}
+            onApplied={() => setShowPreview(false)}
+            onCancelled={() => setShowPreview(false)}
+          />
+        </div>
       ) : null}
     </div>
   );

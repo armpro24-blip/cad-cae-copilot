@@ -16,6 +16,7 @@ import { OptimizationPanel } from "../components/OptimizationPanel";
 import { EditDiffPanel } from "../components/EditDiffPanel";
 import { SizingSweepPanel } from "../components/SizingSweepPanel";
 import { MeshConvergencePanel } from "../components/MeshConvergencePanel";
+import { EditableParametersPanel } from "../components/EditableParametersPanel";
 import { MissionControlPanel } from "../components/MissionControlPanel";
 import { GlobalSettingsDrawer } from "../components/settings/GlobalSettingsDrawer";
 import { RuntimeSettingsDrawer } from "../components/settings/RuntimeSettingsDrawer";
@@ -286,6 +287,12 @@ export function AppChrome({ app }: AppChromeProps) {
             <MeshConvergencePanel
               report={app.meshConvergenceReport}
               onUseInChat={draftNotice("Mesh convergence draft")}
+            />
+
+            <EditableParametersPanel
+              parameters={app.editableParameters}
+              projectId={app.selectedId ?? undefined}
+              onUseInChat={draftNotice("Parametric edit draft")}
             />
           </aside>
 
