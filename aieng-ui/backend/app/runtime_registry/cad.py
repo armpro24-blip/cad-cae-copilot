@@ -614,14 +614,15 @@ def register_cad_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
     rt.register_tool(
         "cad.propose_edit_parameter",
         _tool_cad_propose_edit_parameter,
-        read_only=True,
+        read_only=False,
         input_schema=_schema("cad.propose_edit_parameter"),
         description=(
-            "Build a structured, read-only parametric edit proposal for user review before "
+            "Build a structured, reviewable parametric edit proposal for user review before "
             "mutating CAD. Returns target feature/parameter, old/new values, unit, scope, "
             "protected-feature risks, design-target impacts, and an in-memory geometry preview "
-            "(regression/critique diffs) without writing to the package. The edit is applied "
-            "only by a separate approved cad.edit_parameter call with the returned proposal_id."
+            "(regression/critique diffs) without writing the CAD package. The proposal is "
+            "persisted for review; the edit is applied only by a separate approved "
+            "cad.edit_parameter call with the returned proposal_id."
         ),
     )
 

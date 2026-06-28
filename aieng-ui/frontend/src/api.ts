@@ -260,7 +260,7 @@ export const api = {
   getParametricEditProposal: (projectId: string, proposalId: string, signal?: AbortSignal) =>
     request<ParametricEditProposal>(`/api/projects/${projectId}/parametric-edit-proposals/${proposalId}`, { signal }),
   applyParametricEditProposal: (projectId: string, proposalId: string, confirmScopeRisk?: boolean) =>
-    request<ParametricEditProposal>(`/api/projects/${projectId}/parametric-edit-proposals/${proposalId}/apply`, {
+    request<Record<string, unknown>>(`/api/projects/${projectId}/parametric-edit-proposals/${proposalId}/apply`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ confirmScopeRisk }),

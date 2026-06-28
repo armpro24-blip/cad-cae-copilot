@@ -71,11 +71,15 @@ export function ParametricEditProposalPanel({
     setApplying(true);
     setError(null);
     try {
-      await api.applyParametricEditProposal(
+      const result = await api.applyParametricEditProposal(
         projectId,
         proposal.proposal_id,
         proposal.scope_risk?.scope === "global" || proposal.scope_risk?.scope === "unscoped",
       );
+      if (result && typeof result === "object" && result.status !== "ok") {
+        setError(String(result.message ?? "Applying the edit failed"));
+        return;
+      }
       onApplied?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to apply proposal");

@@ -129,6 +129,28 @@ describe("ParametricEditProposalPanel", () => {
     expect(api.applyParametricEditProposal).toHaveBeenCalledWith("proj_001", "pep_abc123", false);
   });
 
+  it("does not call onApplied when the apply endpoint returns an error status", async () => {
+    const proposal = makeProposal();
+    vi.mocked(api.createParametricEditProposal).mockResolvedValueOnce(proposal);
+    vi.mocked(api.applyParametricEditProposal).mockResolvedValueOnce({
+      status: "error",
+      message: "Scope risk confirmation required",
+    } as unknown as ParametricEditProposal);
+    const onApplied = vi.fn();
+
+    render(<ParametricEditProposalPanel projectId="proj_001" param={param()} value={200} onApplied={onApplied} />);
+    fireEvent.click(screen.getByRole("button", { name: /Preview change/i }));
+    await waitFor(() => {
+      expect(document.body.textContent).toContain("Approve and apply");
+    });
+    fireEvent.click(screen.getByText(/Approve and apply/i));
+
+    await waitFor(() => {
+      expect(document.body.textContent).toContain("Scope risk confirmation required");
+    });
+    expect(onApplied).not.toHaveBeenCalled();
+  });
+
   it("calls onCancelled when the user rejects the proposal after preview", async () => {
     const proposal = makeProposal();
     vi.mocked(api.createParametricEditProposal).mockResolvedValueOnce(proposal);
