@@ -24,7 +24,7 @@
     },
     "mcp_tool_surface": {
       "policy": "unstable",
-      "sha256": "e8fc0f548dc6578106a2467b4823fd70f95f6567e0a93adf8eb2544139068a86",
+      "sha256": "5f470ca3d43a50db245203f4e04fe4e487b943fe9910159a6d0db9b68654c5c7",
       "version": "0.1.0-alpha.5"
     },
     "skill_prompts": {
