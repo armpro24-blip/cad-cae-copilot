@@ -230,6 +230,76 @@ def register_project_workflow_routes(
         parameters = [{k: v for k, v in entry.items() if k != "search_tokens"} for entry in index]
         return {"parameters": parameters, "summary": summarize_parameter_index(index)}
 
+    @app.post("/api/projects/{project_id}/parametric-edit-proposals")
+    def create_parametric_edit_proposal(
+        project_id: str,
+        payload: dict[str, Any] = Body(default=None),
+    ) -> dict[str, Any]:
+        """Create a structured, read-only parametric edit proposal.
+
+        Computes an in-memory geometry preview without mutating the package and
+        persists the proposal for review. The edit is not applied until the
+        proposal is explicitly approved via the apply endpoint."""
+        from .. import parametric_edit_proposal as _pep
+
+        data = payload or {}
+        proposal = _pep.propose_parametric_edit(
+            active_settings,
+            project_id,
+            feature_id=str(data.get("featureId") or ""),
+            parameter_name=str(data.get("parameterName") or ""),
+            new_value=data.get("newValue"),
+            reason=str(data.get("reason") or ""),
+            timeout=int(data.get("timeout", 120)),
+        )
+        if proposal.get("status") != "ok":
+            return proposal
+        return _pep.save_parametric_edit_proposal(active_settings, project_id, proposal)
+
+    @app.get("/api/projects/{project_id}/parametric-edit-proposals/{proposal_id}")
+    def get_parametric_edit_proposal(project_id: str, proposal_id: str) -> dict[str, Any]:
+        """Retrieve a previously created parametric edit proposal."""
+        from .. import parametric_edit_proposal as _pep
+
+        proposal = _pep.load_parametric_edit_proposal(active_settings, project_id, proposal_id)
+        if proposal is None:
+            raise HTTPException(status_code=404, detail="proposal not found")
+        return proposal
+
+    @app.post("/api/projects/{project_id}/parametric-edit-proposals/{proposal_id}/apply")
+    def apply_parametric_edit_proposal(
+        project_id: str,
+        proposal_id: str,
+        payload: dict[str, Any] = Body(default=None),
+    ) -> dict[str, Any]:
+        """Apply an approved parametric edit proposal.
+
+        This is the approval-gated execution step: it records a pre-edit snapshot,
+        applies the parameter change, and marks downstream CAE evidence stale."""
+        from .. import cad_generation as _cg
+        from .. import parametric_edit_proposal as _pep
+
+        data = payload or {}
+        proposal = _pep.load_parametric_edit_proposal(active_settings, project_id, proposal_id)
+        if proposal is None:
+            raise HTTPException(status_code=404, detail="proposal not found")
+
+        target = proposal.get("target") or {}
+        change = proposal.get("change") or {}
+        result = _cg.edit_build123d_parameter(
+            settings=active_settings,
+            project_id=project_id,
+            feature_id=str(target.get("feature_id") or ""),
+            parameter_name=str(target.get("parameter_name") or ""),
+            new_value=change.get("new_value"),
+            timeout=int(data.get("timeout", 120)),
+            response_detail=str(data.get("response_detail") or "full"),
+            thumbnail=data.get("thumbnail") if isinstance(data.get("thumbnail"), bool) else None,
+            confirm_scope_risk=bool(data.get("confirmScopeRisk") or proposal.get("scope_risk") is not None),
+            proposal_id=proposal_id,
+        )
+        return result
+
     @app.get("/api/projects/{project_id}/critique")
     def get_critique_endpoint(project_id: str) -> dict[str, Any]:
         """Deterministic engineering critique for the Critique panel (read-only).
