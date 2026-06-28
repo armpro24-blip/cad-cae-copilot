@@ -12,14 +12,13 @@ import {
   type ParameterScope,
 } from "../app/editableParameters";
 import type { EditableParameter } from "../types";
-import { ParametricEditProposalPanel } from "./ParametricEditProposalPanel";
 
 type EditableParametersPanelProps = {
   parameters: EditableParameter[];
   /** Prefill the composer with a "/modify set <name> to <value>" draft for a parameter. */
   onUseInChat?: (draft: string) => void;
-  /** Project ID for proposal preview; when omitted the Preview button is hidden. */
-  projectId?: string;
+  /** Open a structured parametric edit proposal for review (kept outside this panel). */
+  onPreview?: (param: EditableParameter, value: number) => void;
 };
 
 /**
@@ -31,7 +30,7 @@ type EditableParametersPanelProps = {
  * panel never mutates geometry. Out-of-range / global edits show an honest,
  * non-blocking warning (the backend routes them to confirmation).
  */
-export function EditableParametersPanel({ parameters, onUseInChat, projectId }: EditableParametersPanelProps) {
+export function EditableParametersPanel({ parameters, onUseInChat, onPreview }: EditableParametersPanelProps) {
   const safeParameters = parameters ?? [];
   const groups = useMemo(() => groupParametersByScope(safeParameters), [safeParameters]);
 
@@ -59,7 +58,7 @@ export function EditableParametersPanel({ parameters, onUseInChat, projectId }: 
               key={`${param.feature_id ?? "f"}:${param.parameter_name}`}
               param={param}
               onUseInChat={onUseInChat}
-              projectId={projectId}
+              onPreview={onPreview}
             />
           ))}
         </div>
@@ -75,14 +74,13 @@ export function EditableParametersPanel({ parameters, onUseInChat, projectId }: 
 function ParameterRow({
   param,
   onUseInChat,
-  projectId,
+  onPreview,
 }: {
   param: EditableParameter;
   onUseInChat?: (draft: string) => void;
-  projectId?: string;
+  onPreview?: (param: EditableParameter, value: number) => void;
 }) {
   const [value, setValue] = useState<string>(formatNumber(param.current_value));
-  const [showPreview, setShowPreview] = useState(false);
   const range = formatRange(param.min_value, param.max_value);
   const numeric = Number(value);
   const isNumber = value.trim() !== "" && Number.isFinite(numeric);
@@ -129,14 +127,14 @@ function ParameterRow({
       >
         Set
       </button>
-      {projectId && isNumber ? (
+      {onPreview && isNumber ? (
         <button
           type="button"
           className="editparams-preview"
-          onClick={() => setShowPreview((s) => !s)}
+          onClick={() => onPreview(param, numeric)}
           title="Review a structured parametric edit proposal before applying"
         >
-          {showPreview ? "Hide" : "Preview"}
+          Preview
         </button>
       ) : null}
       {range ? <span className="editparams-range" title="allowed range">{range}</span> : null}
@@ -145,17 +143,6 @@ function ParameterRow({
       </span>
       {warning ? (
         <span className="editparams-warning" role="note">⚠ {warning}</span>
-      ) : null}
-      {showPreview && projectId && isNumber ? (
-        <div className="editparams-proposal">
-          <ParametricEditProposalPanel
-            projectId={projectId}
-            param={param}
-            value={numeric}
-            onApplied={() => setShowPreview(false)}
-            onCancelled={() => setShowPreview(false)}
-          />
-        </div>
       ) : null}
     </div>
   );

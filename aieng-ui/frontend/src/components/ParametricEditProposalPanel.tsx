@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { api } from "../api";
 import type { EditableParameter, ParametricEditProposal } from "../types";
@@ -11,6 +11,10 @@ type ParametricEditProposalPanelProps = {
   onApplied?: () => void;
   onCancelled?: () => void;
 };
+
+function paramKey(param: EditableParameter, value: number, reason: string) {
+  return `${param.feature_id ?? ""}:${param.parameter_name}:${value}:${reason}`;
+}
 
 /**
  * Review card for a structured parametric edit proposal (#432).
@@ -33,6 +37,12 @@ export function ParametricEditProposalPanel({
   const [loading, setLoading] = useState(false);
   const [applying, setApplying] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Discard a stale proposal when the target parameter or proposed value changes.
+  useEffect(() => {
+    setProposal(null);
+    setError(null);
+  }, [paramKey(param, value, reason)]);
 
   const buildProposal = async () => {
     setLoading(true);

@@ -598,7 +598,7 @@ def register_cad_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         project_id = inp.get("project_id")
         if not project_id:
             return {"status": "error", "code": "missing_project_id", "message": "project_id is required."}
-        return _pep.propose_parametric_edit(
+        proposal = _pep.propose_parametric_edit(
             settings=active_settings,
             project_id=str(project_id),
             feature_id=str(inp.get("featureId") or ""),
@@ -607,6 +607,9 @@ def register_cad_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             reason=str(inp.get("reason") or ""),
             timeout=int(inp.get("timeout", 120)),
         )
+        if proposal.get("status") != "ok":
+            return proposal
+        return _pep.save_parametric_edit_proposal(active_settings, str(project_id), proposal)
 
     rt.register_tool(
         "cad.propose_edit_parameter",
@@ -636,7 +639,8 @@ def register_cad_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             confirm_scope_risk=bool(inp.get("confirmScopeRisk")),
             proposal_id=str(inp.get("proposal_id")) if inp.get("proposal_id") else None,
         )
-        _record_cad_snapshot(result, inp.get("project_id"), "cad.edit_parameter")
+        # edit_build123d_parameter already records a pre-edit snapshot before mutating
+        # the package; that is the restore point for this command.
         return _receipt.receipt_from_edit_parameter(result)
 
     rt.register_tool(

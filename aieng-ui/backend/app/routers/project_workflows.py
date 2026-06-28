@@ -295,7 +295,7 @@ def register_project_workflow_routes(
             timeout=int(data.get("timeout", 120)),
             response_detail=str(data.get("response_detail") or "full"),
             thumbnail=data.get("thumbnail") if isinstance(data.get("thumbnail"), bool) else None,
-            confirm_scope_risk=bool(data.get("confirmScopeRisk") or proposal.get("scope_risk") is not None),
+            confirm_scope_risk=bool(data.get("confirmScopeRisk")),
             proposal_id=proposal_id,
         )
         return result

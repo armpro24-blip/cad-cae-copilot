@@ -12,6 +12,7 @@ import ast
 import hashlib
 import importlib.metadata as importlib_metadata
 import json
+import logging
 import math
 import os
 import re
@@ -39,6 +40,8 @@ from aieng.converters.critique_engine import (
     critique_geometry,
     is_named_part_feature as _is_named_part_feature,
 )
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _fidelity_brief(topology_map: dict[str, Any], feature_graph: dict[str, Any]) -> dict[str, Any] | None:
@@ -9407,7 +9410,6 @@ def _append_parametric_edit_audit_log(
     except Exception:
         return
 
-    import tempfile
     entry = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "tool": "cad.edit_parameter",

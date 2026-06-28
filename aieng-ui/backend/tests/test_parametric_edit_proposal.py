@@ -158,14 +158,14 @@ def test_propose_parametric_edit_global_scope_requires_confirmation(tmp_path: Pa
     result = execute_build123d_code(settings, pid, {"code": code, "thumbnail": False})
     assert result["status"] == "ok"
     global_feat = next(f for f in result["feature_graph"]["features"] if f.get("type") == "global_params")
-    assert any(
-        p.get("cad_parameter_name") == "GEAR_WIDTH"
-        for p in global_feat["parameters"].values()
-        if isinstance(p, dict)
+    gear_width_param_name = next(
+        name
+        for name, p in global_feat["parameters"].items()
+        if isinstance(p, dict) and p.get("cad_parameter_name") == "GEAR_WIDTH"
     )
 
     proposal = propose_parametric_edit(
-        settings, pid, feature_id=global_feat["id"], parameter_name="width_mm", new_value=10
+        settings, pid, feature_id=global_feat["id"], parameter_name=gear_width_param_name, new_value=10
     )
 
     assert proposal["status"] == "ok"

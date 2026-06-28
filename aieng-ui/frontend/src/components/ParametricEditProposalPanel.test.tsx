@@ -129,10 +129,17 @@ describe("ParametricEditProposalPanel", () => {
     expect(api.applyParametricEditProposal).toHaveBeenCalledWith("proj_001", "pep_abc123", false);
   });
 
-  it("calls onCancelled when the user rejects the proposal", () => {
+  it("calls onCancelled when the user rejects the proposal after preview", async () => {
+    const proposal = makeProposal();
+    vi.mocked(api.createParametricEditProposal).mockResolvedValueOnce(proposal);
     const onCancelled = vi.fn();
+
     render(<ParametricEditProposalPanel projectId="proj_001" param={param()} value={200} onCancelled={onCancelled} />);
-    fireEvent.click(screen.getByRole("button", { name: /Cancel/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Preview change/i }));
+    await waitFor(() => {
+      expect(document.body.textContent).toContain("Approve and apply");
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Reject/i }));
     expect(onCancelled).toHaveBeenCalled();
   });
 

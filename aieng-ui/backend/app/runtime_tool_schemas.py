@@ -1530,7 +1530,8 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                 "description": "Parameter name on the feature (its UPPER_SNAKE_CASE constant is what gets edited).",
             },
             "newValue": {
-                "description": "Proposed replacement value. Type follows the parameter's declared schema (number, string, bool).",
+                "type": ["number", "string", "boolean"],
+                "description": "Proposed replacement value. Primitive only: number, string, or boolean.",
             },
             "reason": {
                 "type": "string",

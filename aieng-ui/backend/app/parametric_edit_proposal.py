@@ -413,14 +413,25 @@ def _expected_impact_summary(
     }
 
 
-def _proposals_dir(settings: Any, project_id: str) -> Path:
-    path = project_dir(settings, project_id) / _PROPOSALS_DIRNAME
+def _proposals_dir_path(settings: Any, project_id: str) -> Path:
+    """Return the proposals directory path without creating it."""
+    return project_dir(settings, project_id) / _PROPOSALS_DIRNAME
+
+
+def _proposals_file_path(settings: Any, project_id: str) -> Path:
+    """Return the proposals file path without creating the directory."""
+    return _proposals_dir_path(settings, project_id) / _PROPOSALS_FILENAME
+
+
+def _ensure_proposals_dir(settings: Any, project_id: str) -> Path:
+    path = _proposals_dir_path(settings, project_id)
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def _proposals_file(settings: Any, project_id: str) -> Path:
-    return _proposals_dir(settings, project_id) / _PROPOSALS_FILENAME
+    """Return the proposals file path, creating the directory if needed (write path)."""
+    return _ensure_proposals_dir(settings, project_id) / _PROPOSALS_FILENAME
 
 
 def save_parametric_edit_proposal(
@@ -448,7 +459,7 @@ def load_parametric_edit_proposal(
     settings: Any, project_id: str, proposal_id: str
 ) -> dict[str, Any] | None:
     """Load a previously persisted proposal by id."""
-    path = _proposals_file(settings, project_id)
+    path = _proposals_file_path(settings, project_id)
     if not path.exists():
         return None
     try:

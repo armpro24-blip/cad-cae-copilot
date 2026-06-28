@@ -328,6 +328,11 @@ export function useWorkbenchApp() {
     });
   }
 
+  async function refreshGeometry() {
+    if (!selectedId) return;
+    await refreshProjects(selectedId, runtime);
+  }
+
   async function restoreCadSnapshot(snapshotId: string) {
     if (!selectedId) {
       setNotice({
@@ -585,5 +590,6 @@ export function useWorkbenchApp() {
     simulationReadiness,
     meshDiagnostics,
     editableParameters,
+    refreshGeometry,
   };
 }

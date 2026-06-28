@@ -54,4 +54,13 @@ describe("EditableParametersPanel inline edit (#223)", () => {
     render(<EditableParametersPanel parameters={[param({ scope: "global" })]} onUseInChat={vi.fn()} />);
     expect(screen.getByText(/ripples across parts/)).toBeTruthy();
   });
+
+  it("Preview invokes onPreview with the parameter and entered value", () => {
+    const onPreview = vi.fn();
+    render(<EditableParametersPanel parameters={[param()]} onUseInChat={vi.fn()} onPreview={onPreview} />);
+    const input = screen.getByLabelText("New value for wall_thickness") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "7" } });
+    fireEvent.click(screen.getByRole("button", { name: /Preview/i }));
+    expect(onPreview).toHaveBeenCalledWith(expect.objectContaining({ parameter_name: "wall_thickness" }), 7);
+  });
 });
