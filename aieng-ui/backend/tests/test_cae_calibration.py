@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
-
 import pytest
 
 from app.cae_calibration import (
@@ -89,25 +87,59 @@ def test_assess_calibration_auto_matches_best_case() -> None:
     assert result["case_id"] == "tension_rod"
 
 
+def test_non_gating_metric_deviation_warns_not_fails() -> None:
+    computed = {
+        "max_displacement": 0.00476,  # gated metric passes
+        "max_von_mises_stress": 13.0,  # non-gated metric fails (>10% deviation)
+    }
+    result = compare_to_benchmark(computed, "tension_rod")
+
+    assert result["status"] == "warning"
+    assert result["gated_passed"] is True
+    assert any(
+        r["metric"] == "max_von_mises_stress" and r["status"] == "failed" and r["gate"] is False
+        for r in result["metric_results"]
+    )
+
+
 def test_assess_calibration_unknown_when_no_match() -> None:
     result = assess_calibration({"some_other_metric": 1.0})
     assert result["status"] == "unknown"
 
 
-@pytest.mark.skipif(
-    shutil.which("ccx") is None,
-    reason="CalculiX (ccx) not available; real-solver calibration smoke test skipped.",
-)
-def test_real_ccx_calibration_smoke() -> None:
-    """Optional smoke test that runs only when CalculiX is installed locally.
+def test_assess_calibration_competing_cases_selects_unambiguous_best(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When multiple cases share metric names, auto-match picks the closer fit."""
+    competing_cases = dict(CALIBRATION_CASES)
+    competing_cases["tension_rod_loose"] = {
+        "title": "Tension rod (loose)",
+        "description": "Overlapping tolerance bands for auto-match testing.",
+        "analysis_type": "static",
+        "material": "Steel",
+        "geometry": {"length_mm": 100.0, "cross_section_mm2": 100.0},
+        "loading": {"force_n": 1000.0, "direction": "+X"},
+        "references": {
+            "max_displacement": {
+                "value": 0.0050,
+                "unit": "mm",
+                "tolerance_percent": 10.0,
+                "gate": True,
+            },
+            "max_von_mises_stress": {
+                "value": 11.0,
+                "unit": "MPa",
+                "tolerance_percent": 10.0,
+                "gate": False,
+            },
+        },
+        "limitations": ["Test-only competing case."],
+    }
+    monkeypatch.setattr("app.cae_calibration.CALIBRATION_CASES", competing_cases)
 
-    This is intentionally lightweight: it only verifies that a completed solver
-    run's computed metrics can be compared against a benchmark without errors.
-    Real numerical calibration is covered by the aieng NAFEMS verification suite.
-    """
     computed = {
-        "max_displacement": 0.00476,
+        "max_displacement": 0.00476,  # closer to tension_rod reference
         "max_von_mises_stress": 10.0,
     }
-    result = compare_to_benchmark(computed, "tension_rod")
+    result = assess_calibration(computed)
+
     assert result["status"] == "passed"
+    assert result["case_id"] == "tension_rod"

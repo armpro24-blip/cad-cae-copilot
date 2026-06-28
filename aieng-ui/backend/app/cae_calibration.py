@@ -129,7 +129,7 @@ def compare_to_benchmark(
     references = case["references"]
     metric_results: list[dict[str, Any]] = []
     gated_passed = True
-    has_gating_metric = False
+    has_gating_metric = any(ref.get("gate") for ref in references.values())
     overall_status = "passed"
 
     for metric_name, ref in references.items():
@@ -149,7 +149,6 @@ def compare_to_benchmark(
             overall_status = _worsen(overall_status, "warning")
             if ref.get("gate"):
                 gated_passed = False
-                has_gating_metric = True
             continue
 
         deviation_percent = _deviation_percent(computed, ref["value"])
@@ -159,10 +158,11 @@ def compare_to_benchmark(
             metric_status = "passed"
         else:
             metric_status = "failed"
-            overall_status = _worsen(overall_status, "failed")
             if ref.get("gate"):
+                overall_status = _worsen(overall_status, "failed")
                 gated_passed = False
-                has_gating_metric = True
+            else:
+                overall_status = _worsen(overall_status, "warning")
 
         metric_results.append(
             {
@@ -223,9 +223,43 @@ def assess_calibration(
             ),
         }
 
-    # Prefer the case with the fewest missing metrics (most complete match).
-    candidates.sort(key=lambda r: sum(1 for m in r["metric_results"] if m["status"] == "missing"))
-    return candidates[0]
+    # Rank by overall status severity, then by a normalized closeness score.
+    # A non-gated deviation is less severe than a missing metric, which is less
+    # severe than a gated failure. Only return a match when the best candidate
+    # is unambiguously better than the next one.
+    def _candidate_score(result: dict[str, Any]) -> tuple[int, float]:
+        status_order = {"passed": 0, "warning": 1, "failed": 2}
+        score = 0.0
+        for metric in result["metric_results"]:
+            if metric["status"] == "missing":
+                score += 2.0
+            elif metric["status"] == "failed":
+                tol = metric.get("tolerance_percent") or 1.0
+                dev = abs(metric.get("deviation_percent") or 0.0)
+                score += 1.0 + min(dev / tol, 10.0)
+            else:
+                tol = metric.get("tolerance_percent") or 1.0
+                dev = abs(metric.get("deviation_percent") or 0.0)
+                score += min(dev / tol, 10.0)
+        return (status_order.get(result["status"], 3), score)
+
+    ranked = sorted(candidates, key=_candidate_score)
+    best = ranked[0]
+    if len(ranked) > 1:
+        best_score = _candidate_score(best)
+        second_score = _candidate_score(ranked[1])
+        # Require the best candidate to be strictly better than the runner-up.
+        if best_score[0] == second_score[0] and not (best_score[1] < second_score[1] - 0.05):
+            return {
+                "status": "unknown",
+                "case_id": None,
+                "message": (
+                    "Multiple calibration cases match the available metrics; "
+                    "the match is ambiguous. Provide a case_id to run an explicit comparison."
+                ),
+            }
+
+    return best
 
 
 def _find_metric(metrics: dict[str, Any], name: str) -> float | None:
