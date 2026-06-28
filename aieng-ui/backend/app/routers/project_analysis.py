@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import Body, FastAPI
 
 from ..legacy_app_symbols import sync_main_symbols
 
@@ -56,6 +56,45 @@ def register_project_analysis_routes(app: FastAPI, *, active_settings: Any) -> N
         from .. import target_comparison
 
         return target_comparison.compare_package_targets(active_settings, project_id)
+
+    @app.get("/api/projects/{project_id}/calibration-cases")
+    def list_project_calibration_cases(project_id: str) -> dict[str, Any]:
+        """List available CAE calibration/benchmark cases for comparison.
+
+        Read-only: does not run solvers, mutate the package, or advance claims.
+        """
+        from .. import cae_calibration
+
+        return {"project_id": project_id, "cases": cae_calibration.list_calibration_cases()}
+
+    @app.post("/api/projects/{project_id}/calibration")
+    def run_project_calibration(
+        project_id: str,
+        payload: dict[str, Any] = Body(default=None),
+    ) -> dict[str, Any]:
+        """Compare the project's computed metrics against a calibration case.
+
+        If ``caseId`` is omitted, the comparator attempts a conservative auto-match
+        against available metrics. Read-only: does not run solvers or mutate the
+        package.
+        """
+        from .. import cae_calibration, computed_metrics
+
+        data = payload or {}
+        metrics = computed_metrics.get_computed_metrics(active_settings, project_id)
+        if metrics.get("status") != "ok":
+            return {
+                "status": "error",
+                "project_id": project_id,
+                "message": "computed metrics not available",
+            }
+
+        computed = metrics.get("computed_metrics") or metrics.get("metrics") or {}
+        result = cae_calibration.assess_calibration(
+            computed,
+            case_id=str(data.get("caseId") or data.get("case_id") or ""),
+        )
+        return {"status": "ok", "project_id": project_id, "comparison": result}
 
     @app.get("/api/engineering-templates")
     def list_engineering_templates_endpoint() -> dict[str, Any]:

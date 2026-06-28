@@ -34,6 +34,7 @@ from typing import Any, Literal
 
 from fastapi import HTTPException
 
+from .cae_calibration import assess_calibration
 from .cae_credibility import assess_cae_credibility
 from .computed_metrics import get_computed_metrics
 from .config import Settings
@@ -708,6 +709,11 @@ def _cae_credibility_evidence(settings: Settings, project_id: str, pkg: Path | N
         _read_package_json(pkg, "analysis/analytical_fea_scorecard.json")
         or _read_package_json(pkg, "benchmarks/analytical_fea_scorecard.json")
     )
+    if benchmark is None and isinstance(metrics, dict):
+        computed = metrics.get("computed_metrics") or metrics.get("metrics") or {}
+        calibration = assess_calibration(computed)
+        if calibration.get("status") in {"passed", "warning", "failed"}:
+            benchmark = {"status": calibration["status"], "case_id": calibration.get("case_id")}
     target_status = None
     try:
         comparison = compare_package_targets(settings, project_id)
