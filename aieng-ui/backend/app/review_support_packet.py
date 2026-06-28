@@ -710,7 +710,12 @@ def _cae_credibility_evidence(settings: Settings, project_id: str, pkg: Path | N
         or _read_package_json(pkg, "benchmarks/analytical_fea_scorecard.json")
     )
     if benchmark is None and isinstance(metrics, dict):
-        computed = metrics.get("computed_metrics") or metrics.get("metrics") or {}
+        computed = (
+            metrics.get("computed_metrics")
+            or metrics.get("metrics")
+            or metrics.get("global_metrics")
+            or {}
+        )
         calibration = assess_calibration(computed)
         if calibration.get("status") in {"passed", "warning", "failed"}:
             benchmark = {"status": calibration["status"], "case_id": calibration.get("case_id")}

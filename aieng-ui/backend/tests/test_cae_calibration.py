@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
-import pytest
+import json
+import zipfile
+from pathlib import Path
 
+import pytest
+from fastapi.testclient import TestClient
+
+from app.app_factory import create_app
 from app.cae_calibration import (
     CALIBRATION_CASES,
     assess_calibration,
@@ -11,6 +17,8 @@ from app.cae_calibration import (
     get_calibration_case,
     list_calibration_cases,
 )
+from app.config import Settings
+from app.main import default_project, project_dir, save_project
 
 
 def test_list_calibration_cases_returns_metadata() -> None:
@@ -143,3 +151,65 @@ def test_assess_calibration_competing_cases_selects_unambiguous_best(monkeypatch
 
     assert result["status"] == "passed"
     assert result["case_id"] == "tension_rod"
+
+
+def _make_settings(tmp_path: Path) -> Settings:
+    workspace = tmp_path / "workspace"
+    return Settings(
+        platform_root=tmp_path / "platform",
+        workspace_root=workspace,
+        data_root=tmp_path / "data",
+        aieng_root=Path(__file__).resolve().parents[3] / "aieng",
+        sample_step=workspace / "sample.step",
+    )
+
+
+def _write_metrics_package(pkg: Path, metrics: dict[str, object]) -> None:
+    pkg.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(pkg, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("manifest.json", json.dumps({"model_id": "calibration-test"}))
+        zf.writestr("results/computed_metrics.json", json.dumps(metrics))
+
+
+def test_calibration_endpoints_list_and_compare(tmp_path: Path) -> None:
+    settings = _make_settings(tmp_path)
+    client = TestClient(create_app(settings))
+    project = save_project(settings, default_project("calibration-test"))
+    project_id = project["id"]
+    pkg = project_dir(settings, project_id) / "p.aieng"
+    project["aieng_file"] = "p.aieng"
+    save_project(settings, project)
+    _write_metrics_package(
+        pkg,
+        {
+            "global_metrics": {
+                "max_displacement": {"value": 0.00476, "unit": "mm"},
+                "max_von_mises_stress": {"value": 10.0, "unit": "MPa"},
+            }
+        },
+    )
+
+    resp = client.get(f"/api/projects/{project_id}/calibration-cases")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["project_id"] == project_id
+    ids = {c["id"] for c in body["cases"]}
+    assert "tension_rod" in ids
+    assert "cantilever_end_load" in ids
+
+    # Auto-match when no caseId is provided.
+    resp = client.post(f"/api/projects/{project_id}/calibration", json={})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "ok"
+    assert body["comparison"]["case_id"] == "tension_rod"
+    assert body["comparison"]["status"] == "passed"
+
+    # Explicit case selection.
+    resp = client.post(
+        f"/api/projects/{project_id}/calibration",
+        json={"caseId": "tension_rod"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["comparison"]["case_id"] == "tension_rod"

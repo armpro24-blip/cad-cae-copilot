@@ -82,18 +82,18 @@ def register_project_analysis_routes(app: FastAPI, *, active_settings: Any) -> N
 
         data = payload or {}
         metrics = computed_metrics.get_computed_metrics(active_settings, project_id)
-        if metrics.get("status") != "ok":
+        if not metrics.get("ok"):
             return {
                 "status": "error",
                 "project_id": project_id,
                 "message": "computed metrics not available",
             }
 
-        computed = metrics.get("computed_metrics") or metrics.get("metrics") or {}
-        result = cae_calibration.assess_calibration(
-            computed,
-            case_id=str(data.get("caseId") or data.get("case_id") or ""),
-        )
+        doc = metrics.get("document") or {}
+        computed = doc.get("global_metrics") or {}
+        raw_case_id = data.get("caseId") or data.get("case_id")
+        case_id = str(raw_case_id) if raw_case_id else None
+        result = cae_calibration.assess_calibration(computed, case_id=case_id)
         return {"status": "ok", "project_id": project_id, "comparison": result}
 
     @app.get("/api/engineering-templates")
