@@ -5,8 +5,8 @@ well-documented reference values and tolerance bands. The comparisons are
 intentionally conservative: a coarse mesh, missing solver, or unknown load case
 lowers confidence instead of being ignored.
 
-This module is pure and does not execute solvers. Optional real-solver smoke
-tests live in the test suite and are skip-gated when CalculiX is unavailable.
+This module is pure and does not execute solvers. Tests cover deterministic
+comparison semantics and API wiring without requiring CalculiX.
 """
 
 from __future__ import annotations
