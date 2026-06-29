@@ -169,7 +169,10 @@ button:disabled {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 18px;
+  /* Wrap so the results hero drops to its own line on narrow viewports instead
+     of overflowing the right edge; on wide desktops all three fit on one row. */
+  flex-wrap: wrap;
+  gap: 12px 18px;
   padding: 14px 24px 10px;
   border-bottom: 1px solid rgba(51, 65, 85, 0.4);
   backdrop-filter: blur(10px);
@@ -12838,8 +12841,10 @@ textarea:focus,
   letter-spacing: 0.01em;
   white-space: nowrap;
 }
-/* Narrow viewports / embed: collapse back to icon-only to save space. */
-@media (max-width: 1080px) {
+/* Narrow viewports / embed: collapse back to icon-only to save space. Matches
+   the ≤1180px point where the topbar status chips hide, so the action buttons
+   never overflow the bar in the band between the two. */
+@media (max-width: 1180px) {
   .app-topbar-btn-label {
     position: absolute;
     width: 1px;
@@ -12930,6 +12935,9 @@ textarea:focus,
   display: flex;
   flex-direction: column;
   gap: 10px;
+  /* Allow the hero to shrink and wrap within the header instead of overflowing. */
+  min-width: 0;
+  max-width: 100%;
 }
 .results-hero-top {
   display: flex;
@@ -13040,9 +13048,11 @@ textarea:focus,
   right: 16px;
   bottom: 16px;
   /* Top clearance keeps the rail below the viewer header so a tall stack of
-     panels can never overlap the results hero (the credibility payoff). When
-     the stack is short it bottom-anchors; when tall it scrolls within. */
-  top: 296px;
+     panels can never overlap the results hero (the credibility payoff). The
+     header's bottom edge is published by useElementBottomVar, so the clearance
+     tracks the hero wrapping taller on narrow viewports instead of a fixed
+     guess. When the stack is short it bottom-anchors; when tall it scrolls. */
+  top: calc(var(--viewer-header-bottom, 282px) + 12px);
   z-index: 20;
   width: clamp(300px, 24vw, 380px);
   max-width: calc(100vw - 32px);

@@ -1,3 +1,5 @@
+import { useRef } from "react";
+
 import { ModelViewer } from "./ModelViewer";
 import { OnboardingGuide } from "./OnboardingGuide";
 import { WorkflowStepper } from "./WorkflowStepper";
@@ -6,6 +8,7 @@ import { FieldPicker } from "./FieldPicker";
 import { LoadCasePicker } from "./LoadCasePicker";
 import { FieldLegend } from "./FieldLegend";
 import { resultFieldLabel } from "./viewer/resultFields";
+import { useElementBottomVar } from "../app/useElementBottomVar";
 import type { BrepGraphSnapshot, CadGenerationProgress, PickedFace } from "../appTypes";
 import type { CaeSetupOverlayResponse, FieldOverlayConfig, ProjectRecord, SolverFieldDescriptor } from "../types";
 import type { ResultsHeroView } from "../app/resultsHero";
@@ -77,9 +80,15 @@ export function ViewerPane({
   welcomeDismissed,
   onDismissWelcome,
 }: ViewerPaneProps) {
+  // Publish the (content-variable) header height so the absolutely-positioned
+  // inspector rail can always clear it — the results hero wraps taller on
+  // narrow viewports, which a fixed top offset can't track.
+  const headerRef = useRef<HTMLDivElement>(null);
+  useElementBottomVar(headerRef, "--viewer-header-bottom");
+
   return (
     <section className="viewer-pane">
-      <div className="viewer-header">
+      <div className="viewer-header" ref={headerRef}>
         <div className="viewer-heading">
           <h1>Workbench</h1>
           <div className="viewer-header-status" aria-label="Model status">
