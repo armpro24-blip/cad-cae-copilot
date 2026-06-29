@@ -245,6 +245,7 @@ def test_edit_parameter_records_pre_edit_snapshot_and_stale_evidence(tmp_path: P
 def test_edit_parameter_with_proposal_id_links_to_proposal(tmp_path: Path) -> None:
     pytest.importorskip("build123d")
     from app.cad_generation import edit_build123d_parameter, execute_build123d_code
+    from app.parametric_edit_proposal import propose_parametric_edit, save_parametric_edit_proposal
 
     settings = _make_settings(tmp_path)
     pid = _make_project(settings, "proposal-link-test")
@@ -263,6 +264,15 @@ def test_edit_parameter_with_proposal_id_links_to_proposal(tmp_path: Path) -> No
     )
     assert result["status"] == "ok"
     feature_id, parameter_name = _find_parameter(result["feature_graph"], "BODY_LENGTH")
+    proposal = propose_parametric_edit(
+        settings,
+        pid,
+        feature_id=feature_id,
+        parameter_name=parameter_name,
+        new_value=200,
+    )
+    assert proposal["status"] == "ok"
+    proposal = save_parametric_edit_proposal(settings, pid, proposal)
 
     edited = edit_build123d_parameter(
         settings,
@@ -271,10 +281,75 @@ def test_edit_parameter_with_proposal_id_links_to_proposal(tmp_path: Path) -> No
         parameter_name=parameter_name,
         new_value=200,
         thumbnail=False,
-        proposal_id="pep_test_123",
+        proposal_id=proposal["proposal_id"],
     )
     assert edited["status"] == "ok"
-    assert edited["proposal_id"] == "pep_test_123"
+    assert edited["proposal_id"] == proposal["proposal_id"]
+
+
+def test_stale_proposal_is_rejected_without_mutating_package(tmp_path: Path) -> None:
+    pytest.importorskip("build123d")
+    from app.cad_generation import edit_build123d_parameter, execute_build123d_code
+    from app.parametric_edit_proposal import propose_parametric_edit, save_parametric_edit_proposal
+    from app.project_io import get_project, resolve_project_path
+
+    settings = _make_settings(tmp_path)
+    pid = _make_project(settings, "stale-proposal-test")
+    result = execute_build123d_code(
+        settings,
+        pid,
+        {
+            "code": (
+                "from build123d import *\n"
+                "BODY_LENGTH = 120\n"
+                "body = Box(BODY_LENGTH, 80, 8); body.label = 'base_plate'\n"
+                "result = Compound(children=[body])\n"
+            ),
+            "thumbnail": False,
+        },
+    )
+    assert result["status"] == "ok"
+    feature_id, parameter_name = _find_parameter(result["feature_graph"], "BODY_LENGTH")
+
+    proposal = propose_parametric_edit(
+        settings,
+        pid,
+        feature_id=feature_id,
+        parameter_name=parameter_name,
+        new_value=200,
+    )
+    assert proposal["status"] == "ok"
+    proposal = save_parametric_edit_proposal(settings, pid, proposal)
+
+    intervening_edit = edit_build123d_parameter(
+        settings,
+        pid,
+        feature_id=feature_id,
+        parameter_name=parameter_name,
+        new_value=150,
+        thumbnail=False,
+    )
+    assert intervening_edit["status"] == "ok"
+
+    stale = edit_build123d_parameter(
+        settings,
+        pid,
+        feature_id=feature_id,
+        parameter_name=parameter_name,
+        new_value=200,
+        thumbnail=False,
+        proposal_id=proposal["proposal_id"],
+    )
+    assert stale["status"] == "error"
+    assert stale["code"] == "stale_parametric_edit_proposal"
+    assert stale["proposal_old_value"] == 120
+    assert stale["current_value"] == 150
+
+    pkg_path = resolve_project_path(settings, pid, get_project(settings, pid).get("aieng_file"))
+    with zipfile.ZipFile(pkg_path, "r") as zf:
+        source_after = zf.read("geometry/source.py").decode("utf-8")
+    assert "BODY_LENGTH = 150" in source_after
+    assert "BODY_LENGTH = 200" not in source_after
 
 
 def test_rejected_edit_preserves_package_state(tmp_path: Path) -> None:

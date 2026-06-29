@@ -1559,7 +1559,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             },
             "proposal_id": {
                 "type": "string",
-                "description": "Optional proposal_id from cad.propose_edit_parameter to link this execution to a reviewed proposal.",
+                "description": "Optional proposal_id from cad.propose_edit_parameter. If supplied, it must resolve to a persisted proposal whose target, new value, and old/current value still match the live model.",
             },
             "confirmScopeRisk": {
                 "type": "boolean",

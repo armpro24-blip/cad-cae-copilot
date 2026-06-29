@@ -9200,6 +9200,62 @@ def edit_build123d_parameter(
     cad_parameter_name = param_info.get("cad_parameter_name") or parameter_name
     previous_value = param_info.get("current_value")
     edited_feature = contract.get("feature") or {}
+
+    if proposal_id:
+        from . import parametric_edit_proposal as _pep
+
+        proposal = _pep.load_parametric_edit_proposal(settings, project_id, proposal_id)
+        if proposal is None:
+            return {
+                "status": "error",
+                "code": "proposal_not_found",
+                "message": f"Parametric edit proposal {proposal_id!r} was not found.",
+                "proposal_id": proposal_id,
+            }
+        proposal_target = proposal.get("target") if isinstance(proposal, dict) else {}
+        proposal_change = proposal.get("change") if isinstance(proposal, dict) else {}
+        proposed_feature = str((proposal_target or {}).get("feature_id") or "")
+        proposed_parameter = str((proposal_target or {}).get("parameter_name") or "")
+        proposed_cad_parameter = str((proposal_target or {}).get("cad_parameter_name") or "")
+        proposed_old_value = (proposal_change or {}).get("old_value")
+        proposed_new_value = (proposal_change or {}).get("new_value")
+        target_matches = (
+            proposed_feature == feature_id
+            and proposed_parameter == parameter_name
+            and (not proposed_cad_parameter or proposed_cad_parameter == cad_parameter_name)
+        )
+        if not target_matches or not _cad_parameter_values_equal(proposed_new_value, new_value):
+            return {
+                "status": "error",
+                "code": "proposal_target_mismatch",
+                "message": (
+                    "The proposal no longer matches the requested feature, parameter, "
+                    "or value; create a fresh proposal before applying."
+                ),
+                "proposal_id": proposal_id,
+                "proposal_target": proposal_target,
+                "requested": {
+                    "feature_id": feature_id,
+                    "parameter_name": parameter_name,
+                    "cad_parameter_name": cad_parameter_name,
+                    "new_value": new_value,
+                },
+            }
+        if not _cad_parameter_values_equal(proposed_old_value, previous_value):
+            return {
+                "status": "error",
+                "code": "stale_parametric_edit_proposal",
+                "message": (
+                    "The CAD parameter value has changed since this proposal was created; "
+                    "create a fresh proposal against the current model before applying."
+                ),
+                "proposal_id": proposal_id,
+                "cad_parameter_name": cad_parameter_name,
+                "proposal_old_value": proposed_old_value,
+                "current_value": previous_value,
+                "new_value": new_value,
+            }
+
     feature_type = str(edited_feature.get("type") or "")
     scope_risk: dict[str, Any] | None = None
     if feature_type == "global_params":
@@ -9364,6 +9420,15 @@ def edit_build123d_parameter(
     if not thumb:
         result.pop("thumbnail_png_base64", None)
     return result
+
+
+def _cad_parameter_values_equal(left: Any, right: Any) -> bool:
+    """Compare proposal/edit values without false negatives from int/float shape."""
+    if isinstance(left, bool) or isinstance(right, bool):
+        return left is right
+    if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+        return math.isclose(float(left), float(right), rel_tol=1e-9, abs_tol=1e-9)
+    return left == right
 
 
 def _total_solid_volume(topo: dict[str, Any]) -> float | None:

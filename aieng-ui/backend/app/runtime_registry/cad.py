@@ -657,7 +657,8 @@ def register_cad_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             "text replacement in geometry/source.py (no LLM round-trip), re-executes build123d, "
             "and marks downstream CAE evidence stale. The feature graph must carry editable "
             "parameters (UPPER_SNAKE_CASE constants). Pass proposal_id from "
-            "cad.propose_edit_parameter to link the accepted edit to its proposal."
+            "cad.propose_edit_parameter to link the accepted edit to its proposal; stale or "
+            "mismatched proposals are rejected before any rebuild/write."
         ),
     )
 
