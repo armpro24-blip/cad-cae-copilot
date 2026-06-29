@@ -5264,17 +5264,23 @@ textarea {
   border-radius: 4px;
   background: rgba(2, 6, 23, 0.32);
   color: #9fb6d6;
+  font-family: var(--font-mono);
   font-size: 10px;
+  letter-spacing: -0.01em;
 }
 
 .editparams-value {
-  font-weight: 750;
+  font-family: var(--font-mono);
+  font-weight: 600;
   color: #e7f0ff;
+  font-variant-numeric: tabular-nums;
 }
 
 .editparams-range {
   color: #8aa0c0;
+  font-family: var(--font-mono);
   font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }
 
 .editparams-feature {
@@ -5286,7 +5292,7 @@ textarea {
 /* Inline value edit (#223) — set a value, draft the plan-confirmed /modify. */
 .editparams-input {
   width: 72px;
-  font: inherit;
+  font-family: var(--font-mono);
   font-size: 12px;
   padding: 2px 6px;
   border-radius: 6px;
@@ -8524,7 +8530,7 @@ button:has(.button-icon) {
   color: #e2e8f0;
   background: transparent;
   padding: 0;
-  font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 0.9em;
 }
 
@@ -12916,10 +12922,11 @@ textarea:focus,
    credibility tier and an honest "not modeled" line. */
 .results-hero {
   margin-top: 12px;
-  padding: 12px 14px;
-  border-radius: 12px;
-  border: 1px solid rgba(76, 196, 240, 0.22);
-  background: rgba(13, 22, 38, 0.6);
+  padding: 13px 15px;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(56, 189, 248, 0.22);
+  background: var(--glass-panel);
+  box-shadow: var(--shadow-soft);
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -12941,10 +12948,10 @@ textarea:focus,
   font-weight: 700;
   letter-spacing: 0.01em;
 }
-.results-hero-verdict.verdict-safe { color: #5fd4a0; }
-.results-hero-verdict.verdict-marginal { color: #f0c24c; }
-.results-hero-verdict.verdict-over_limit { color: #f08a8a; }
-.results-hero-verdict.verdict-unknown { color: #9fb2c8; }
+.results-hero-verdict.verdict-safe { color: var(--success); }
+.results-hero-verdict.verdict-marginal { color: var(--warning); }
+.results-hero-verdict.verdict-over_limit { color: var(--danger); }
+.results-hero-verdict.verdict-unknown { color: var(--text-secondary); }
 .results-hero-analysis {
   font-size: 10.5px;
   font-weight: 600;
@@ -12978,15 +12985,19 @@ textarea:focus,
 }
 .results-hero-metric dd {
   margin: 0;
-  font-size: 16px;
-  font-weight: 700;
-  color: #eaf3fb;
+  font-family: var(--font-mono);
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
   font-variant-numeric: tabular-nums;
 }
 .results-hero-unit {
+  font-family: var(--font-mono);
   font-size: 11px;
   font-weight: 500;
-  color: #9fb2c8;
+  color: var(--text-secondary);
 }
 .results-hero-oneline {
   margin: 0;
