@@ -4,47 +4,82 @@
    (font-family from the warm pass, color/background from the glass pass, the
    surface/text/accent/radius tokens from the latest pass). Behaviour is
    unchanged — this only removes the cascade duplication. */
+/* ─────────────────────────────────────────────────────────────────────────
+   AIENG — instrument-grade dark workbench (design foundation).
+   One coherent cool-steel palette: neutrals carry a slight blue bias (reads as
+   machined steel, not flat black), the accent is a confident CAD cyan, and the
+   semantic colors are meaningful — green = executed/verified, amber = changes
+   geometry / caution, red = blocked. The legacy `--glass-*` family is mapped
+   onto the SAME values so the two palettes that used to fight now agree.
+   Signature: engineering data is set in mono with tabular figures.
+   ───────────────────────────────────────────────────────────────────────── */
 :root {
-  font-family: Aptos, "Noto Sans SC", "Microsoft YaHei UI", "PingFang SC", sans-serif;
-  color: var(--glass-ink);
-  background: #070a0f;
+  font-family: "Inter", "Aptos", "Segoe UI", "Noto Sans SC", "Microsoft YaHei UI",
+    "PingFang SC", system-ui, sans-serif;
+  color: var(--text-primary);
+  background: var(--bg-root);
   color-scheme: dark;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 
-  /* glass surface tokens */
-  --glass-ink: #f4f7fb;
-  --glass-muted: #9ca8b7;
-  --glass-soft: #cbd5e1;
-  --glass-line: rgba(180, 196, 218, 0.16);
-  --glass-line-strong: rgba(216, 226, 239, 0.24);
-  --glass-panel: rgba(13, 18, 27, 0.68);
-  --glass-panel-strong: rgba(17, 24, 37, 0.82);
-  --glass-panel-soft: rgba(255, 255, 255, 0.065);
-  --glass-accent: #8ecae6;
-  --glass-amber: #d9a441;
-  --glass-green: #73d6a2;
-  --glass-red: #ff8f8f;
+  /* Mono — measured engineering data (metrics, @pointers, commands, params). */
+  --font-mono: "Cascadia Code", "JetBrains Mono", ui-monospace, "SF Mono", Menlo,
+    Consolas, "Liberation Mono", monospace;
 
-  /* surface / text / radius tokens */
-  --bg-root: #0d0d0d;
-  --bg-surface: #111111;
-  --bg-elevated: #1a1a1a;
-  --bg-hover: #222222;
-  --border-subtle: rgba(255, 255, 255, 0.06);
-  --border-medium: rgba(255, 255, 255, 0.10);
-  --text-primary: #e5e5e5;
-  --text-secondary: #a3a3a3;
-  --text-tertiary: #737373;
-  --success: #22c55e;
-  --danger: #ef4444;
-  --warning: #f59e0b;
+  /* Surface ramp — cool steel, each step a deliberate lift off the viewport. */
+  --bg-root: #0a0d12;
+  --bg-surface: #10141b;
+  --bg-elevated: #181d26;
+  --bg-hover: #20262f;
+
+  /* Borders — cool translucent steel, never pure white. */
+  --border-subtle: rgba(150, 170, 202, 0.10);
+  --border-medium: rgba(150, 170, 202, 0.17);
+  --border: rgba(150, 170, 202, 0.13);
+
+  /* Text — cool greys with a blue bias for technical calm. */
+  --text-primary: #eef2f8;
+  --text-secondary: #9aa8bb;
+  --text-tertiary: #66727f;
+
+  /* Semantic — trust/credibility signal, distinct from the accent hue. */
+  --success: #34d399;
+  --danger: #fb7185;
+  --warning: #f5b14c;
+
   --radius-sm: 6px;
   --radius-md: 10px;
   --radius-lg: 14px;
+  --radius-xl: 18px;
 
-  /* Brand accent — blue-cyan family (#408/#394). Semantic amber (caution /
-     warning / "changes geometry") stays amber on its own tokens. */
-  --accent: #4cc4f0;
-  --accent-soft: rgba(76, 196, 240, 0.14);
+  /* Type scale (px). Micro-labels are uppercased + tracked at the use site. */
+  --fs-display: 1.5rem;
+  --fs-title: 0.95rem;
+  --fs-body: 0.82rem;
+  --fs-label: 0.69rem;
+
+  /* Elevation — floating surfaces read as calm layered glass over the viewer. */
+  --shadow-soft: 0 4px 18px -8px rgba(0, 0, 0, 0.55);
+  --shadow-panel: 0 18px 48px -18px rgba(0, 0, 0, 0.66), 0 2px 10px -4px rgba(0, 0, 0, 0.45);
+
+  /* Brand accent — confident CAD cyan. Semantic amber stays on its own tokens. */
+  --accent: #38bdf8;
+  --accent-strong: #56c8fb;
+  --accent-soft: rgba(56, 189, 248, 0.13);
+
+  /* Legacy glass tokens, remapped onto the canonical palette above. */
+  --glass-ink: var(--text-primary);
+  --glass-muted: var(--text-secondary);
+  --glass-soft: #c4d0de;
+  --glass-line: var(--border);
+  --glass-line-strong: var(--border-medium);
+  --glass-panel: rgba(16, 20, 27, 0.72);
+  --glass-panel-strong: rgba(22, 27, 36, 0.86);
+  --glass-panel-soft: rgba(150, 170, 202, 0.06);
+  --glass-accent: var(--accent);
+  --glass-amber: var(--warning);
+  --glass-green: var(--success);
+  --glass-red: var(--danger);
 }
 
 * {
@@ -12371,13 +12406,13 @@ textarea:focus,
   padding:24px; pointer-events:none; z-index:6;
 }
 .onboarding-card{
-  --ob-accent:#4cc4f0; --ob-surface:#131c2e; --ob-elevated:#1b2942;
-  --ob-line:rgba(128,152,194,.18); --ob-t1:#e9eefb; --ob-t2:#9fb0cf; --ob-t3:#69789a;
+  --ob-accent:var(--accent); --ob-surface:var(--bg-elevated); --ob-elevated:var(--bg-hover);
+  --ob-line:var(--border-medium); --ob-t1:var(--text-primary); --ob-t2:var(--text-secondary); --ob-t3:var(--text-tertiary);
   pointer-events:auto; max-width:520px; width:100%;
-  background:linear-gradient(180deg,rgba(76,196,240,.07),transparent 70%), var(--ob-surface);
-  border:1px solid var(--ob-line); border-radius:16px;
+  background:linear-gradient(180deg,var(--accent-soft),transparent 62%), var(--ob-surface);
+  border:1px solid var(--ob-line); border-radius:var(--radius-xl);
   padding:24px 26px; color:var(--ob-t1);
-  box-shadow:0 18px 48px rgba(2,6,18,.5); backdrop-filter:blur(8px);
+  box-shadow:var(--shadow-panel); backdrop-filter:blur(10px);
 }
 .onboarding-card--compact{max-width:460px}
 .onboarding-head{display:flex; align-items:center; gap:10px; margin-bottom:10px}
@@ -12415,7 +12450,7 @@ textarea:focus,
 .onboarding-foot{display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:4px}
 .onboarding-dismiss{
   cursor:pointer; background:var(--ob-accent); color:#06121c; border:0; border-radius:9px;
-  padding:7px 16px; font-size:13px; font-weight:600;
+  padding:8px 18px; font-size:13px; font-weight:650; white-space:nowrap; align-self:center;
 }
 .onboarding-dismiss:hover{filter:brightness(1.08)}
 .onboarding-cmd:focus-visible,.onboarding-dismiss:focus-visible{outline:2px solid var(--ob-accent); outline-offset:2px}
@@ -12866,13 +12901,22 @@ textarea:focus,
   max-height: calc(100vh - 140px);
   display: flex;
   flex-direction: column;
-  justify-content: flex-end;
   gap: 12px;
   overflow-y: auto;
+  overflow-x: hidden;
   pointer-events: none;
+  scrollbar-width: thin;
+}
+/* `margin-top:auto` on the first child bottom-anchors the stack when it fits,
+   but collapses to 0 when the content overflows — so the TOP stays reachable
+   (plain `justify-content:flex-end` clips the start of an overflowing scroll
+   container in Chromium, which was cutting off Mission Control's header). */
+.workspace-inspector > *:first-child {
+  margin-top: auto;
 }
 .workspace-inspector > * {
   pointer-events: auto;
+  flex: 0 0 auto;
 }
 
 /* Keep the 3D viewer (the product's hero) from being crowded out by a tall

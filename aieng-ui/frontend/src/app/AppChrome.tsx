@@ -312,7 +312,7 @@ export function AppChrome({ app }: AppChromeProps) {
             is invisible (and does not block the viewer) in the common case.
           */}
           <aside className="workspace-inspector" aria-label="Project inspector">
-            {!embed && (
+            {!embed && app.selectedProject && (
               <MissionControlPanel
                 model={missionControl}
                 onCopyDraft={app.copyPointerText}
