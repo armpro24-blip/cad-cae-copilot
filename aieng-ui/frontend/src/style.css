@@ -5323,6 +5323,135 @@ textarea {
   color: #b45309;
 }
 
+/* ── Simplified parameter row (set a value → Set drafts the /modify) ── */
+.editparams-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+}
+.ep-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+}
+.ep-row:hover {
+  background: var(--glass-panel-soft);
+  border-color: var(--border-subtle);
+}
+.ep-row-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.ep-name {
+  appearance: none;
+  border: none;
+  background: none;
+  padding: 0;
+  margin-right: auto;
+  min-width: 0;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ep-name:hover:not(:disabled) {
+  color: var(--accent-strong);
+}
+.ep-name:disabled {
+  cursor: default;
+}
+.ep-edit {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.ep-input {
+  width: 76px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  padding: 4px 8px;
+  border-radius: 7px;
+  border: 1px solid var(--border-medium);
+  background: rgba(8, 12, 20, 0.7);
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.ep-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: rgba(8, 12, 20, 0.95);
+}
+.ep-set {
+  appearance: none;
+  padding: 4px 12px;
+  border-radius: 7px;
+  border: 1px solid var(--border-medium);
+  background: var(--glass-panel-soft);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease, border-color 0.14s ease;
+}
+.ep-set.is-changed {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #06121c;
+}
+.ep-set:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.ep-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.ep-preview {
+  appearance: none;
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 10.5px;
+  cursor: pointer;
+}
+.ep-preview:hover {
+  color: var(--accent-strong);
+  text-decoration: underline;
+}
+.ep-warning {
+  font-size: 11px;
+  color: var(--warning);
+}
+
 /* Material assignment bar (#225) — pick a target + Apply (drafts a plan-confirmed /modify). */
 .material-assign-bar {
   display: flex;
@@ -13074,6 +13203,103 @@ textarea:focus,
 .workspace-inspector > * {
   pointer-events: auto;
   flex: 0 0 auto;
+}
+
+/* ── Unified collapsible inspector card (PanelShell) ──
+   One consistent "windowed" card for every inspector panel: the header is the
+   toggle, always showing title + status so the rail can be scanned without a
+   wall of detail. The user opens only what they need. */
+.insp-panel {
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-md);
+  background: var(--glass-panel-strong);
+  box-shadow: var(--shadow-panel);
+  backdrop-filter: blur(10px);
+  overflow: hidden;
+}
+.insp-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 11px 13px;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  color: var(--text-primary);
+  text-align: left;
+  font: inherit;
+  transition: background 0.14s ease;
+}
+.insp-panel-head:hover {
+  background: var(--glass-panel-soft);
+}
+.insp-panel-head:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.insp-panel-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+.insp-panel-titlewrap {
+  min-width: 0;
+  margin-right: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.insp-panel-title {
+  font-size: 13.5px;
+  font-weight: 650;
+  letter-spacing: 0.005em;
+  line-height: 1.25;
+}
+.insp-panel-summary {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
+}
+.insp-panel-status {
+  flex: 0 0 auto;
+}
+.insp-panel-chevron {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  color: var(--text-tertiary);
+  transition: transform 0.2s ease;
+}
+.insp-panel.is-open .insp-panel-chevron {
+  transform: rotate(180deg);
+}
+.insp-panel-body {
+  padding: 2px 13px 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+}
+/* Compound header status (e.g. critique: credibility badge + finding count). */
+.critique-headstatus {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.critique-count {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+/* Action row inside a panel body (moved out of headers, which are now toggles). */
+.insp-panel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 /* When the library drawer occupies the right grid column, float the inspector

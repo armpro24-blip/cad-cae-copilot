@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 import { EditableParametersPanel } from "./EditableParametersPanel";
+import { openPanel } from "../test/openPanel";
 import type { EditableParameter } from "../types";
 
 afterEach(cleanup);
@@ -33,6 +34,7 @@ describe("EditableParametersPanel inline edit (#223)", () => {
   it("Set drafts a full /modify command with the entered value", () => {
     const onUseInChat = vi.fn();
     render(<EditableParametersPanel parameters={[param()]} onUseInChat={onUseInChat} />);
+    openPanel(/Edit dimensions/i);
     const input = screen.getByLabelText("New value for wall_thickness") as HTMLInputElement;
     fireEvent.change(input, { target: { value: "5" } });
     fireEvent.click(screen.getByRole("button", { name: "Set" }));
@@ -42,6 +44,7 @@ describe("EditableParametersPanel inline edit (#223)", () => {
   it("shows an honest, non-blocking warning for an out-of-range value", () => {
     const onUseInChat = vi.fn();
     render(<EditableParametersPanel parameters={[param({ min_value: 1, max_value: 10 })]} onUseInChat={onUseInChat} />);
+    openPanel(/Edit dimensions/i);
     const input = screen.getByLabelText("New value for wall_thickness") as HTMLInputElement;
     fireEvent.change(input, { target: { value: "99" } });
     expect(screen.getByText(/above the allowed maximum 10/)).toBeTruthy();
@@ -52,12 +55,14 @@ describe("EditableParametersPanel inline edit (#223)", () => {
 
   it("flags a global-scope parameter as rippling", () => {
     render(<EditableParametersPanel parameters={[param({ scope: "global" })]} onUseInChat={vi.fn()} />);
+    openPanel(/Edit dimensions/i);
     expect(screen.getByText(/ripples across parts/)).toBeTruthy();
   });
 
   it("Preview invokes onPreview with the parameter and entered value", () => {
     const onPreview = vi.fn();
     render(<EditableParametersPanel parameters={[param()]} onUseInChat={vi.fn()} onPreview={onPreview} />);
+    openPanel(/Edit dimensions/i);
     const input = screen.getByLabelText("New value for wall_thickness") as HTMLInputElement;
     fireEvent.change(input, { target: { value: "7" } });
     fireEvent.click(screen.getByRole("button", { name: /Preview/i }));

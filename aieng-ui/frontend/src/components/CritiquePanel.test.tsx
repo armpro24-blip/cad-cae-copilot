@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 import { CritiquePanel } from "./CritiquePanel";
+import { openPanel } from "../test/openPanel";
 import type { CritiqueFinding, StandardFastenerPlanSummary } from "../types";
 
 afterEach(cleanup);
@@ -39,6 +40,7 @@ describe("CritiquePanel manufacturing hints", () => {
   it("surfaces advisory fastener plans without mutating geometry", () => {
     const onUseInChat = vi.fn();
     render(<CritiquePanel findings={[]} standardFastenerPlan={fastenerPlan()} onUseInChat={onUseInChat} />);
+    openPanel(/Engineering critique/i);
     expect(screen.getByText("Standard fasteners")).toBeTruthy();
     expect(screen.getByText("2 matched holes; 2 advisory fastener plans")).toBeTruthy();
     expect(screen.getByText(/approval-gated/)).toBeTruthy();
@@ -49,6 +51,7 @@ describe("CritiquePanel manufacturing hints", () => {
   it("keeps existing critique fix drafting intact", () => {
     const onUseInChat = vi.fn();
     render(<CritiquePanel findings={[finding()]} onUseInChat={onUseInChat} />);
+    openPanel(/Engineering critique/i);
     fireEvent.click(screen.getByRole("button", { name: "Fix" }));
     expect(onUseInChat).toHaveBeenCalledWith("/modify increase wall thickness");
   });

@@ -5,6 +5,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { ProjectTimelinePanel } from "./ProjectTimelinePanel";
+import { openPanel } from "../test/openPanel";
 import type { ProjectTimeline } from "../app/projectTimeline";
 
 function makeTimeline(): ProjectTimeline {
@@ -106,6 +107,7 @@ describe("ProjectTimelinePanel", () => {
       />,
     );
 
+    openPanel(/Project timeline/i);
     fireEvent.click(screen.getByRole("button", { name: "Restore" }));
     expect(onRestoreSnapshot).toHaveBeenCalledWith("snap_0001");
 

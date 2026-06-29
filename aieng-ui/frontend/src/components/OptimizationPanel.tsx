@@ -16,6 +16,8 @@ import {
   type SurrogateProposals,
 } from "../app/surrogatePredictions";
 import { ConvergenceChart } from "./ConvergenceChart";
+import { PanelShell } from "./PanelShell";
+import { Sigma } from "lucide-react";
 
 type OptimizationPanelProps = {
   study: OptimizationStudy | null;
@@ -79,15 +81,14 @@ export function OptimizationPanel({
     study.report?.feasibility_summary != null;
 
   return (
-    <section className="optimization-card" aria-label="Optimization study">
-      <div className="optimization-head">
-        <div className="optimization-title">
-          <strong>Optimization study</strong>
-          <span>
-            {study.candidates.length} candidate{study.candidates.length !== 1 ? "s" : ""}
-          </span>
-        </div>
-        {onRunCandidates && (
+    <PanelShell
+      storageKey="optimization"
+      title="Optimization study"
+      icon={<Sigma className="h-4 w-4" aria-hidden="true" />}
+      summary={`${study.candidates.length} candidate${study.candidates.length !== 1 ? "s" : ""}`}
+    >
+      {onRunCandidates && (
+        <div className="insp-panel-actions">
           <button
             type="button"
             className="optimization-run"
@@ -97,8 +98,8 @@ export function OptimizationPanel({
           >
             {running ? "Running..." : "Run candidates"}
           </button>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* Honesty banner */}
       {study.warnings.length > 0 && (
@@ -334,7 +335,7 @@ export function OptimizationPanel({
         <strong>Run candidates</strong> writes derived evidence only.{" "}
         Click <strong>Accept</strong> to draft a <code>/design-study</code> — acceptance stays approval-gated.
       </div>
-    </section>
+    </PanelShell>
   );
 }
 

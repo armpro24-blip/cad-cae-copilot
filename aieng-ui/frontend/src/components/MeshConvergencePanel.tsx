@@ -6,8 +6,11 @@ import {
   meshConvergenceRefineDraft,
   meshConvergenceSummary,
 } from "../app/meshConvergenceReport";
+import { Grid3x3 } from "lucide-react";
+
 import type { MeshConvergenceReport } from "../types";
 import { InfoTip } from "./InfoTip";
+import { PanelShell } from "./PanelShell";
 import { glossaryText } from "../app/glossary";
 
 type MeshConvergencePanelProps = {
@@ -39,13 +42,18 @@ export function MeshConvergencePanel({ report, onUseInChat }: MeshConvergencePan
   if (!isMeshConvergenceReportMeaningful(report)) return null;
 
   return (
-    <section className="mesh-convergence-card" aria-label="Mesh convergence">
-      <div className="mesh-convergence-head">
-        <strong>Mesh convergence</strong>
+    <PanelShell
+      storageKey="meshconvergence"
+      title="Mesh convergence"
+      icon={<Grid3x3 className="h-4 w-4" aria-hidden="true" />}
+      status={
         <span className={allConverged ? "mesh-convergence-ok" : "mesh-convergence-caution"}>
           {meshConvergenceSummary(report!)}
         </span>
-        {refineDraft && !allConverged ? (
+      }
+    >
+      {refineDraft && !allConverged ? (
+        <div className="insp-panel-actions">
           <button
             type="button"
             className="mesh-convergence-action"
@@ -55,8 +63,8 @@ export function MeshConvergencePanel({ report, onUseInChat }: MeshConvergencePan
           >
             Finer mesh
           </button>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
 
       <div className="mesh-convergence-table-wrap">
         <table className="mesh-convergence-table">
@@ -100,6 +108,6 @@ export function MeshConvergencePanel({ report, onUseInChat }: MeshConvergencePan
       <div className="mesh-convergence-foot">
         GCI is a discretization-uncertainty estimate for this geometry/refinement only — not a model-validity claim.
       </div>
-    </section>
+    </PanelShell>
   );
 }

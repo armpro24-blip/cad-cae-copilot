@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { SlidersHorizontal } from "lucide-react";
 
 import {
   editDraftForParameter,
@@ -11,6 +12,7 @@ import {
   SCOPE_LABEL,
   type ParameterScope,
 } from "../app/editableParameters";
+import { PanelShell } from "./PanelShell";
 import type { EditableParameter } from "../types";
 
 type EditableParametersPanelProps = {
@@ -22,13 +24,13 @@ type EditableParametersPanelProps = {
 };
 
 /**
- * The "point" half of point-and-shoot editing: the CAD parameters editable fast
- * via cad.edit_parameter, grouped by editing scope (local = safe single-part,
- * global = shared/ripples). Each row has an inline value field (#223) that drafts
- * a complete `/modify set <name> to <value>` into the composer; the edit itself
- * still flows through the existing plan-confirmed, approval-gated path — this
- * panel never mutates geometry. Out-of-range / global edits show an honest,
- * non-blocking warning (the backend routes them to confirmation).
+ * Parametric editing, simplified to its essence: type a new value, click Set.
+ * Each row drafts a complete `/modify set <name> to <value>` for the connected
+ * agent (the edit still flows through the plan-confirmed, approval-gated path —
+ * this panel never mutates geometry). The technical constant name and the
+ * structured-proposal path are demoted to secondary affordances so the common
+ * "just change a dimension" case stays uncluttered. Out-of-range / global edits
+ * show an honest, non-blocking warning.
  */
 export function EditableParametersPanel({ parameters, onUseInChat, onPreview }: EditableParametersPanelProps) {
   const safeParameters = parameters ?? [];
@@ -37,21 +39,24 @@ export function EditableParametersPanel({ parameters, onUseInChat, onPreview }: 
   if (!safeParameters.length) return null;
 
   return (
-    <section className="editparams-card" aria-label="Editable parameters">
-      <div className="editparams-head">
-        <strong>Editable parameters</strong>
-        <span>{parameters.length}</span>
-      </div>
-
+    <PanelShell
+      storageKey="editparams"
+      title="Edit dimensions"
+      icon={<SlidersHorizontal className="h-4 w-4" aria-hidden="true" />}
+      status={<span className="editparams-count">{safeParameters.length}</span>}
+      summary={`${safeParameters.length} editable`}
+    >
       {groups.map((group) => (
         <div key={group.scope} className="editparams-group">
-          <div
-            className={`editparams-scope editparams-scope-${group.scope as ParameterScope}`}
-            title={SCOPE_HINT[group.scope]}
-          >
-            {SCOPE_LABEL[group.scope]}
-            <span className="editparams-scope-count">{group.parameters.length}</span>
-          </div>
+          {groups.length > 1 || group.scope !== "local" ? (
+            <div
+              className={`editparams-scope editparams-scope-${group.scope as ParameterScope}`}
+              title={SCOPE_HINT[group.scope]}
+            >
+              {SCOPE_LABEL[group.scope]}
+              <span className="editparams-scope-count">{group.parameters.length}</span>
+            </div>
+          ) : null}
 
           {group.parameters.map((param: EditableParameter) => (
             <ParameterRow
@@ -65,9 +70,9 @@ export function EditableParametersPanel({ parameters, onUseInChat, onPreview }: 
       ))}
 
       <div className="editparams-foot">
-        Set a value and click <strong>Set</strong> to draft a <code>/modify</code>, or <strong>Preview</strong> to review a structured proposal.
+        Set a value to draft a <code>/modify</code> for your agent — it applies through the usual approval step.
       </div>
-    </section>
+    </PanelShell>
   );
 }
 
@@ -84,6 +89,7 @@ function ParameterRow({
   const range = formatRange(param.min_value, param.max_value);
   const numeric = Number(value);
   const isNumber = value.trim() !== "" && Number.isFinite(numeric);
+  const changed = isNumber && numeric !== param.current_value;
   const warning = isNumber ? parameterEditWarning(param, numeric) : null;
 
   const commit = () => {
@@ -92,57 +98,58 @@ function ParameterRow({
   };
 
   return (
-    <div className="editparams-row">
-      <button
-        type="button"
-        className="editparams-name"
-        onClick={() => onUseInChat?.(editDraftForParameter(param))}
-        disabled={!onUseInChat}
-        title={onUseInChat ? `Draft a /modify for ${param.parameter_name}` : param.parameter_name}
-      >
-        {param.parameter_name.replace(/_/g, " ")}
-      </button>
-      <code className="editparams-const" title={`constant ${param.cad_parameter_name}`}>
-        {param.cad_parameter_name}
-      </code>
-      <input
-        type="number"
-        className="editparams-input"
-        value={value}
-        min={param.min_value ?? undefined}
-        max={param.max_value ?? undefined}
-        step="any"
-        aria-label={`New value for ${param.parameter_name}`}
-        onChange={(e) => setValue(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") commit();
-        }}
-      />
-      <button
-        type="button"
-        className="editparams-set"
-        onClick={commit}
-        disabled={!onUseInChat || !isNumber}
-        title={onUseInChat ? `Draft /modify set ${param.parameter_name} to ${value}` : "Connect a composer to edit"}
-      >
-        Set
-      </button>
-      {onPreview && isNumber ? (
+    <div className="ep-row">
+      <div className="ep-row-main">
         <button
           type="button"
-          className="editparams-preview"
-          onClick={() => onPreview(param, numeric)}
-          title="Review a structured parametric edit proposal before applying"
+          className="ep-name"
+          onClick={() => onUseInChat?.(editDraftForParameter(param))}
+          disabled={!onUseInChat}
+          title={`${param.parameter_name} (constant ${param.cad_parameter_name})`}
         >
-          Preview
+          {param.parameter_name.replace(/_/g, " ")}
         </button>
-      ) : null}
-      {range ? <span className="editparams-range" title="allowed range">{range}</span> : null}
-      <span className="editparams-feature" title={`feature ${param.feature_name}`}>
-        {param.feature_name}
-      </span>
+        <div className="ep-edit">
+          <input
+            type="number"
+            className="ep-input"
+            value={value}
+            min={param.min_value ?? undefined}
+            max={param.max_value ?? undefined}
+            step="any"
+            aria-label={`New value for ${param.parameter_name}`}
+            onChange={(e) => setValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") commit();
+            }}
+          />
+          <button
+            type="button"
+            className={changed ? "ep-set is-changed" : "ep-set"}
+            onClick={commit}
+            disabled={!onUseInChat || !isNumber}
+            title={onUseInChat ? `Draft /modify set ${param.parameter_name} to ${value}` : "Connect a composer to edit"}
+          >
+            Set
+          </button>
+        </div>
+      </div>
+      <div className="ep-row-meta">
+        {range ? <span title="allowed range">{range}</span> : null}
+        <span title={`feature ${param.feature_name}`}>{param.feature_name}</span>
+        {onPreview && isNumber && changed ? (
+          <button
+            type="button"
+            className="ep-preview"
+            onClick={() => onPreview(param, numeric)}
+            title="Review a structured proposal (range check + change preview) before applying"
+          >
+            Preview…
+          </button>
+        ) : null}
+      </div>
       {warning ? (
-        <span className="editparams-warning" role="note">⚠ {warning}</span>
+        <span className="ep-warning" role="note">⚠ {warning}</span>
       ) : null}
     </div>
   );

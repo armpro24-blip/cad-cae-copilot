@@ -1,9 +1,11 @@
 import { useMemo } from "react";
+import { GitCompare } from "lucide-react";
 
 import { shapeEditDiff } from "../app/editDiff";
 import type { EntitySurvivalView } from "../app/editDiff";
 import type { EditDiffResponse } from "../types";
 import { InfoTip } from "./InfoTip";
+import { PanelShell } from "./PanelShell";
 import { glossaryText, regressionVerdictKey } from "../app/glossary";
 
 type EditDiffPanelProps = {
@@ -22,17 +24,19 @@ export function EditDiffPanel({ editDiff }: EditDiffPanelProps) {
   if (!view.hasData) return null;
 
   return (
-    <section className="editdiff-card" aria-label="Last edit diff">
-      <div className="editdiff-head">
-        <strong>Last edit</strong>
-        {view.tool ? <code className="editdiff-tool">{view.tool}</code> : null}
-        {view.needsAttention ? (
+    <PanelShell
+      storageKey="editdiff"
+      title="Last edit"
+      icon={<GitCompare className="h-4 w-4" aria-hidden="true" />}
+      status={
+        view.needsAttention ? (
           <span className="editdiff-flag editdiff-flag-bad">needs review</span>
         ) : (
           <span className="editdiff-flag editdiff-flag-good">clean</span>
-        )}
-      </div>
-
+        )
+      }
+      summary={view.tool ?? undefined}
+    >
       {view.regression ? (
         <div className="editdiff-section">
           <div className={`editdiff-verdict editdiff-${view.regression.tone}`}>
@@ -121,7 +125,7 @@ export function EditDiffPanel({ editDiff }: EditDiffPanelProps) {
           ) : null}
         </div>
       ) : null}
-    </section>
+    </PanelShell>
   );
 }
 

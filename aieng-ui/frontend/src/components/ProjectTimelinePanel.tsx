@@ -1,6 +1,7 @@
-import { Activity, AlertTriangle, CheckCircle2, Clock3, Copy, FileText, History, ShieldCheck } from "lucide-react";
+import { Activity, AlertTriangle, CheckCircle2, Clock3, Copy, FileText, History, ListTree, ShieldCheck } from "lucide-react";
 
 import type { ProjectTimeline, ProjectTimelineEntry, ProjectTimelineEntryKind, TimelineNextAction, TimelineSnapshot } from "../app/projectTimeline";
+import { PanelShell } from "./PanelShell";
 
 type ProjectTimelinePanelProps = {
   timeline: ProjectTimeline | null;
@@ -111,44 +112,44 @@ export function ProjectTimelinePanel({
   if (!timeline || timeline.entries.length === 0) return null;
   const visible = timeline.entries.slice(0, 12);
 
-  return (
-    <section className="project-timeline-card" aria-label="Project timeline">
-      <div className="project-timeline-head">
-        <div>
-          <strong>Project timeline</strong>
-          <span>
-            {timeline.runCount} runtime run{timeline.runCount === 1 ? "" : "s"}
-            {timeline.activityCount ? ` · ${timeline.activityCount} live event${timeline.activityCount === 1 ? "" : "s"}` : ""}
-          </span>
-        </div>
-        {timeline.warningCount ? (
-          <span className="project-timeline-warning">
-            <AlertTriangle className="h-3.5 w-3.5" />
-            {timeline.warningCount} malformed receipt
-          </span>
-        ) : timeline.unstructuredFailureCount ? (
-          <span className="project-timeline-warning">
-            <AlertTriangle className="h-3.5 w-3.5" />
-            {timeline.unstructuredFailureCount} unstructured failure
-          </span>
-        ) : timeline.diagnosticCount ? (
-          <span className="project-timeline-ok">
-            <CheckCircle2 className="h-3.5 w-3.5" />
-            {timeline.diagnosticCount} diagnostic{timeline.diagnosticCount === 1 ? "" : "s"}
-          </span>
-        ) : timeline.snapshotCount ? (
-          <span className="project-timeline-ok">
-            <History className="h-3.5 w-3.5" />
-            {timeline.snapshotCount} snapshot{timeline.snapshotCount === 1 ? "" : "s"}
-          </span>
-        ) : (
-          <span className="project-timeline-ok">
-            <CheckCircle2 className="h-3.5 w-3.5" />
-            Read-only
-          </span>
-        )}
-      </div>
+  const runSummary = `${timeline.runCount} run${timeline.runCount === 1 ? "" : "s"}${
+    timeline.activityCount ? ` · ${timeline.activityCount} event${timeline.activityCount === 1 ? "" : "s"}` : ""
+  }`;
+  const statusBadge = timeline.warningCount ? (
+    <span className="project-timeline-warning">
+      <AlertTriangle className="h-3.5 w-3.5" />
+      {timeline.warningCount} malformed receipt
+    </span>
+  ) : timeline.unstructuredFailureCount ? (
+    <span className="project-timeline-warning">
+      <AlertTriangle className="h-3.5 w-3.5" />
+      {timeline.unstructuredFailureCount} unstructured failure
+    </span>
+  ) : timeline.diagnosticCount ? (
+    <span className="project-timeline-ok">
+      <CheckCircle2 className="h-3.5 w-3.5" />
+      {timeline.diagnosticCount} diagnostic{timeline.diagnosticCount === 1 ? "" : "s"}
+    </span>
+  ) : timeline.snapshotCount ? (
+    <span className="project-timeline-ok">
+      <History className="h-3.5 w-3.5" />
+      {timeline.snapshotCount} snapshot{timeline.snapshotCount === 1 ? "" : "s"}
+    </span>
+  ) : (
+    <span className="project-timeline-ok">
+      <CheckCircle2 className="h-3.5 w-3.5" />
+      Read-only
+    </span>
+  );
 
+  return (
+    <PanelShell
+      storageKey="timeline"
+      title="Project timeline"
+      icon={<ListTree className="h-4 w-4" aria-hidden="true" />}
+      status={statusBadge}
+      summary={runSummary}
+    >
       <ol className="project-timeline-list">
         {visible.map((entry) => {
           const Icon = KIND_ICON[entry.kind] ?? Activity;
@@ -259,6 +260,6 @@ export function ProjectTimelinePanel({
       <div className="project-timeline-foot">
         Next actions are advisory text only; solver claims require solver-run evidence.
       </div>
-    </section>
+    </PanelShell>
   );
 }

@@ -9,8 +9,11 @@ import {
   SEVERITY_LABEL,
   type Severity,
 } from "../app/critiqueFindings";
+import { ClipboardList } from "lucide-react";
+
 import type { CredibilityStamp, CritiqueFinding, StandardFastenerPlanSummary } from "../types";
 import { CredibilityBadge } from "./CredibilityBadge";
+import { PanelShell } from "./PanelShell";
 
 type CritiquePanelProps = {
   findings: CritiqueFinding[];
@@ -38,13 +41,20 @@ export function CritiquePanel({ findings, standardFastenerPlan, credibility, onU
   if (!safeFindings.length && !fastenerPlan) return null;
 
   return (
-    <section className="critique-card" aria-label="Engineering critique">
-      <div className="critique-head">
-        <strong>Engineering critique</strong>
-        <CredibilityBadge credibility={credibility} />
-        <span>{safeFindings.length} finding{safeFindings.length !== 1 ? "s" : ""}</span>
-      </div>
-
+    <PanelShell
+      storageKey="critique"
+      title="Engineering critique"
+      icon={<ClipboardList className="h-4 w-4" aria-hidden="true" />}
+      status={
+        <span className="critique-headstatus">
+          <CredibilityBadge credibility={credibility} />
+          <span className="critique-count">
+            {safeFindings.length} finding{safeFindings.length !== 1 ? "s" : ""}
+          </span>
+        </span>
+      }
+      summary={`${safeFindings.length} finding${safeFindings.length !== 1 ? "s" : ""}`}
+    >
       {fastenerPlan ? (
         <div className="critique-fastener-plan">
           <div className="critique-fastener-head">
@@ -104,6 +114,6 @@ export function CritiquePanel({ findings, standardFastenerPlan, credibility, onU
       <div className="critique-foot">
         Click <strong>Fix</strong> to draft a <code>/modify</code> — edits run through approval.
       </div>
-    </section>
+    </PanelShell>
   );
 }

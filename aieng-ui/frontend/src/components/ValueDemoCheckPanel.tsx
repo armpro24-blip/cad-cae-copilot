@@ -1,5 +1,6 @@
-import { AlertTriangle, CheckCircle2, CircleHelp, ShieldCheck } from "lucide-react";
+import { AlertTriangle, CheckCircle2, CircleHelp, ClipboardCheck, ShieldCheck } from "lucide-react";
 
+import { PanelShell } from "./PanelShell";
 import {
   isValueDemoCheckMeaningful,
   normalizeValueDemoStatus,
@@ -30,12 +31,13 @@ export function ValueDemoCheckPanel({ check }: ValueDemoCheckPanelProps) {
   const boundary = check?.honesty_boundaries?.[0] ?? "Synthetic fallback fields do not count as a passing demo.";
 
   return (
-    <section className="value-demo-card" aria-label="Value demo evidence check">
-      <div className="value-demo-head">
-        <strong>Value demo check</strong>
-        <span className={`value-demo-status value-demo-status-${status}`}>{valueDemoHeadline(check)}</span>
-      </div>
-
+    <PanelShell
+      storageKey="valuedemo"
+      title="Value demo check"
+      icon={<ClipboardCheck className="h-4 w-4" aria-hidden="true" />}
+      status={<span className={`value-demo-status value-demo-status-${status}`}>{valueDemoHeadline(check)}</span>}
+      summary={missing ? `missing ${missing}` : undefined}
+    >
       {missing ? (
         <div className="value-demo-missing">
           <span>First missing evidence</span>
@@ -56,6 +58,6 @@ export function ValueDemoCheckPanel({ check }: ValueDemoCheckPanelProps) {
       <div className="value-demo-foot">
         {boundary} <code>claim_advancement={check?.claim_advancement ?? "none"}</code>
       </div>
-    </section>
+    </PanelShell>
   );
 }

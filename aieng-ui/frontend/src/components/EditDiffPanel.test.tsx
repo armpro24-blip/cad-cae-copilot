@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 
 import { EditDiffPanel } from "./EditDiffPanel";
+import { openPanel } from "../test/openPanel";
 import type { EditDiffResponse } from "../types";
 
 afterEach(cleanup);
@@ -49,6 +50,7 @@ describe("EditDiffPanel geometry verification surface (#311)", () => {
       />,
     );
 
+    openPanel(/Last edit/i);
     expect(screen.getByText(/geometry verification: pass/i)).toBeTruthy();
     expect(screen.getByText(/Topology and exports survived the edit/i)).toBeTruthy();
     expect(screen.getByText(/Faces: 6 → 6/i)).toBeTruthy();
@@ -84,6 +86,7 @@ describe("EditDiffPanel geometry verification surface (#311)", () => {
       />,
     );
 
+    openPanel(/Last edit/i);
     expect(screen.getByText(/geometry verification: warn/i)).toBeTruthy();
     expect(screen.getByText(/referenced face or edge was lost/i)).toBeTruthy();
     expect(screen.getByText(/Stale reference risk/i)).toBeTruthy();

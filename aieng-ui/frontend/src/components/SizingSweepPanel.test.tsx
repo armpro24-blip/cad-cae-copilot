@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 import { SizingSweepPanel } from "./SizingSweepPanel";
+import { openPanel } from "../test/openPanel";
 import type { SizingSweepReport } from "../types";
 
 afterEach(cleanup);
@@ -61,6 +62,7 @@ describe("SizingSweepPanel", () => {
     const onUseInChat = vi.fn();
     render(<SizingSweepPanel report={makeReport()} onUseInChat={onUseInChat} />);
     expect(screen.getByText("Sizing sweep")).toBeTruthy();
+    openPanel(/Sizing sweep/i);
     expect(screen.getByRole("button", { name: "Run again" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Apply winner" })).toBeTruthy();
     expect(screen.getAllByRole("row")).toHaveLength(3); // header + 2 variants
@@ -69,6 +71,7 @@ describe("SizingSweepPanel", () => {
   it("drafts a repeat sizing sweep with feature id, parameter, values, and constraints", () => {
     const onUseInChat = vi.fn();
     render(<SizingSweepPanel report={makeReport()} onUseInChat={onUseInChat} />);
+    openPanel(/Sizing sweep/i);
     fireEvent.click(screen.getByRole("button", { name: "Run again" }));
     expect(onUseInChat).toHaveBeenCalledWith(
       "Run opt.sizing_sweep project_id=proj_1 featureId=feat_wall parameterName=thickness values=[2, 3] objective=min_mass stress_limit=250 safety_factor=1.5 apply_winner=false",
@@ -78,6 +81,7 @@ describe("SizingSweepPanel", () => {
   it("drafts the winner on button click", () => {
     const onUseInChat = vi.fn();
     render(<SizingSweepPanel report={makeReport()} onUseInChat={onUseInChat} />);
+    openPanel(/Sizing sweep/i);
     fireEvent.click(screen.getByRole("button", { name: "Apply winner" }));
     expect(onUseInChat).toHaveBeenCalledWith("/modify set thickness to 3");
   });

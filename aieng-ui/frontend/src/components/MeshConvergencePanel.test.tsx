@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 import { MeshConvergencePanel } from "./MeshConvergencePanel";
+import { openPanel } from "../test/openPanel";
 import type { MeshConvergenceReport } from "../types";
 
 afterEach(cleanup);
@@ -36,6 +37,7 @@ describe("MeshConvergencePanel", () => {
   it("renders the metric table when converged", () => {
     render(<MeshConvergencePanel report={makeReport("converged")} />);
     expect(screen.getByText("Mesh convergence")).toBeTruthy();
+    openPanel(/Mesh convergence/i);
     expect(screen.getByText("max_von_mises_stress")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Finer mesh" })).toBeNull();
   });
@@ -43,6 +45,7 @@ describe("MeshConvergencePanel", () => {
   it("offers a finer-mesh draft when not converged", () => {
     const onUseInChat = vi.fn();
     render(<MeshConvergencePanel report={makeReport("not_converged")} onUseInChat={onUseInChat} />);
+    openPanel(/Mesh convergence/i);
     fireEvent.click(screen.getByRole("button", { name: "Finer mesh" }));
     expect(onUseInChat).toHaveBeenCalledWith("/simulate mesh_size_mm=0.125");
   });

@@ -5,6 +5,7 @@ import { describe, expect, it, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 
 import { OptimizationPanel } from "./OptimizationPanel";
+import { openPanel } from "../test/openPanel";
 import type { OptimizationConvergence } from "../app/optimizationConvergence";
 import type { OptimizationStudy } from "../app/optimizationStudy";
 
@@ -63,6 +64,7 @@ describe("OptimizationPanel", () => {
     });
     render(<OptimizationPanel study={study} onUseInChat={vi.fn()} />);
     expect(screen.getByText("Optimization study")).toBeTruthy();
+    openPanel(/Optimization study/i);
     expect(screen.getByText("#1")).toBeTruthy();
     expect(screen.getByText("c1")).toBeTruthy();
     expect(screen.getByRole("button", { name: /Accept/i })).toBeTruthy();
@@ -85,6 +87,7 @@ describe("OptimizationPanel", () => {
       },
     });
     const { container } = render(<OptimizationPanel study={study} />);
+    openPanel(/Optimization study/i);
     expect(screen.getByText("Study overview")).toBeTruthy();
     expect(screen.getByText("Objective")).toBeTruthy();
     expect(screen.getByText("mass")).toBeTruthy();
@@ -130,6 +133,7 @@ describe("OptimizationPanel", () => {
       reasonCodes: [],
     };
     render(<OptimizationPanel study={study} surrogate={surrogate} />);
+    openPanel(/Optimization study/i);
     expect(screen.getByText("Surrogate proposals")).toBeTruthy();
     // the predicted number is rendered WITH its ± band, never bare
     expect(screen.getByText("0.620 ± 0.080")).toBeTruthy();
@@ -156,6 +160,7 @@ describe("OptimizationPanel", () => {
       ],
     });
     const { container } = render(<OptimizationPanel study={study} />);
+    openPanel(/Optimization study/i);
 
     // Details hidden initially
     expect(screen.queryByText("Violations")).toBeNull();
@@ -191,6 +196,7 @@ describe("OptimizationPanel", () => {
       },
     });
     const { container } = render(<OptimizationPanel study={study} />);
+    openPanel(/Optimization study/i);
     expect(screen.getByText("Iteration history")).toBeTruthy();
     expect(screen.getByText("#")).toBeTruthy();
     expect(screen.getByText("Incumbent")).toBeTruthy();
@@ -209,6 +215,7 @@ describe("OptimizationPanel", () => {
       report: { missing_stages: ["acceptance", "recommendation"] },
     });
     render(<OptimizationPanel study={study} />);
+    openPanel(/Optimization study/i);
     expect(screen.getByText("Missing stages")).toBeTruthy();
     expect(screen.getByText("acceptance")).toBeTruthy();
     expect(screen.getByText("recommendation")).toBeTruthy();
@@ -224,6 +231,7 @@ describe("OptimizationPanel", () => {
       },
     });
     render(<OptimizationPanel study={study} />);
+    openPanel(/Optimization study/i);
     expect(screen.getByText("Failed")).toBeTruthy();
     expect(screen.getByText("c2")).toBeTruthy();
     expect(screen.getByText("compile_failed")).toBeTruthy();
@@ -237,6 +245,7 @@ describe("OptimizationPanel", () => {
       safe_to_accept: true,
     });
     render(<OptimizationPanel study={study} onUseInChat={onUseInChat} />);
+    openPanel(/Optimization study/i);
     // There is only one enabled Accept button in this single-feasible-candidate study
     const acceptBtn = screen.getAllByRole("button", { name: /Accept/i }).find((b) => !b.hasAttribute("disabled"));
     expect(acceptBtn).toBeTruthy();
@@ -250,6 +259,7 @@ describe("OptimizationPanel", () => {
       candidates: [{ candidate_id: "c1", rank: 1, feasibility: "unknown" }],
     });
     render(<OptimizationPanel study={study} onRunCandidates={onRunCandidates} />);
+    openPanel(/Optimization study/i);
 
     fireEvent.click(screen.getByRole("button", { name: /Run candidates/i }));
     expect(onRunCandidates).toHaveBeenCalledTimes(1);
@@ -260,6 +270,7 @@ describe("OptimizationPanel", () => {
       candidates: [{ candidate_id: "c1", rank: 1, feasibility: "unknown" }],
     });
     render(<OptimizationPanel study={study} onRunCandidates={vi.fn()} running />);
+    openPanel(/Optimization study/i);
 
     expect(screen.getByRole("button", { name: /Running/i }).hasAttribute("disabled")).toBe(true);
   });
@@ -275,6 +286,7 @@ describe("OptimizationPanel", () => {
     ]);
 
     render(<OptimizationPanel study={study} convergence={convergence} />);
+    openPanel(/Optimization study/i);
     expect(screen.getByRole("img", { name: "Incumbent objective over iterations" })).toBeTruthy();
   });
 
@@ -290,6 +302,7 @@ describe("OptimizationPanel", () => {
     };
 
     const { container } = render(<OptimizationPanel study={study} convergence={convergence} />);
+    openPanel(/Optimization study/i);
     expect(container.querySelector('[role="img"]')).toBeNull();
   });
 });

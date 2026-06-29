@@ -1,5 +1,7 @@
 import { useMemo } from "react";
 
+import { TrendingUp } from "lucide-react";
+
 import {
   isSizingSweepReportMeaningful,
   sizingSweepRunDraft,
@@ -8,6 +10,7 @@ import {
   sizingSweepWinnerDraft,
 } from "../app/sizingSweepReport";
 import type { SizingSweepReport } from "../types";
+import { PanelShell } from "./PanelShell";
 
 type SizingSweepPanelProps = {
   report: SizingSweepReport | null;
@@ -36,33 +39,38 @@ export function SizingSweepPanel({ report, onUseInChat }: SizingSweepPanelProps)
   if (!isSizingSweepReportMeaningful(report)) return null;
 
   return (
-    <section className="sizing-sweep-card" aria-label="Sizing sweep">
-      <div className="sizing-sweep-head">
-        <strong>Sizing sweep</strong>
-        <span className="sizing-sweep-summary">{sizingSweepSummary(report!)}</span>
-        {runDraft ? (
-          <button
-            type="button"
-            className="sizing-sweep-action"
-            onClick={() => onUseInChat?.(runDraft)}
-            disabled={!onUseInChat}
-            title="Draft an approval-gated opt.sizing_sweep run with the same parameter and values"
-          >
-            Run again
-          </button>
-        ) : null}
-        {winnerDraft ? (
-          <button
-            type="button"
-            className="sizing-sweep-action"
-            onClick={() => onUseInChat?.(winnerDraft)}
-            disabled={!onUseInChat}
-            title="Draft the winning value into the composer"
-          >
-            Apply winner
-          </button>
-        ) : null}
-      </div>
+    <PanelShell
+      storageKey="sizingsweep"
+      title="Sizing sweep"
+      icon={<TrendingUp className="h-4 w-4" aria-hidden="true" />}
+      summary={sizingSweepSummary(report!)}
+    >
+      {runDraft || winnerDraft ? (
+        <div className="insp-panel-actions">
+          {winnerDraft ? (
+            <button
+              type="button"
+              className="sizing-sweep-action"
+              onClick={() => onUseInChat?.(winnerDraft)}
+              disabled={!onUseInChat}
+              title="Draft the winning value into the composer"
+            >
+              Apply winner
+            </button>
+          ) : null}
+          {runDraft ? (
+            <button
+              type="button"
+              className="sizing-sweep-action"
+              onClick={() => onUseInChat?.(runDraft)}
+              disabled={!onUseInChat}
+              title="Draft an approval-gated opt.sizing_sweep run with the same parameter and values"
+            >
+              Run again
+            </button>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="sizing-sweep-table-wrap">
         <table className="sizing-sweep-table">
@@ -103,6 +111,6 @@ export function SizingSweepPanel({ report, onUseInChat }: SizingSweepPanelProps)
       <div className="sizing-sweep-foot">
         Read-only ranking; applying the winner still flows through the approval-gated <code>cad.edit_parameter</code> path.
       </div>
-    </section>
+    </PanelShell>
   );
 }
