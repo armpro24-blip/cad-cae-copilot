@@ -12980,6 +12980,23 @@ textarea:focus,
   flex: 0 0 auto;
 }
 
+/* When the library drawer occupies the right grid column, float the inspector
+   rail to the LEFT of it so the two right-side surfaces never overlap. On very
+   narrow viewports there isn't room for both, so the rail yields to the drawer. */
+.app-main.library-open .workspace-inspector {
+  right: calc(380px + 16px);
+}
+@media (max-width: 1280px) {
+  .app-main.library-open .workspace-inspector {
+    right: calc(340px + 16px);
+  }
+}
+@media (max-width: 1024px) {
+  .app-main.library-open .workspace-inspector {
+    display: none;
+  }
+}
+
 /* Keep the 3D viewer (the product's hero) from being crowded out by a tall
    header (#401). On narrow/short viewports the workflow stepper + results hero
    can wrap tall enough to starve the flex:1 stage below it; cap the header and
