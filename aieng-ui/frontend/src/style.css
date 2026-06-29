@@ -11519,9 +11519,11 @@ textarea:focus,
   gap: 12px;
   margin: 10px 12px;
   padding: 12px;
-  border: 1px solid rgba(148, 163, 184, 0.24);
-  border-radius: 8px;
-  background: rgba(8, 13, 24, 0.76);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-md);
+  background: var(--glass-panel-strong);
+  box-shadow: var(--shadow-panel);
+  backdrop-filter: blur(10px);
 }
 
 .mission-control-head,
@@ -11811,6 +11813,7 @@ textarea:focus,
 .mission-tile-head {
   min-width: 0;
   gap: 6px;
+  align-items: flex-start;
 }
 
 .mission-tile-head > span {
@@ -11829,9 +11832,12 @@ textarea:focus,
   color: #f1f5f9;
   font-size: 11px;
   line-height: 1.25;
+  /* Short two-word labels (Mesh evidence, Approval status) wrap to a second
+     line rather than truncating to "Mesh ev…"; the tile has the height. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .mission-tile-head em {
