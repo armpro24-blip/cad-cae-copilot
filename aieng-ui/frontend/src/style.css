@@ -13279,10 +13279,14 @@ textarea:focus,
   transform: rotate(180deg);
 }
 .insp-panel-body {
-  padding: 2px 13px 13px;
+  padding: 4px 13px 14px;
   display: flex;
   flex-direction: column;
   gap: 11px;
+  /* Comfortable reading base — inheriting text (findings, messages, rows)
+     reads at 12.5px/1.5 rather than the old cramped 11px. */
+  font-size: 12.5px;
+  line-height: 1.5;
 }
 /* Compound header status (e.g. critique: credibility badge + finding count). */
 .critique-headstatus {
