@@ -60,8 +60,21 @@ function model(overrides: Partial<MissionControlModel> = {}): MissionControlMode
 }
 
 describe("MissionControlPanel", () => {
+  it("keeps the evidence catalogue collapsed until the detail toggle is opened", () => {
+    render(<MissionControlPanel model={model()} />);
+
+    // Compact by default: status + headline + next action are visible, but the
+    // full evidence catalogue stays behind the disclosure.
+    expect(screen.getByText("Mission Control")).toBeTruthy();
+    expect(screen.getByText("CAD evidence loaded; CAE setup not complete")).toBeTruthy();
+    expect(screen.queryByText(".aieng evidence package")).toBeNull();
+    expect(screen.queryByText("Package passport")).toBeNull();
+  });
+
   it("renders package identity, evidence cards, and claim boundary text", () => {
     render(<MissionControlPanel model={model()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /Evidence detail/i }));
 
     expect(screen.getByText("Mission Control")).toBeTruthy();
     expect(screen.getByText(".aieng evidence package")).toBeTruthy();
@@ -100,6 +113,8 @@ describe("MissionControlPanel", () => {
     const onCopyDraft = vi.fn();
     render(<MissionControlPanel model={model()} onCopyDraft={onCopyDraft} />);
 
+    // The workflow lives in the evidence detail disclosure.
+    fireEvent.click(screen.getByRole("button", { name: /Evidence detail/i }));
     fireEvent.click(screen.getByRole("button", { name: "Copy Run solver prompt" }));
 
     expect(onCopyDraft).toHaveBeenCalledWith("Prepare approval-gated solver run. Do not claim validation.");
