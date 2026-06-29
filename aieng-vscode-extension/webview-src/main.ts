@@ -45,8 +45,8 @@ h1 { font-size:16px; margin:4px 0 2px; font-weight:650; }
 .selection-head { position:sticky; top:0; display:flex; justify-content:space-between; align-items:center; gap:10px; padding:11px 12px; background:var(--panel-strong); border-bottom:1px solid var(--line); }
 .selection-list { padding:5px; }
 .face { display:grid; grid-template-columns:1fr auto; gap:8px; padding:9px; border-bottom:1px solid var(--line); }
-.face code { color:var(--vscode-textLink-foreground, var(--ink)); font-size:11px; }
-.meta { color:var(--muted); font-size:10px; margin-top:4px; }
+.face code { color:var(--vscode-textLink-foreground, var(--ink)); font-size:11px; font-family:var(--vscode-editor-font-family,monospace); font-variant-numeric:tabular-nums; }
+.meta { color:var(--muted); font-size:10.5px; margin-top:4px; }
 .copy { border:1px solid var(--line); border-radius:3px; background:var(--button-bg); color:var(--button-fg); cursor:pointer; padding:5px 8px; }
 .copy:hover { background:var(--button-hover); border-color:var(--accent); }
 .empty { position:absolute; inset:0; display:grid; place-content:center; text-align:center; padding:40px; color:var(--muted); }

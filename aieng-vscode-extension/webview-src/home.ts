@@ -22,6 +22,7 @@ html,body,#app { min-height:100%; margin:0; }
 body { font-family:var(--vscode-font-family); font-size:var(--vscode-font-size,13px); color:var(--vscode-foreground); background:var(--vscode-editor-background); }
 button { font:inherit; color:inherit; cursor:pointer; }
 button:focus-visible { outline:1px solid var(--focus); outline-offset:2px; }
+code { font-family:var(--vscode-editor-font-family,monospace); }
 .page { width:min(100%,900px); margin:0 auto; padding:24px; display:grid; gap:16px; }
 .busy { opacity:.6; pointer-events:none; }
 .hero { display:grid; gap:10px; padding:0 2px 4px; }
