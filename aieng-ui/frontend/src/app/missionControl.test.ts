@@ -294,4 +294,72 @@ describe("buildMissionControl", () => {
     expect(mesh?.detail).toContain("fail");
     expect(mesh?.draft).toContain("Do not claim solver results");
   });
+
+  it("derives a plain-language lifecycle checklist from evidence signals", () => {
+    // CAD-only package: model present, everything downstream not done yet.
+    const model = build();
+    const byKey = Object.fromEntries(model.lifecycle.map((item) => [item.key, item]));
+
+    expect(model.lifecycle.map((item) => item.key)).toEqual(["model", "setup", "result", "metrics", "report"]);
+    expect(byKey.model.status).toBe("ready");
+    expect(byKey.setup.status).toBe("missing");
+    expect(byKey.setup.detail).toMatch(/material, loads, and constraints/);
+    expect(byKey.result.status).toBe("unknown");
+    expect(byKey.metrics.status).toBe("unknown");
+    expect(byKey.report.status).toBe("unknown");
+    // Consequence-worded, never a raw file path.
+    model.lifecycle.forEach((item) => expect(item.detail).not.toMatch(/\.(yaml|json|inp|frd)/));
+  });
+
+  it("never reports the engineering report as 'done' (it is generated on demand)", () => {
+    // Even with result evidence, the report item stays actionable, not 'ready'.
+    const model = build({
+      summary: summary({
+        members: ["manifest.json", "results/result_summary.json", "results/computed_metrics.json"],
+        cae: {
+          present: true,
+          constraints_count: 1,
+          constraint_types: {},
+          materials_count: 1,
+          boundary_conditions_count: 1,
+          loads_count: 1,
+          evidence_count: 1,
+          result_evidence_count: 1,
+          results_available: true,
+          available_fields: ["von_mises"],
+          simulation_targets: [],
+          protected_regions: [],
+          materials: [],
+          boundary_conditions: [],
+          loads: [],
+          evidence: [],
+        },
+      }),
+    });
+    const report = model.lifecycle.find((item) => item.key === "report");
+    expect(report?.status).not.toBe("ready");
+    // With results present, the primary action is the real Generate report path.
+    expect(model.primaryAction.kind).toBe("report");
+    expect(model.primaryAction.label).toBe("Generate report");
+  });
+
+  it("tags the primary action as a handoff draft when the agent must act", () => {
+    const model = build(); // CAD-only → define CAE setup via the agent
+    expect(model.primaryAction.kind).toBe("draft");
+    expect(model.primaryAction.draft).toBeTruthy();
+    expect(model.primaryAction.label).toBe("Define CAE setup");
+  });
+
+  it("tags the primary action 'none' on an empty project", () => {
+    const model = buildMissionControl({
+      selectedProject: null,
+      summary: null,
+      pendingApprovals: [],
+      projectTimeline: null,
+      simulationReadiness: null,
+      meshDiagnostics: null,
+      meshConvergenceReport: null,
+    });
+    expect(model.primaryAction.kind).toBe("none");
+  });
 });

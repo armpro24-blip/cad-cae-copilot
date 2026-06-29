@@ -149,7 +149,7 @@ test("topbar report button opens the read-only engineering report", () => {
     },
   })} />);
 
-  const button = container.querySelector('button[title="Open engineering report"]') as HTMLButtonElement | null;
+  const button = container.querySelector('button[title^="Report"]') as HTMLButtonElement | null;
   expect(button).not.toBeNull();
   expect(button?.disabled).toBe(false);
   fireEvent.click(button!);
@@ -213,7 +213,7 @@ test("topbar packet button exports a review support packet", async () => {
     refreshGeometry,
   })} />);
 
-  const button = container.querySelector('button[title="Export review support packet"]') as HTMLButtonElement | null;
+  const button = container.querySelector('button[title^="Evidence packet"]') as HTMLButtonElement | null;
   expect(button).not.toBeNull();
   expect(button?.disabled).toBe(false);
   fireEvent.click(button!);

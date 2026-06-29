@@ -220,7 +220,7 @@ export function AppChrome({ app }: AppChromeProps) {
                 className="app-topbar-btn"
                 onClick={openEngineeringReport}
                 disabled={!reportUrl}
-                title="Open engineering report"
+                title="Report — a human-readable engineering summary of the results (opens in a new tab)"
               >
                 <FileText className="h-4 w-4" />
                 <span className="app-topbar-btn-label">Report</span>
@@ -230,7 +230,7 @@ export function AppChrome({ app }: AppChromeProps) {
                 className="app-topbar-btn"
                 onClick={() => void exportReviewSupportPacket()}
                 disabled={!app.selectedId || reviewPacketExporting}
-                title="Export review support packet"
+                title="Evidence packet — the raw traceability artifacts (review markdown + manifest) behind the report"
               >
                 <Download className="h-4 w-4" />
                 <span className="app-topbar-btn-label">{reviewPacketExporting ? "Exporting" : "Packet"}</span>
@@ -330,6 +330,9 @@ export function AppChrome({ app }: AppChromeProps) {
               <MissionControlPanel
                 model={missionControl}
                 onCopyDraft={app.copyPointerText}
+                onOpenReport={openEngineeringReport}
+                onExportPacket={() => void exportReviewSupportPacket()}
+                packetExporting={reviewPacketExporting}
               />
             )}
 

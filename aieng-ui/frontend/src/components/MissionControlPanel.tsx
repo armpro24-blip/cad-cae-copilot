@@ -1,11 +1,33 @@
 import { useState } from "react";
-import { AlertTriangle, CheckCircle2, ChevronDown, Clipboard, PackageCheck, ShieldCheck } from "lucide-react";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  ChevronDown,
+  Circle,
+  CircleDashed,
+  Clipboard,
+  Download,
+  FileText,
+  PackageCheck,
+  ShieldCheck,
+} from "lucide-react";
 
-import type { MissionControlModel, MissionControlStatus, MissionPackageIdentityItem } from "../app/missionControl";
+import type {
+  LifecycleItem,
+  MissionControlModel,
+  MissionControlStatus,
+  MissionPackageIdentityItem,
+} from "../app/missionControl";
 
 type MissionControlPanelProps = {
   model: MissionControlModel;
   onCopyDraft?: (draft: string) => void;
+  /** Open the engineering report (real wired action). */
+  onOpenReport?: () => void;
+  /** Export the review/evidence packet (real wired action). */
+  onExportPacket?: () => void;
+  /** True while the packet export is in flight. */
+  packetExporting?: boolean;
 };
 
 const STATUS_LABEL: Record<MissionControlStatus, string> = {
@@ -21,27 +43,60 @@ function statusIcon(status: MissionControlStatus) {
   return <ShieldCheck className="h-4 w-4" aria-hidden="true" />;
 }
 
+/** Lifecycle checklist icons: done / needs-attention / not-done / locked. */
+function lifecycleIcon(status: MissionControlStatus) {
+  if (status === "ready") return <CheckCircle2 className="h-4 w-4" aria-hidden="true" />;
+  if (status === "blocked") return <AlertTriangle className="h-4 w-4" aria-hidden="true" />;
+  if (status === "missing") return <Circle className="h-4 w-4" aria-hidden="true" />;
+  return <CircleDashed className="h-4 w-4" aria-hidden="true" />;
+}
+
 function packageMemberPreview(item: MissionPackageIdentityItem): string {
   if (!item.members.length) return "No member visible";
   const preview = item.members.slice(0, 2).join(", ");
   return item.members.length > 2 ? `${preview}, +${item.members.length - 2}` : preview;
 }
 
-export function MissionControlPanel({ model, onCopyDraft }: MissionControlPanelProps) {
-  // Compact by default: the head + headline + next action are the payoff and
-  // stay visible; the full evidence catalogue (passport, trust, checks,
-  // workflow, notes) sits behind a disclosure so the card does not tower over
-  // the viewer / results hero. Detail count gives a hint of what's inside.
+function LifecycleRow({ item }: { item: LifecycleItem }) {
+  return (
+    <li className={`mission-life mission-life-${item.status}`}>
+      <span className="mission-life-icon" aria-hidden="true">
+        {lifecycleIcon(item.status)}
+      </span>
+      <div className="mission-life-body">
+        <strong>{item.label}</strong>
+        <span>{item.detail}</span>
+      </div>
+    </li>
+  );
+}
+
+/**
+ * Mission Control — the at-a-glance project status surface. The default view
+ * answers, in plain engineering language: where the project is (status line),
+ * what is done vs missing (lifecycle checklist), and the one recommended next
+ * action. The full evidence catalogue (package passport, trust badges, raw
+ * checks, workflow, file references) is preserved under "Advanced details" so
+ * traceability is intact but not dominant.
+ */
+export function MissionControlPanel({
+  model,
+  onCopyDraft,
+  onOpenReport,
+  onExportPacket,
+  packetExporting,
+}: MissionControlPanelProps) {
   const [detailOpen, setDetailOpen] = useState(false);
   const detailCount = model.cards.length + model.workflowSteps.length;
+  const action = model.primaryAction;
 
   return (
-    <section className="mission-control-card" aria-label="Mission Control">
+    <section className="mission-control-card" aria-label="Project status">
       <div className="mission-control-head">
         <div className="mission-control-title">
           <PackageCheck className="h-4 w-4" aria-hidden="true" />
           <div>
-            <strong>Mission Control</strong>
+            <strong>Project status</strong>
             <span>{model.projectName}</span>
           </div>
         </div>
@@ -50,29 +105,75 @@ export function MissionControlPanel({ model, onCopyDraft }: MissionControlPanelP
         </span>
       </div>
 
-      <div className="mission-headline">
-        <strong>{model.headline}</strong>
-        <span>Package evidence, runtime state, and approvals stay separate.</span>
-      </div>
+      <p className="mission-headline-line">{model.headline}</p>
+
+      <ul className="mission-lifecycle" aria-label="Project lifecycle checklist">
+        {model.lifecycle.map((item) => (
+          <LifecycleRow key={item.key} item={item} />
+        ))}
+      </ul>
 
       <div className="mission-action">
-        <div>
-          <span>Next safe action</span>
-          <strong>{model.nextAction.label}</strong>
-          <p>{model.nextAction.detail}</p>
+        <div className="mission-action-text">
+          <span>Recommended next step</span>
+          <strong>{action.label}</strong>
+          <p>{action.detail}</p>
         </div>
-        {model.nextAction.draft ? (
-          <button
-            type="button"
-            className="mission-copy"
-            onClick={() => onCopyDraft?.(model.nextAction.draft as string)}
-            disabled={!onCopyDraft}
-            title="Copy bounded agent prompt"
-          >
-            <Clipboard className="h-4 w-4" aria-hidden="true" />
-            <span>Copy prompt</span>
-          </button>
-        ) : null}
+        <div className="mission-action-buttons">
+          {action.kind === "report" ? (
+            <>
+              <button
+                type="button"
+                className="mission-action-primary"
+                onClick={() => onOpenReport?.()}
+                disabled={!onOpenReport}
+                title="Open the engineering report in a new tab"
+              >
+                <FileText className="h-4 w-4" aria-hidden="true" />
+                <span>Generate report</span>
+              </button>
+              {onExportPacket ? (
+                <button
+                  type="button"
+                  className="mission-action-secondary"
+                  onClick={() => onExportPacket()}
+                  disabled={packetExporting}
+                  title="Export the raw traceability/evidence packet"
+                >
+                  <Download className="h-3.5 w-3.5" aria-hidden="true" />
+                  <span>{packetExporting ? "Exporting…" : "Export evidence packet"}</span>
+                </button>
+              ) : null}
+              {action.draft ? (
+                <button
+                  type="button"
+                  className="mission-action-secondary"
+                  onClick={() => onCopyDraft?.(action.draft as string)}
+                  disabled={!onCopyDraft}
+                  title="Copy a bounded prompt for your connected agent"
+                >
+                  <Clipboard className="h-3.5 w-3.5" aria-hidden="true" />
+                  <span>Copy agent prompt</span>
+                </button>
+              ) : null}
+            </>
+          ) : action.kind === "review_approval" ? (
+            <span className="mission-action-hint">Review the pending approval shown below.</span>
+          ) : action.kind === "draft" && action.draft ? (
+            <button
+              type="button"
+              className="mission-action-primary"
+              onClick={() => onCopyDraft?.(action.draft as string)}
+              disabled={!onCopyDraft}
+              title="Copy a bounded prompt for your connected agent"
+            >
+              <Clipboard className="h-4 w-4" aria-hidden="true" />
+              <span>Copy prompt</span>
+            </button>
+          ) : (
+            <span className="mission-action-hint">{action.detail}</span>
+          )}
+        </div>
       </div>
 
       <button
@@ -82,7 +183,7 @@ export function MissionControlPanel({ model, onCopyDraft }: MissionControlPanelP
         onClick={() => setDetailOpen((v) => !v)}
       >
         <ChevronDown className={detailOpen ? "h-4 w-4 is-open" : "h-4 w-4"} aria-hidden="true" />
-        <span>{detailOpen ? "Hide evidence detail" : "Evidence detail"}</span>
+        <span>{detailOpen ? "Hide advanced details" : "Advanced details"}</span>
         <em>
           {model.packageName} · {detailCount} checks
         </em>

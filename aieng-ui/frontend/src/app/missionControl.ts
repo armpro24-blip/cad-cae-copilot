@@ -25,6 +25,36 @@ export type MissionControlNextAction = {
   draft: string | null;
 };
 
+/**
+ * A plain-language project-lifecycle checklist item. `detail` states the
+ * consequence of the current state in engineering terms (never a raw file
+ * path) — those stay in Advanced details. Status reuses MissionControlStatus:
+ * ready = done, missing = not done yet, blocked = needs attention, unknown =
+ * not applicable / locked until an earlier step is done.
+ */
+export type LifecycleItem = {
+  key: string;
+  label: string;
+  status: MissionControlStatus;
+  detail: string;
+};
+
+/**
+ * The single primary action for the current state. `kind` tells the UI whether
+ * it maps to a real wired action (open the report, export the packet, review an
+ * approval) or to the Read+Handoff copy-a-/command path (`draft`). Never invents
+ * an action: `none` renders as a disabled hint.
+ */
+export type MissionPrimaryActionKind = "report" | "packet" | "review_approval" | "draft" | "none";
+
+export type MissionPrimaryAction = {
+  kind: MissionPrimaryActionKind;
+  label: string;
+  detail: string;
+  /** Copy-able /command for the connected agent, when this is a handoff action. */
+  draft: string | null;
+};
+
 export type MissionControlWorkflowStep = {
   key: string;
   label: string;
@@ -70,6 +100,10 @@ export type MissionControlModel = {
   trustBadges: MissionTrustBadge[];
   workflowSteps: MissionControlWorkflowStep[];
   nextAction: MissionControlNextAction;
+  /** Plain-language lifecycle checklist for the at-a-glance default view. */
+  lifecycle: LifecycleItem[];
+  /** The one recommended action, tagged so the UI knows how to surface it. */
+  primaryAction: MissionPrimaryAction;
   evidenceNotes: string[];
 };
 
@@ -739,6 +773,87 @@ export function buildMissionControl(input: MissionControlInput): MissionControlM
     };
   }
 
+  // Plain-language lifecycle checklist — the at-a-glance "what's done / what's
+  // missing" answer. Consequence-worded, no file paths (those stay in Advanced
+  // details). Honest by construction: never reports a step "done" without the
+  // backing evidence signal.
+  const hasModel = cadEvidence || Boolean(selectedProject?.web_asset);
+  const lifecycle: LifecycleItem[] = [
+    {
+      key: "model",
+      label: "Model",
+      status: hasModel ? "ready" : pkgPresent ? "unknown" : "missing",
+      detail: hasModel
+        ? "A CAD model is available to inspect and simulate."
+        : "No CAD model yet — import a STEP file or ask the agent to build one.",
+    },
+    {
+      key: "setup",
+      label: "Simulation setup",
+      status: caeSetup ? (missingRequired.length ? "blocked" : "ready") : hasModel ? "missing" : "unknown",
+      detail: caeSetup
+        ? missingRequired.length
+          ? `Required input${missingRequired.length === 1 ? "" : "s"} still missing: ${missingRequired.join(", ")} — the simulation cannot run until these are set.`
+          : "Material, loads, and constraints are defined."
+        : hasModel
+          ? "No simulation setup yet — define material, loads, and constraints to analyze the model."
+          : "Add a model first, then define the simulation setup.",
+    },
+    {
+      key: "result",
+      label: "Solver result",
+      status: resultEvidence ? "ready" : caeSetup ? "missing" : "unknown",
+      detail: resultEvidence
+        ? "A solver result is recorded for this project."
+        : caeSetup
+          ? "No solver result yet — run the simulation to compute stress and displacement."
+          : "Complete the simulation setup before running the solver.",
+    },
+    {
+      key: "metrics",
+      label: "Computed metrics",
+      status: computedMetrics ? "ready" : resultEvidence ? "missing" : "unknown",
+      detail: computedMetrics
+        ? "Max stress and displacement have been extracted from the result."
+        : resultEvidence
+          ? "A result file exists but metrics were not extracted — re-run post-processing."
+          : "Metrics become available once a solver result exists.",
+    },
+    {
+      key: "report",
+      // No persisted report artifact signal exists (the report is generated on
+      // demand), so this is never reported as "done" — it stays an action.
+      label: "Engineering report",
+      status: resultEvidence ? "missing" : "unknown",
+      detail: resultEvidence
+        ? "No report generated yet — generate one to share a traceable engineering summary."
+        : "A report can be generated once results are available.",
+    },
+  ];
+
+  // Primary action — tagged so the UI knows whether it maps to a real wired
+  // action or to the copy-a-/command handoff. Mirrors nextAction's logic.
+  let primaryAction: MissionPrimaryAction;
+  if (!selectedProject) {
+    primaryAction = { kind: "none", label: nextAction.label, detail: nextAction.detail, draft: null };
+  } else if (approvals > 0) {
+    primaryAction = { kind: "review_approval", label: "Review pending approval", detail: nextAction.detail, draft: null };
+  } else if (resultEvidence) {
+    primaryAction = {
+      kind: "report",
+      label: "Generate report",
+      detail: "Open a traceable engineering summary of these results that you can review and share.",
+      draft: nextAction.draft,
+    };
+  } else {
+    primaryAction = {
+      kind: nextAction.draft ? "draft" : "none",
+      label: nextAction.label,
+      detail: nextAction.detail,
+      draft: nextAction.draft,
+    };
+  }
+
   const evidenceNotes = [
     pkgPresent ? ".aieng is the package evidence source of truth." : "No portable .aieng evidence package is loaded.",
     resultEvidence
@@ -768,6 +883,8 @@ export function buildMissionControl(input: MissionControlInput): MissionControlM
     trustBadges,
     workflowSteps,
     nextAction,
+    lifecycle,
+    primaryAction,
     evidenceNotes,
   };
 }

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { ChevronsLeft, ChevronsRight, Folder, Plus, Trash2 } from "lucide-react";
 
 import { api } from "../api";
+import { projectStatusLabel } from "../app/projectStatus";
 import { ConfirmDialog } from "./common";
 import type { Notice, StageItem } from "../appTypes";
 import type { ProjectRecord } from "../types";
@@ -122,7 +123,9 @@ export function SessionsSidebar({
                 <Folder className="h-4 w-4" />
                 <span className="session-item-name">{project.name}</span>
               </span>
-              <span className="session-item-status">{project.status}</span>
+              <span className="session-item-status" title={`Status: ${project.status}`}>
+                {projectStatusLabel(project.status)}
+              </span>
             </button>
             <button
               type="button"

@@ -51,6 +51,17 @@ function model(overrides: Partial<MissionControlModel> = {}): MissionControlMode
       detail: "Ask the agent to inspect package evidence.",
       draft: "Inspect package evidence. Do not run solver.",
     },
+    lifecycle: [
+      { key: "model", label: "Model", status: "ready", detail: "A CAD model is available to inspect and simulate." },
+      { key: "setup", label: "Simulation setup", status: "missing", detail: "No simulation setup yet — define material, loads, and constraints." },
+      { key: "result", label: "Solver result", status: "unknown", detail: "Complete the simulation setup before running the solver." },
+    ],
+    primaryAction: {
+      kind: "draft",
+      label: "Define CAE setup",
+      detail: "Ask the agent to inspect package evidence.",
+      draft: "Inspect package evidence. Do not run solver.",
+    },
     evidenceNotes: [
       ".aieng is the package evidence source of truth.",
       "No result evidence is present; solver values must not be claimed.",
@@ -60,23 +71,25 @@ function model(overrides: Partial<MissionControlModel> = {}): MissionControlMode
 }
 
 describe("MissionControlPanel", () => {
-  it("keeps the evidence catalogue collapsed until the detail toggle is opened", () => {
+  it("leads with a plain-language status and lifecycle checklist, advanced detail collapsed", () => {
     render(<MissionControlPanel model={model()} />);
 
-    // Compact by default: status + headline + next action are visible, but the
-    // full evidence catalogue stays behind the disclosure.
-    expect(screen.getByText("Mission Control")).toBeTruthy();
+    // The at-a-glance answer is visible without expanding anything.
+    expect(screen.getByText("Project status")).toBeTruthy();
     expect(screen.getByText("CAD evidence loaded; CAE setup not complete")).toBeTruthy();
+    expect(screen.getByText("Model")).toBeTruthy();
+    expect(screen.getByText("Simulation setup")).toBeTruthy();
+    expect(screen.getByText(/A CAD model is available/)).toBeTruthy();
+    // The technical evidence catalogue stays behind Advanced details.
     expect(screen.queryByText(".aieng evidence package")).toBeNull();
     expect(screen.queryByText("Package passport")).toBeNull();
   });
 
-  it("renders package identity, evidence cards, and claim boundary text", () => {
+  it("renders package identity, evidence cards, and claim boundary text under Advanced details", () => {
     render(<MissionControlPanel model={model()} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /Evidence detail/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Advanced details/i }));
 
-    expect(screen.getByText("Mission Control")).toBeTruthy();
     expect(screen.getByText(".aieng evidence package")).toBeTruthy();
     expect(screen.getAllByText("bracket.aieng").length).toBeGreaterThan(0);
     expect(screen.getByText("Package passport")).toBeTruthy();
@@ -87,14 +100,11 @@ describe("MissionControlPanel", () => {
     expect(screen.getByText("claims not auto-advanced")).toBeTruthy();
     expect(screen.getByText(/solver values must not be claimed/)).toBeTruthy();
     expect(screen.getByText("Draft / setup")).toBeTruthy();
-    expect(screen.getByText("Results unknown")).toBeTruthy();
-    expect(screen.getByText("Claim not advanced")).toBeTruthy();
     expect(screen.getByText("CAD to CAE workflow")).toBeTruthy();
     expect(screen.getByText("Bind CAE setup")).toBeTruthy();
-    expect(screen.getByText("Run solver")).toBeTruthy();
   });
 
-  it("copies bounded agent prompt when available", () => {
+  it("copies the bounded agent prompt for a handoff (draft) action", () => {
     const onCopyDraft = vi.fn();
     render(<MissionControlPanel model={model()} onCopyDraft={onCopyDraft} />);
 
@@ -103,18 +113,44 @@ describe("MissionControlPanel", () => {
     expect(onCopyDraft).toHaveBeenCalledWith("Inspect package evidence. Do not run solver.");
   });
 
-  it("omits copy action when there is no draft", () => {
-    render(<MissionControlPanel model={model({ nextAction: { label: "Review approval", detail: "Use approval UI.", draft: null } })} />);
+  it("offers a real Generate report action when results exist", () => {
+    const onOpenReport = vi.fn();
+    render(
+      <MissionControlPanel
+        model={model({
+          primaryAction: {
+            kind: "report",
+            label: "Generate report",
+            detail: "Open a traceable engineering summary of these results.",
+            draft: null,
+          },
+        })}
+        onOpenReport={onOpenReport}
+      />,
+    );
 
-    expect(screen.queryByRole("button", { name: /Copy prompt/i })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Generate report/i }));
+    expect(onOpenReport).toHaveBeenCalledTimes(1);
   });
 
-  it("copies step-level prompts without executing the workflow", () => {
+  it("shows no copy action when the action is a non-handoff hint", () => {
+    render(
+      <MissionControlPanel
+        model={model({
+          primaryAction: { kind: "review_approval", label: "Review pending approval", detail: "Use the approval UI.", draft: null },
+        })}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: /Copy prompt/i })).toBeNull();
+    expect(screen.getByText(/Review the pending approval shown below/i)).toBeTruthy();
+  });
+
+  it("copies step-level prompts without executing the workflow (Advanced details)", () => {
     const onCopyDraft = vi.fn();
     render(<MissionControlPanel model={model()} onCopyDraft={onCopyDraft} />);
 
-    // The workflow lives in the evidence detail disclosure.
-    fireEvent.click(screen.getByRole("button", { name: /Evidence detail/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Advanced details/i }));
     fireEvent.click(screen.getByRole("button", { name: "Copy Run solver prompt" }));
 
     expect(onCopyDraft).toHaveBeenCalledWith("Prepare approval-gated solver run. Do not claim validation.");
