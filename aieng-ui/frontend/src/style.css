@@ -343,7 +343,23 @@ button:disabled {
   backdrop-filter: blur(10px);
   pointer-events: none;
   max-width: 320px;
+  z-index: 30;
   animation: tooltipIn 0.18s ease-out;
+}
+
+@media (max-width: 1024px) {
+  .viewer-face-tooltip {
+    left: 12px;
+    bottom: calc(40vh + 12px);
+    max-width: min(320px, calc(100vw - 24px));
+  }
+}
+
+@media (max-width: 768px) {
+  .viewer-face-tooltip {
+    bottom: calc(45vh + 12px);
+    max-width: min(280px, calc(100vw - 24px));
+  }
 }
 
 @keyframes tooltipIn {
@@ -445,7 +461,24 @@ button:disabled {
   backdrop-filter: blur(10px);
   max-width: 260px;
   max-height: 220px;
+  z-index: 30;
   animation: tooltipIn 0.18s ease-out;
+}
+
+@media (max-width: 1024px) {
+  .viewer-face-multisel {
+    right: 12px;
+    bottom: calc(40vh + 12px);
+    max-width: min(260px, calc(100vw - 24px));
+    max-height: min(180px, 25vh);
+  }
+}
+
+@media (max-width: 768px) {
+  .viewer-face-multisel {
+    bottom: calc(45vh + 12px);
+    max-width: min(240px, calc(100vw - 24px));
+  }
 }
 
 .viewer-face-multisel-header {
@@ -10043,6 +10076,7 @@ textarea:focus,
 .app-topbar-brand {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
   min-width: 0;
 }
@@ -10058,6 +10092,7 @@ textarea:focus,
   width: 1px;
   height: 16px;
   background: var(--border-medium);
+  flex-shrink: 0;
 }
 
 .app-topbar-project {
@@ -10148,6 +10183,7 @@ textarea:focus,
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-shrink: 0;
 }
 
 .app-topbar-btn {
@@ -10187,7 +10223,86 @@ textarea:focus,
   color: var(--accent, #4cc4f0);
 }
 
-/* ── Main content area ── */
+/* Topbar labels + inline help (#399) — no icon-only control without a label. */
+.app-topbar-btn {
+  width: auto;
+  min-width: 32px;
+  height: 32px;
+  gap: 6px;
+  padding: 0 10px;
+}
+.app-topbar-btn-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+/* Narrow viewports / embed: collapse back to icon-only to save space. Matches
+   the ≤1180px point where the topbar status chips hide, so the action buttons
+   never overflow the bar in the band between the two. */
+@media (max-width: 1180px) {
+  .app-topbar-btn-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  .app-topbar-btn {
+    width: 32px;
+    padding: 0;
+  }
+}
+
+@media (max-width: 920px) {
+  .app-topbar {
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px 12px;
+  }
+  .app-topbar-brand {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .app-topbar-actions {
+    flex: 0 0 auto;
+  }
+  .app-topbar-project {
+    max-width: min(260px, 40vw);
+  }
+  .app-topbar-context {
+    display: none;
+  }
+}
+
+@media (max-width: 520px) {
+  .app-topbar {
+    padding: 6px 10px;
+  }
+  .app-topbar-project {
+    max-width: min(180px, 35vw);
+    font-size: 12px;
+  }
+  .app-topbar-mcp {
+    display: none;
+  }
+  .app-topbar-actions {
+    gap: 4px;
+  }
+  .app-topbar-btn {
+    width: 28px;
+    height: 28px;
+    min-width: 28px;
+    padding: 0;
+  }
+  .app-topbar-divider:nth-of-type(2) {
+    display: none;
+  }
+}
 .app-main {
   display: grid;
   grid-template-columns: 240px 1fr;
@@ -10205,6 +10320,83 @@ textarea:focus,
 
 .app-main.sidebar-collapsed.library-open {
   grid-template-columns: 56px 1fr 380px;
+}
+
+@media (max-width: 1280px) {
+  .app-main {
+    grid-template-columns: 200px 1fr;
+  }
+
+  .app-main.sidebar-collapsed {
+    grid-template-columns: 56px 1fr;
+  }
+
+  .app-main.library-open {
+    grid-template-columns: 200px 1fr 340px;
+  }
+
+  .app-main.sidebar-collapsed.library-open {
+    grid-template-columns: 56px 1fr 340px;
+  }
+}
+
+@media (max-width: 1024px) {
+  .app-main {
+    grid-template-columns: 0 1fr;
+  }
+
+  .app-main.sidebar-collapsed {
+    grid-template-columns: 0 1fr;
+  }
+
+  .app-main.library-open {
+    grid-template-columns: 0 1fr 320px;
+  }
+
+  .app-main.sidebar-collapsed.library-open {
+    grid-template-columns: 0 1fr 320px;
+  }
+
+  .sessions-sidebar {
+    display: none;
+  }
+
+  .library-pane {
+    padding: 10px;
+    gap: 10px;
+  }
+
+  .library-pane-tabs {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 768px) {
+  .app-main,
+  .app-main.sidebar-collapsed,
+  .app-main.library-open,
+  .app-main.sidebar-collapsed.library-open {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr auto;
+    overflow: visible;
+    min-height: 100dvh;
+  }
+
+  .viewer-pane {
+    min-height: 100%;
+    border-right: none;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .library-pane {
+    position: fixed;
+    inset: auto 0 0 0;
+    z-index: 40;
+    max-height: 45vh;
+    border-left: none;
+    border-top: 1px solid var(--border-subtle);
+    background: var(--bg-surface);
+  }
 }
 
 /* ── Library side pane ── */
@@ -10264,7 +10456,19 @@ textarea:focus,
   border-radius: 6px;
 }
 
-/* ── Sessions sidebar ── */
+@media (max-width: 420px) {
+  .library-pane-tabs {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .library-pane-tab {
+    padding: 6px 2px;
+    font-size: 10px;
+  }
+  .library-pane-tab svg {
+    width: 16px;
+    height: 16px;
+  }
+}
 .sessions-sidebar {
   display: flex;
   flex-direction: column;
@@ -11517,16 +11721,32 @@ textarea:focus,
     grid-template-columns: 0 1fr;
   }
 
+  .app-main.sidebar-collapsed {
+    grid-template-columns: 0 1fr;
+  }
+
+  .app-main.library-open {
+    grid-template-columns: 0 1fr 320px;
+  }
+
+  .app-main.sidebar-collapsed.library-open {
+    grid-template-columns: 0 1fr 320px;
+  }
+
   .sessions-sidebar {
     display: none;
   }
-
 }
 
 @media (max-width: 768px) {
-  .app-main {
+  .app-main,
+  .app-main.sidebar-collapsed,
+  .app-main.library-open,
+  .app-main.sidebar-collapsed.library-open {
     grid-template-columns: 1fr;
-    grid-template-rows: 1fr;
+    grid-template-rows: 1fr auto;
+    overflow: visible;
+    min-height: 100dvh;
   }
 
   .viewer-pane {
@@ -13329,6 +13549,7 @@ textarea:focus,
   z-index: 20;
   width: clamp(300px, 24vw, 380px);
   max-width: calc(100vw - 32px);
+  max-height: calc(100dvh - var(--viewer-header-bottom, 282px) - 28px);
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -13347,6 +13568,67 @@ textarea:focus,
 .workspace-inspector > * {
   pointer-events: auto;
   flex: 0 0 auto;
+}
+
+@media (max-width: 1024px) {
+  .workspace-inspector {
+    position: fixed;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    top: auto;
+    width: 100%;
+    max-width: none;
+    max-height: 40vh;
+    padding: 10px 12px;
+    flex-direction: row;
+    gap: 10px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    background: linear-gradient(0deg, rgba(6, 10, 21, 0.98), rgba(6, 10, 21, 0.92));
+    border-top: 1px solid var(--border-medium);
+    z-index: 35;
+  }
+  .workspace-inspector > *:first-child {
+    margin-top: 0;
+  }
+  .workspace-inspector > * {
+    min-width: 280px;
+    max-width: min(340px, 80vw);
+  }
+  .workspace-inspector:not(:empty)::before {
+    display: none;
+  }
+  .insp-panel {
+    max-height: calc(40vh - 20px);
+    display: flex;
+    flex-direction: column;
+  }
+  .insp-panel.is-open {
+    flex: 1 1 auto;
+  }
+  .insp-panel-body {
+    overflow-y: auto;
+  }
+}
+
+@media (max-width: 768px) {
+  .workspace-inspector {
+    max-height: 45vh;
+    padding: 8px 10px;
+    gap: 8px;
+  }
+  .workspace-inspector > * {
+    min-width: 260px;
+    max-width: min(300px, 85vw);
+  }
+}
+
+@media (max-width: 480px) {
+  .workspace-inspector > * {
+    min-width: 240px;
+    max-width: 92vw;
+  }
 }
 
 /* ── Unified collapsible inspector card (PanelShell) ──
@@ -13452,7 +13734,9 @@ textarea:focus,
 
 /* When the library drawer occupies the right grid column, float the inspector
    rail to the LEFT of it so the two right-side surfaces never overlap. On very
-   narrow viewports there isn't room for both, so the rail yields to the drawer. */
+   narrow viewports there isn't room for both, so the rail becomes a bottom sheet
+   that shares the viewport with the library drawer rather than fighting for the
+   same horizontal band. */
 .app-main.library-open .workspace-inspector {
   right: calc(380px + 16px);
 }
@@ -13463,7 +13747,8 @@ textarea:focus,
 }
 @media (max-width: 1024px) {
   .app-main.library-open .workspace-inspector {
-    display: none;
+    right: 0;
+    display: flex;
   }
 }
 
@@ -13496,4 +13781,10 @@ textarea:focus,
   border-radius: 999px;
   padding: 3px 10px;
   pointer-events: none;
+}
+
+@media (max-width: 1024px) {
+  .workspace-inspector:not(:empty)::before {
+    display: none;
+  }
 }
