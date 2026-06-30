@@ -13622,6 +13622,13 @@ textarea:focus,
     min-width: 260px;
     max-width: min(300px, 85vw);
   }
+  /* When the library drawer is also a fixed bottom sheet it would cover the
+     inspector (z-index 40 vs 35). Shift the inspector above the drawer so both
+     remain reachable; the viewer still occupies the remaining top band. */
+  .app-main.library-open .workspace-inspector {
+    bottom: 45vh;
+    max-height: calc(55vh - 16px);
+  }
 }
 
 @media (max-width: 480px) {
