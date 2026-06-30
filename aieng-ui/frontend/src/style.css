@@ -479,6 +479,16 @@ button:disabled {
     bottom: calc(45vh + 12px);
     max-width: min(240px, calc(100vw - 24px));
   }
+  /* When both the library drawer and inspector are bottom sheets they consume
+     the lower 90 % of the viewport. Float the selected-faces panel at the top
+     left so it remains reachable without overlapping either sheet. */
+  .app-main.library-open .viewer-face-multisel {
+    top: 16px;
+    left: 16px;
+    right: auto;
+    bottom: auto;
+    max-height: min(160px, 25vh);
+  }
 }
 
 .viewer-face-multisel-header {
