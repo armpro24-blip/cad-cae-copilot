@@ -6064,8 +6064,10 @@ textarea {
 }
 
 .value-demo-status-pass { color: #34d399; }
-.value-demo-status-warning { color: #f5b945; }
-.value-demo-status-blocked,
+/* "blocked" here = demo evidence incomplete (a caution), so amber — not the red
+   reserved for genuine errors/blockers. */
+.value-demo-status-warning,
+.value-demo-status-blocked { color: #f5b945; }
 .value-demo-status-error { color: #fb7185; }
 .value-demo-status-unknown { color: #94a3b8; }
 
@@ -6075,8 +6077,9 @@ textarea {
   gap: 3px;
   padding: 6px 8px;
   border-radius: 6px;
-  background: rgba(251, 113, 133, 0.09);
-  color: #fecdd3;
+  /* Missing evidence is a caution, not a hard blocker — calm amber, not red. */
+  background: rgba(245, 177, 76, 0.1);
+  color: #f3d9ac;
   font-size: 11px;
 }
 
@@ -10765,9 +10768,18 @@ textarea:focus,
   color: var(--text-primary);
 }
 
+/* Selected project must be unmistakable — distinct from a mere hover: an inset
+   accent bar + accent-tinted surface, with the name and folder icon emphasized. */
 .session-item.active {
-  background: var(--bg-hover);
+  background: var(--accent-soft);
   color: var(--text-primary);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.session-item.active .session-item-name {
+  font-weight: 650;
+}
+.session-item.active .session-item-row svg {
+  color: var(--accent);
 }
 
 .session-item-row {
