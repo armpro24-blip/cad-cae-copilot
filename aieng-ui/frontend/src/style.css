@@ -12083,8 +12083,12 @@ textarea:focus,
 .mission-control-card {
   display: grid;
   gap: 12px;
-  margin: 10px 12px;
-  padding: 12px;
+  /* No own margin — the primary status card fills the rail width and aligns
+     with the collapsible panels below; the rail's gap handles vertical spacing.
+     (Previously a 12px horizontal margin made the dominant card 24px narrower
+     and misaligned with the secondary cards.) */
+  margin: 0;
+  padding: 13px;
   border: 1px solid var(--border-medium);
   border-radius: var(--radius-md);
   background: var(--glass-panel-strong);
@@ -12108,23 +12112,27 @@ textarea:focus,
 .mission-control-title {
   min-width: 0;
   gap: 8px;
-  color: #dbeafe;
+  color: var(--text-primary);
 }
 
 .mission-control-title > svg {
   flex: 0 0 auto;
-  color: #93c5fd;
+  color: var(--accent);
 }
 
 .mission-control-title div {
   display: grid;
-  gap: 2px;
+  gap: 1px;
   min-width: 0;
 }
 
+/* The primary status card's title leads the inspector — at least as prominent
+   as the (secondary) collapsible panel titles below it (13.5px). */
 .mission-control-title strong {
-  color: #f8fafc;
-  font-size: 13px;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.2;
 }
 
 .mission-control-title span,
@@ -12132,7 +12140,7 @@ textarea:focus,
 .mission-headline span,
 .mission-action span,
 .mission-notes span {
-  color: #94a3b8;
+  color: var(--text-secondary);
   font-size: 11px;
   line-height: 1.35;
 }
