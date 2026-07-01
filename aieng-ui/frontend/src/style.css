@@ -32,6 +32,13 @@
   --bg-elevated: #181d26;
   --bg-hover: #20262f;
 
+  /* Recessed surfaces — for nested/inset areas *inside* a card (code blocks,
+     input wells, sub-panels). Two consistent levels instead of a spread of
+     near-identical near-black tints, so nested diagnostic areas read as quieter
+     than the card, not as yet another arbitrary dark tone. */
+  --surface-nested: rgba(3, 7, 18, 0.30);
+  --surface-inset: rgba(3, 7, 18, 0.45);
+
   /* Borders — cool translucent steel, never pure white. */
   --border-subtle: rgba(150, 170, 202, 0.10);
   --border-medium: rgba(150, 170, 202, 0.17);
@@ -1169,7 +1176,7 @@ input[type="file"] {
   padding: 10px;
   border: 1px solid rgba(71, 85, 105, 0.24);
   border-radius: 12px;
-  background: rgba(2, 6, 23, 0.45);
+  background: var(--surface-inset);
 }
 
 .viewer-technical-grid span {
@@ -1408,7 +1415,7 @@ input[type="file"] {
   background:
     linear-gradient(180deg, rgba(15, 23, 42, 0.98), rgba(6, 10, 21, 0.99));
   box-shadow:
-    0 24px 60px rgba(2, 6, 23, 0.45),
+    0 24px 60px var(--surface-inset),
     inset 0 1px 0 rgba(148, 163, 184, 0.06);
   overflow: hidden;
 }
@@ -2003,7 +2010,7 @@ input[type="file"] {
 .transcript-intent-line code {
   padding: 1px 6px;
   border-radius: 5px;
-  background: rgba(2, 6, 23, 0.32);
+  background: var(--surface-nested);
   color: #bfe3ff;
   font-weight: 700;
 }
@@ -2041,7 +2048,7 @@ input[type="file"] {
   border-radius: 999px;
   font-size: 11px;
   border: 1px solid rgba(148, 163, 184, 0.24);
-  background: rgba(2, 6, 23, 0.24);
+  background: var(--surface-nested);
 }
 
 .intent-binding code {
@@ -2149,7 +2156,7 @@ input[type="file"] {
   border-radius: 999px;
   font-size: 11px;
   border: 1px solid rgba(52, 211, 153, 0.4);
-  background: rgba(2, 6, 23, 0.24);
+  background: var(--surface-nested);
   color: #b8f0d6;
 }
 
@@ -2173,7 +2180,7 @@ input[type="file"] {
   padding: 1px 6px;
   border: 1px solid rgba(148, 163, 184, 0.2);
   border-radius: 5px;
-  background: rgba(2, 6, 23, 0.32);
+  background: var(--surface-nested);
   color: #c4d6f4;
 }
 
@@ -2478,7 +2485,7 @@ input[type="file"] {
   margin: 0;
   padding: 8px 9px;
   border-radius: 8px;
-  background: rgba(2, 6, 23, 0.22);
+  background: var(--surface-nested);
   color: #c8d5ea;
   font-size: 12px;
   line-height: 1.45;
@@ -2530,7 +2537,7 @@ input[type="file"] {
   padding: 5px 7px;
   border-left: 2px solid rgba(148, 163, 184, 0.22);
   border-radius: 6px;
-  background: rgba(2, 6, 23, 0.22);
+  background: var(--surface-nested);
 }
 
 .agent-plan-details {
@@ -2732,7 +2739,7 @@ input[type="file"] {
   padding: 8px 9px;
   border: 1px solid rgba(217, 164, 65, 0.18);
   border-radius: 7px;
-  background: rgba(2, 6, 23, 0.24);
+  background: var(--surface-nested);
   color: #f7e7b0;
   font-size: 12px;
 }
@@ -2913,7 +2920,7 @@ input[type="file"] {
   color: #dbeafe;
   font-size: 11px;
   font-weight: 700;
-  box-shadow: 0 8px 24px rgba(2, 6, 23, 0.32);
+  box-shadow: 0 8px 24px var(--surface-nested);
 }
 
 .setting-toggle-row {
@@ -2969,7 +2976,7 @@ input[type="file"] {
   padding: 1px 5px;
   border: 1px solid rgba(148, 163, 184, 0.18);
   border-radius: 5px;
-  background: rgba(2, 6, 23, 0.45);
+  background: var(--surface-inset);
   color: #bfdbfe;
   font-size: 0.92em;
 }
@@ -3330,7 +3337,7 @@ input[type="file"] {
   padding: 12px 14px;
   border-radius: 14px;
   border: 1px solid rgba(71, 85, 105, 0.35);
-  background: rgba(2, 6, 23, 0.5);
+  background: var(--surface-inset);
 }
 
 .cae-overview-grid span,
@@ -3401,7 +3408,7 @@ input[type="file"] {
   padding: 12px 14px;
   border-radius: 14px;
   border: 1px solid rgba(71, 85, 105, 0.35);
-  background: rgba(2, 6, 23, 0.5);
+  background: var(--surface-inset);
 }
 
 .cae-list-item.compact {
@@ -3535,7 +3542,7 @@ input[type="file"] {
   gap: 8px;
   padding: 6px 10px;
   border-radius: 8px;
-  background: rgba(2, 6, 23, 0.45);
+  background: var(--surface-inset);
   font-size: 12px;
 }
 
@@ -3843,7 +3850,7 @@ input[type="file"] {
   padding: 10px 12px;
   border-radius: 10px;
   border: 1px solid rgba(71, 85, 105, 0.35);
-  background: rgba(2, 6, 23, 0.45);
+  background: var(--surface-inset);
 }
 
 .chat-diff-header {
@@ -5394,7 +5401,7 @@ textarea {
 .editparams-const {
   padding: 0 5px;
   border-radius: 4px;
-  background: rgba(2, 6, 23, 0.32);
+  background: var(--surface-nested);
   color: #9fb6d6;
   font-family: var(--font-mono);
   font-size: 10px;
@@ -5618,7 +5625,7 @@ textarea {
 .editparams-foot code {
   padding: 0 4px;
   border-radius: 4px;
-  background: rgba(2, 6, 23, 0.32);
+  background: var(--surface-nested);
 }
 
 .editparams-preview {
@@ -5928,7 +5935,7 @@ textarea {
 .critique-feature {
   padding: 0 5px;
   border-radius: 4px;
-  background: rgba(2, 6, 23, 0.32);
+  background: var(--surface-nested);
   color: #9fb6d6;
   font-size: 10px;
 }
@@ -5973,7 +5980,7 @@ textarea {
 .readiness-foot code {
   padding: 0 4px;
   border-radius: 4px;
-  background: rgba(2, 6, 23, 0.32);
+  background: var(--surface-nested);
 }
 
 /* Simulation readiness panel */
@@ -6088,7 +6095,7 @@ textarea {
   width: fit-content;
   padding: 0 4px;
   border-radius: 4px;
-  background: rgba(2, 6, 23, 0.32);
+  background: var(--surface-nested);
 }
 
 .value-demo-list {
@@ -6280,7 +6287,7 @@ textarea {
 .mesh-convergence-foot code {
   padding: 0 4px;
   border-radius: 4px;
-  background: rgba(2, 6, 23, 0.32);
+  background: var(--surface-nested);
 }
 
 /* Optimization panel */
@@ -6548,7 +6555,7 @@ textarea {
   padding: 8px;
   border-radius: 8px;
   border: 1px solid rgba(148, 163, 184, 0.15);
-  background: rgba(2, 6, 23, 0.3);
+  background: var(--surface-nested);
 }
 
 .optimization-recommendation-head {
@@ -6667,7 +6674,7 @@ textarea {
 .optimization-foot code {
   padding: 0 4px;
   border-radius: 4px;
-  background: rgba(2, 6, 23, 0.32);
+  background: var(--surface-nested);
 }
 
 /* ── Optimization panel deepening ─────────────────────────────────────────── */
@@ -6679,7 +6686,7 @@ textarea {
   padding: 8px;
   border-radius: 8px;
   border: 1px solid rgba(148, 163, 184, 0.15);
-  background: rgba(2, 6, 23, 0.3);
+  background: var(--surface-nested);
 }
 
 .optimization-overview-title {
@@ -6879,7 +6886,7 @@ textarea {
   padding: 8px;
   border-radius: 8px;
   border: 1px solid rgba(148, 163, 184, 0.15);
-  background: rgba(2, 6, 23, 0.3);
+  background: var(--surface-nested);
 }
 
 .optimization-iteration-history-title {
@@ -9237,7 +9244,7 @@ button:has(.button-icon) {
   padding: 10px;
   border-top: 1px solid rgba(125, 211, 252, 0.12);
   background: rgba(3, 8, 18, 0.78);
-  box-shadow: 0 -18px 28px rgba(2, 6, 23, 0.22);
+  box-shadow: 0 -18px 28px var(--surface-nested);
 }
 
 .agent-console-card .chat-input-wrap textarea {
@@ -10950,7 +10957,21 @@ textarea:focus,
   width: 100%;
   padding: 8px;
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 600;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-medium);
+  background: var(--btn-secondary-bg);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background 0.14s ease, border-color 0.14s ease;
+}
+.sessions-import-btn:hover:not(:disabled) {
+  background: var(--btn-secondary-bg-hover);
+  border-color: var(--accent);
+}
+.sessions-import-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* ── Chat pane (right column) ── */
@@ -12155,7 +12176,7 @@ textarea:focus,
   padding: 10px;
   border: 1px solid rgba(148, 163, 184, 0.16);
   border-radius: 8px;
-  background: rgba(2, 6, 23, 0.32);
+  background: var(--surface-nested);
 }
 
 .mission-package {
@@ -12227,7 +12248,7 @@ textarea:focus,
   padding: 7px;
   border: 1px solid rgba(148, 163, 184, 0.13);
   border-radius: 7px;
-  background: rgba(2, 6, 23, 0.26);
+  background: var(--surface-nested);
 }
 
 .mission-passport-item div {
@@ -12481,7 +12502,7 @@ textarea:focus,
   padding: 10px;
   border: 1px solid rgba(148, 163, 184, 0.16);
   border-radius: 8px;
-  background: rgba(2, 6, 23, 0.24);
+  background: var(--surface-nested);
 }
 
 .mission-workflow-head {
@@ -12803,7 +12824,7 @@ textarea:focus,
   padding: 4px 7px;
   border: 1px solid rgba(148, 163, 184, 0.14);
   border-radius: 6px;
-  background: rgba(2, 6, 23, 0.26);
+  background: var(--surface-nested);
   overflow-wrap: anywhere;
 }
 
@@ -12885,7 +12906,7 @@ textarea:focus,
   padding: 8px;
   border: 1px solid rgba(148, 163, 184, 0.16);
   border-radius: 8px;
-  background: rgba(2, 6, 23, 0.32);
+  background: var(--surface-nested);
 }
 
 .project-timeline-icon {
@@ -13187,7 +13208,7 @@ textarea:focus,
   background:var(--ob-elevated); border:1px solid var(--ob-line); border-radius:10px;
   padding:8px 10px; color:var(--ob-t1); font:inherit;
 }
-.onboarding-cmd:hover{border-color:rgba(76,196,240,.45)}
+.onboarding-cmd:hover{border-color:var(--accent); background:var(--bg-hover)}
 .onboarding-cmd code{
   font-family:ui-monospace,"Cascadia Code",Consolas,monospace; font-size:12.5px;
   color:var(--ob-t1); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
