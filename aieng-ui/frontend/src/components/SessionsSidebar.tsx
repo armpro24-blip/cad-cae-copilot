@@ -2,7 +2,7 @@ import { useState } from "react";
 import { ChevronsLeft, ChevronsRight, Folder, Plus, Trash2 } from "lucide-react";
 
 import { api } from "../api";
-import { projectStatusLabel } from "../app/projectStatus";
+import { projectStatusInfo, formatRelativeTime } from "../app/projectStatus";
 import { ConfirmDialog } from "./common";
 import type { Notice, StageItem } from "../appTypes";
 import type { ProjectRecord } from "../types";
@@ -113,7 +113,16 @@ export function SessionsSidebar({
       </div>
 
       <div className="sessions-list">
-        {projects.map((project) => (
+        {projects.length === 0 ? (
+          <p className="sessions-empty-hint">
+            No projects yet. Import a STEP file below, or ask your agent to build
+            one — e.g. <code>/build a 80×60×8 mm bracket</code>.
+          </p>
+        ) : null}
+        {projects.map((project) => {
+          const statusInfo = projectStatusInfo(project.status, project.last_error);
+          const updated = formatRelativeTime(project.updated_at);
+          return (
           <div key={project.id} className="session-item-wrap">
             <button
               className={project.id === selectedId ? "session-item active" : "session-item"}
@@ -123,8 +132,10 @@ export function SessionsSidebar({
                 <Folder className="h-4 w-4" />
                 <span className="session-item-name">{project.name}</span>
               </span>
-              <span className="session-item-status" title={`Status: ${project.status}`}>
-                {projectStatusLabel(project.status)}
+              <span className="session-item-meta" title={`Status: ${project.status}`}>
+                <span className={`session-status-dot session-status-${statusInfo.tone}`} aria-hidden="true" />
+                <span className="session-item-status">{statusInfo.label}</span>
+                {updated ? <span className="session-item-updated">· {updated}</span> : null}
               </span>
             </button>
             <button
@@ -152,7 +163,8 @@ export function SessionsSidebar({
               <Trash2 style={{ width: 12, height: 12 }} />
             </button>
           </div>
-        ))}
+          );
+        })}
       </div>
 
       <div className="sessions-import">

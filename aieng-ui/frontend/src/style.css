@@ -10821,14 +10821,58 @@ textarea:focus,
   white-space: nowrap;
 }
 
-.session-item-status {
+/* Second line: a color-coded state dot + label + subtle "updated" time, so the
+   list scans like a project manager (state at a glance) rather than a file
+   list. The dot is never the only signal — the label text always accompanies. */
+.session-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 11px;
   color: var(--text-tertiary);
-  text-transform: capitalize;
+  min-width: 0;
+}
+.session-status-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+}
+.session-status-ready { background: var(--success); }
+.session-status-error { background: var(--danger); }
+.session-status-processing { background: var(--warning); }
+.session-status-empty { background: var(--text-tertiary); opacity: 0.6; }
+
+.session-item-status {
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.session-item-updated {
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-item.active .session-item-status {
+  color: var(--text-primary);
 }
 
-.session-item.active .session-item-status {
+/* First-run guidance when no projects exist yet. */
+.sessions-empty-hint {
+  margin: 4px 6px;
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.5;
   color: var(--text-secondary);
+  border: 1px dashed var(--border-medium);
+  border-radius: var(--radius-sm);
+  background: var(--surface-nested);
+}
+.sessions-empty-hint code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--accent-strong);
 }
 
 .sessions-thread-panel {
