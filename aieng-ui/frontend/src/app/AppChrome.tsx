@@ -181,10 +181,10 @@ export function AppChrome({ app }: AppChromeProps) {
                   <span>Approvals</span>
                   <strong>{projectApprovals.length ? `${projectApprovals.length} waiting` : "clear"}</strong>
                 </span>
-                <span className="app-topbar-next" title={missionControl.nextAction.detail}>
-                  <span>Next</span>
-                  <strong>{missionControl.nextAction.label}</strong>
-                </span>
+                {/* The "Next action" lives in the inspector's Recommended next
+                    step (with its actual button) — the single source of truth.
+                    A duplicate topbar chip restated it verbatim, so it's gone;
+                    Package + Approvals stay as a compact global glance. */}
               </div>
             </div>
             <div className="app-topbar-actions">
@@ -336,8 +336,6 @@ export function AppChrome({ app }: AppChromeProps) {
               />
             )}
 
-            <ValueDemoCheckPanel check={app.valueDemoCheck} />
-
             <ProjectTimelinePanel
               timeline={app.projectTimeline}
               onRestoreSnapshot={app.restoreCadSnapshot}
@@ -392,6 +390,11 @@ export function AppChrome({ app }: AppChromeProps) {
                 onCancelled={() => setPendingParametricEdit(null)}
               />
             ) : null}
+
+            {/* Demo-evidence diagnostics live LAST — a secondary, reproducibility
+                diagnostic that must not sit directly under (and contradict) the
+                Project status card. */}
+            <ValueDemoCheckPanel check={app.valueDemoCheck} />
           </aside>
 
           {libraryTab && !embed && (

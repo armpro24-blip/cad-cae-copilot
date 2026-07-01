@@ -36,12 +36,15 @@ export function valueDemoCheckRows(check: ValueDemoCheckResponse | null | undefi
   }));
 }
 
+// Scoped to the reproducible demo-evidence chain — NOT the project's engineering
+// readiness (that lives in Project status). Wording avoids "blocked", which read
+// as the whole project being invalid even on a solved project.
 export function valueDemoHeadline(check: ValueDemoCheckResponse | null | undefined): string {
   const status = normalizeValueDemoStatus(check?.status);
-  if (status === "pass") return "real demo evidence";
+  if (status === "pass") return "demo evidence complete";
   if (status === "warning") return "demo evidence warnings";
-  if (status === "blocked") return "demo blocked";
-  if (status === "error") return "demo check unavailable";
+  if (status === "blocked") return "demo evidence incomplete";
+  if (status === "error") return "diagnostic unavailable";
   return "demo evidence unknown";
 }
 

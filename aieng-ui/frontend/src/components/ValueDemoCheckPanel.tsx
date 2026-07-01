@@ -33,11 +33,17 @@ export function ValueDemoCheckPanel({ check }: ValueDemoCheckPanelProps) {
   return (
     <PanelShell
       storageKey="valuedemo"
-      title="Value demo check"
+      title="Demo evidence diagnostics"
       icon={<ClipboardCheck className="h-4 w-4" aria-hidden="true" />}
       status={<span className={`value-demo-status value-demo-status-${status}`}>{valueDemoHeadline(check)}</span>}
-      summary={missing ? `missing ${missing}` : undefined}
+      summary="reproducible demo-evidence chain"
     >
+      <p className="value-demo-scope">
+        Tracks the reproducible value-demo evidence chain. This is separate from
+        engineering readiness — see <strong>Project status</strong> for whether the
+        project itself is ready.
+      </p>
+
       {missing ? (
         <div className="value-demo-missing">
           <span>First missing evidence</span>

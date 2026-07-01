@@ -6132,6 +6132,19 @@ textarea {
   font-size: 11px;
 }
 
+/* Scope clarifier — states that this diagnostic is about demo reproducibility,
+   not engineering readiness (which lives in Project status). */
+.value-demo-scope {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+.value-demo-scope strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
 /* Sizing-sweep + mesh-convergence panels */
 .sizing-sweep-card,
 .mesh-convergence-card {

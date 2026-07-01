@@ -273,8 +273,8 @@ export function RuntimeSettingsDrawer({
       >
         <div className="drawer-header">
           <div>
-            <h2>Environment</h2>
-            <p>LLM provider, local agent, and preview adapter configuration.</p>
+            <h2>Settings</h2>
+            <p>Environment — LLM provider, local agent, and preview adapter configuration.</p>
           </div>
           <button type="button" className="ghost-button drawer-close" onClick={onClose}>
             Close

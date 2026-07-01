@@ -156,7 +156,7 @@ test("topbar report button opens the read-only engineering report", () => {
   expect(open).toHaveBeenCalledWith("/api/projects/project%2042/report", "_blank", "noopener,noreferrer");
 });
 
-test("normal workbench topbar summarizes package, approvals, and next action", () => {
+test("normal workbench topbar shows package + approvals (next action lives in the inspector)", () => {
   const { container } = render(<AppChrome app={createMockApp({
     selectedId: "project 42",
     selectedProject: {
@@ -182,7 +182,9 @@ test("normal workbench topbar summarizes package, approvals, and next action", (
   expect(context?.textContent).toContain("Package");
   expect(context?.textContent).toContain("Approvals");
   expect(context?.textContent).toContain("1 waiting");
-  expect(context?.textContent).toContain("Next");
+  // The "Next action" is intentionally NOT duplicated in the topbar — it lives
+  // in the inspector's Recommended next step (with its actual button).
+  expect(context?.textContent).not.toContain("Next");
 });
 
 test("topbar packet button exports a review support packet", async () => {

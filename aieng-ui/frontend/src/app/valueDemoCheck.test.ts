@@ -25,7 +25,7 @@ test("blocked value-demo checks expose rows and first missing evidence", () => {
   expect(isValueDemoCheckMeaningful(check)).toBe(true);
   expect(valueDemoCheckRows(check).map((row) => row.status)).toEqual(["fail", "pass"]);
   expect(valueDemoFirstMissing(check)).toBe("simulation/runs/value_demo_run_001/outputs/result.frd");
-  expect(valueDemoHeadline(check)).toBe("demo blocked");
+  expect(valueDemoHeadline(check)).toBe("demo evidence incomplete");
 });
 
 test("value-demo status normalization is conservative", () => {
