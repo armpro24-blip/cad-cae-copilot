@@ -584,15 +584,6 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 "message": "No package path provided and no project_id could be resolved.",
             }
 
-        if not frd_path:
-            return {
-                "ok": False,
-                "tool": "cae.extract_field_regions",
-                "status": "error",
-                "code": "missing_frd_path",
-                "message": "No frdPath provided. Pass the path to the CalculiX .frd result file.",
-            }
-
         if not _Path(package_path_str).exists():
             return {
                 "ok": False,
@@ -602,14 +593,61 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 "message": f"Package not found: {package_path_str}",
             }
 
-        if not _Path(frd_path).exists():
-            return {
-                "ok": False,
-                "tool": "cae.extract_field_regions",
-                "status": "error",
-                "code": "file_not_found",
-                "message": f"FRD file not found: {frd_path}",
-            }
+        # Resolve the FRD source. Accept, in order: an existing filesystem
+        # path, a package-relative member path, or (when omitted) the newest
+        # solver-run FRD inside the package. Package members are extracted to
+        # a temp file for the parser.
+        temp_frd_path: str | None = None
+        if not frd_path or not _Path(frd_path).exists():
+            import tempfile as _tempfile
+            import zipfile as _zipfile
+
+            member: str | None = None
+            try:
+                with _zipfile.ZipFile(package_path_str, "r") as zf:
+                    names = set(zf.namelist())
+                    if frd_path:
+                        candidate = frd_path.replace("\\", "/").lstrip("/")
+                        if candidate in names:
+                            member = candidate
+                    else:
+                        run_frds = sorted(
+                            n for n in names
+                            if n.startswith("simulation/runs/") and n.endswith(".frd")
+                        )
+                        if run_frds:
+                            member = run_frds[-1]
+                    if member is not None:
+                        with _tempfile.NamedTemporaryFile(
+                            mode="wb", suffix=".frd", delete=False
+                        ) as fh:
+                            fh.write(zf.read(member))
+                            temp_frd_path = fh.name
+            except (OSError, _zipfile.BadZipFile):
+                member = None
+            if temp_frd_path is None:
+                if frd_path:
+                    return {
+                        "ok": False,
+                        "tool": "cae.extract_field_regions",
+                        "status": "error",
+                        "code": "file_not_found",
+                        "message": (
+                            f"FRD file not found on disk or in the package: {frd_path}"
+                        ),
+                    }
+                return {
+                    "ok": False,
+                    "tool": "cae.extract_field_regions",
+                    "status": "error",
+                    "code": "missing_frd_path",
+                    "message": (
+                        "No FRD result found. The package has no "
+                        "simulation/runs/*.frd member; run the solver first or "
+                        "pass frd_path explicitly."
+                    ),
+                }
+            frd_path = temp_frd_path
 
         try:
             result = aieng_bridge.extract_field_regions(
@@ -638,6 +676,12 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 "code": "bridge_error",
                 "message": str(exc),
             }
+        finally:
+            if temp_frd_path is not None:
+                try:
+                    _Path(temp_frd_path).unlink(missing_ok=True)
+                except OSError:
+                    pass
 
         field_summary_status = "not_requested"
         refreshed_artifacts: list[dict[str, Any]] = []
@@ -2278,8 +2322,11 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 preprocess_inp["mesh_hint"] = mesh_hint
             try:
                 preprocess_result = _invoke("ai_preprocessing.run_ai_preprocessing", preprocess_inp)
+                preprocess_ok = bool(preprocess_result.get("status") == "ok")
                 phase_results["ai_preprocessing"] = {
-                    "ok": bool(preprocess_result.get("status") == "ok"),
+                    "ok": preprocess_ok,
+                    "code": preprocess_result.get("code"),
+                    "message": preprocess_result.get("message"),
                     "written_artifacts": preprocess_result.get("written_artifacts", []),
                     "warnings": preprocess_result.get("all_warnings", []),
                 }
@@ -2288,6 +2335,23 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                     "status": "error",
                     "code": "preprocessing_failed",
                     "message": f"AI preprocessing failed: {type(exc).__name__}: {exc}",
+                    "tool": "cae.run_simulation_pipeline",
+                    "phase_results": phase_results,
+                }
+            if not preprocess_ok:
+                # A structured error (e.g. missing LLM API key) must fail the
+                # pipeline here with its root cause — continuing would die at
+                # deck generation with a misleading "missing setup" message.
+                root_cause = preprocess_result.get("message") or "AI preprocessing failed."
+                return {
+                    "status": "error",
+                    "code": "preprocessing_failed",
+                    "message": (
+                        f"AI preprocessing failed: {root_cause} "
+                        "Fallback: write the setup explicitly with cae.apply_setup_patch "
+                        "(materials, boundary conditions, loads, cae_mapping, setup.yaml), "
+                        "then re-run the pipeline without task_description."
+                    ),
                     "tool": "cae.run_simulation_pipeline",
                     "phase_results": phase_results,
                 }

@@ -50,6 +50,7 @@ def _fake_invoke_tool(
     solver_executed: bool = True,
     mesh_ok: bool = True,
     deck_ok: bool = True,
+    preprocess_ok: bool = True,
 ) -> Any:
     """Return a mock runtime.invoke_tool that succeeds for each pipeline stage.
 
@@ -62,6 +63,12 @@ def _fake_invoke_tool(
         if tool == "cae.run_simulation_pipeline":
             return real_invoke(tool, inp)
         if tool == "ai_preprocessing.run_ai_preprocessing":
+            if not preprocess_ok:
+                return {
+                    "status": "error",
+                    "code": "ai_preprocessing_failed",
+                    "message": "ValueError: API key is required for provider 'anthropic'",
+                }
             return {
                 "status": "ok",
                 "written_artifacts": ["simulation/setup.yaml", "simulation/cae_mapping.json"],
@@ -198,6 +205,51 @@ def test_pipeline_stops_on_mesh_failure(tmp_path: Path) -> None:
     data = resp.json()
     assert data["status"] == "error"
     assert data["code"] == "mesh_failed"
+    assert "cae.run_solver" not in invoked_tools
+
+
+def test_pipeline_fails_fast_with_root_cause_on_preprocessing_error(tmp_path: Path) -> None:
+    """A structured ai_preprocessing error (e.g. missing LLM API key) must stop
+    the pipeline immediately and surface the root cause — not continue to deck
+    generation and die with a misleading 'missing setup' message."""
+    settings = _make_settings(tmp_path)
+    app = create_app(settings)
+    client = TestClient(app)
+
+    project_id, _pkg_path = _make_project(settings, "pipeline-preprocess-fail")
+
+    invoked_tools: list[str] = []
+
+    from app import runtime as _rt
+
+    real_invoke = _rt.invoke_tool
+
+    def _failing_invoke(tool: str, _inp: dict[str, Any]) -> dict[str, Any]:
+        invoked_tools.append(tool)
+        fake = _fake_invoke_tool(real_invoke, preprocess_ok=False)
+        return fake(tool, _inp)
+
+    with patch("app.runtime.invoke_tool", side_effect=_failing_invoke):
+        resp = client.post("/api/agent/invoke-tool", json={
+            "tool": "cae.run_simulation_pipeline",
+            "input": {
+                "project_id": project_id,
+                "task_description": "Cantilever fixed at xmin, 50 N downward at xmax",
+                "mesh_size_mm": 6,
+            },
+        })
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "error"
+    assert data["code"] == "preprocessing_failed"
+    assert "API key is required" in data["message"]
+    assert "cae.apply_setup_patch" in data["message"]  # actionable fallback
+    phase = data["phase_results"]["ai_preprocessing"]
+    assert phase["ok"] is False
+    assert "API key is required" in (phase["message"] or "")
+    assert "cae.generate_mesh" not in invoked_tools
+    assert "cae.generate_solver_input" not in invoked_tools
     assert "cae.run_solver" not in invoked_tools
 
 

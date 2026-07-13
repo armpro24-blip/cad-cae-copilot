@@ -1857,6 +1857,16 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                 "enum": ["stress", "displacement"],
                 "description": "Field to cluster (default 'stress').",
             },
+            "frd_path": {
+                "type": "string",
+                "description": (
+                    "Optional FRD source: an absolute filesystem path or a "
+                    "package-relative member path (e.g. "
+                    "'simulation/runs/run_001/outputs/result.frd'). When "
+                    "omitted, the newest simulation/runs/*.frd inside the "
+                    "package is used."
+                ),
+            },
             "max_clusters": {"type": "integer", "minimum": 1, "maximum": 64},
         },
         "additionalProperties": True,

@@ -180,7 +180,19 @@ def _compute_node_values(
     warnings: list[str] = []
     node_values: dict[int, float] = {}
 
-    field_data = fields.get(field.upper())
+    # CalculiX names the stress field "STRESS" and displacement "DISP"; some
+    # exports use "S". Accept the common aliases (mirrors frd_result_extractor).
+    aliases = {
+        "S": ("S", "STRESS"),
+        "STRESS": ("STRESS", "S"),
+        "DISP": ("DISP", "DISPLACEMENT"),
+        "DISPLACEMENT": ("DISPLACEMENT", "DISP"),
+    }
+    field_data = None
+    for name in aliases.get(field.upper(), (field.upper(),)):
+        field_data = fields.get(name)
+        if field_data:
+            break
     if not field_data:
         return {}, warnings
 
@@ -245,30 +257,50 @@ def _compute_node_values(
 def _extract_node_coords_from_frd(frd_path: Path) -> dict[int, tuple[float, float, float]]:
     """Extract node coordinates from the mesh section of an FRD file.
 
-    The mesh section precedes the first ``-4`` field header.  ``-1`` lines in
-    this section contain node ID + x/y/z coordinates in 12-char fixed-width
-    fields.
+    FRD record layouts differ between CalculiX output dialects: standard ccx
+    leads each record with a single space + 2-char key (`` -1``) and an I10
+    node field, while a wider dialect uses a 6-char key (``    -1``) with an
+    I12 node field. The same layout detection as the metrics extractor is
+    reused so both dialects parse.
+
+    Real ccx output opens the nodal block with a ``2C`` header and closes it
+    with ``-3`` — only ``-1`` records inside that block are node coordinates
+    (the ``3C`` element block that follows also uses ``-1`` records). Files
+    without a ``2C`` header fall back to the legacy rule: every ``-1`` record
+    before the first ``-4`` result header is a node record.
     """
     try:
         text = frd_path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return {}
 
+    from .frd_result_extractor import _detect_frd_layout
+
+    lines = text.splitlines()
+    key_width, node_width = _detect_frd_layout(lines)
+
     coords: dict[int, tuple[float, float, float]] = {}
-    in_mesh = True
+    saw_2c = False
+    in_node_block = False
 
-    for line in text.splitlines():
-        tag = line[:6] if len(line) >= 6 else ""
-        if tag == "    -4":
-            in_mesh = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("2C"):
+            saw_2c = True
+            in_node_block = True
             continue
-        if not in_mesh:
+        key = line[:key_width].strip()
+        if key == "-4":
+            break  # first result-block header: the mesh section is over
+        if saw_2c and in_node_block and key == "-3":
+            break  # explicit end of the 2C nodal block
+        if key != "-1":
             continue
-        if tag != "    -1":
+        if saw_2c and not in_node_block:
             continue
 
-        node_id_str = line[6:18].strip()
-        values = _slice_values(line, 18, 3)
+        node_id_str = line[key_width : key_width + node_width].strip()
+        values = _slice_values(line, key_width + node_width, 3)
         if node_id_str and all(v is not None for v in values):
             try:
                 coords[int(node_id_str)] = (float(values[0]), float(values[1]), float(values[2]))

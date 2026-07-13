@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import json
 import re
+import sys
+import tempfile
 import zipfile
+from pathlib import Path
 from typing import Any
 
 from app import aieng_bridge
@@ -1081,13 +1085,16 @@ def _extract_frd_field_data(
             return None
         unit = meta["unit"]
 
+        # CalculiX names the stress field "STRESS"; some exports use "S".
+        stress_steps = fields.get("S") or fields.get("STRESS") or []
+
         step_index = _frd_step_index_from_load_case_id(
             load_case_id,
-            max(len(fields.get("S", [])), len(fields.get("DISP", [])), 1),
+            max(len(stress_steps), len(fields.get("DISP", [])), 1),
         )
 
         if meta["source"] == "stress":
-            s_steps = fields.get("S", [])
+            s_steps = stress_steps
             if not s_steps:
                 warnings.append("S (stress tensor) field not found in FRD.")
                 return None

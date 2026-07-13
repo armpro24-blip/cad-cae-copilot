@@ -3610,6 +3610,71 @@ def test_cae_extract_field_regions_success(tmp_path: Path) -> None:
     assert len(written["clusters"]) >= 1
 
 
+def test_cae_extract_field_regions_resolves_package_frd(tmp_path: Path) -> None:
+    """Without frd_path the tool uses the newest simulation/runs/*.frd package
+    member; a package-relative frd_path resolves the same way. Regression for
+    the #368 value-demo finding where the natural post-solve call failed with
+    file_not_found because only absolute filesystem paths were accepted."""
+    from app.main import create_app, default_project, project_dir, save_project
+    from starlette.testclient import TestClient
+
+    settings = _make_patch_settings(tmp_path)
+    app = create_app(settings)
+    client = TestClient(app)
+
+    coords = {1: (0.0, 0.0, 0.0), 2: (0.1, 0.0, 0.0), 3: (10.0, 0.0, 0.0)}
+    stress = {
+        1: [200.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        2: [210.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        3: [10.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    }
+    frd_text = _make_test_frd_with_coords(coords, stress_nodes=stress)
+
+    project = save_project(settings, default_project("field-regions-pkg-frd"))
+    project_id = project["id"]
+    pkg_path = project_dir(settings, project_id) / "field-regions-pkg-frd.aieng"
+    _make_setup_package(
+        pkg_path,
+        extra={"simulation/runs/run_001/outputs/result.frd": frd_text},
+    )
+    project["aieng_file"] = "field-regions-pkg-frd.aieng"
+    save_project(settings, project)
+
+    # 1. No frd_path at all: newest package run FRD is used.
+    resp = client.post("/api/agent/invoke-tool", json={
+        "tool": "cae.extract_field_regions",
+        "input": {"project_id": project_id, "thresholdPercentile": 60.0},
+    })
+    assert resp.status_code == 200
+    result = resp.json()
+    assert result["status"] == "completed", result
+    assert result["cluster_count"] >= 1
+
+    # 2. Package-relative member path resolves too.
+    resp = client.post("/api/agent/invoke-tool", json={
+        "tool": "cae.extract_field_regions",
+        "input": {
+            "project_id": project_id,
+            "frd_path": "simulation/runs/run_001/outputs/result.frd",
+            "thresholdPercentile": 60.0,
+            "overwrite": True,
+        },
+    })
+    assert resp.status_code == 200
+    result = resp.json()
+    assert result["status"] == "completed", result
+
+    # 3. A wrong path still fails honestly.
+    resp = client.post("/api/agent/invoke-tool", json={
+        "tool": "cae.extract_field_regions",
+        "input": {"project_id": project_id, "frd_path": "simulation/runs/nope.frd"},
+    })
+    assert resp.status_code == 200
+    result = resp.json()
+    assert result["status"] == "error"
+    assert result["code"] == "file_not_found"
+
+
 def test_write_field_summary_skipped_when_core_module_missing(monkeypatch, tmp_path: Path) -> None:
     """When aieng.cae_field_summary is removed, write_field_summary returns skipped without crashing."""
     import builtins

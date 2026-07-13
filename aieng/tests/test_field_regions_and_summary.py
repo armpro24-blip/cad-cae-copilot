@@ -112,6 +112,78 @@ def test_malformed_frd_raises(tmp_path: Path) -> None:
         extract_field_regions_package(pkg, frd)
 
 
+def _ccx_value(v: float) -> str:
+    return f"{v:12.5E}"
+
+
+def _make_standard_ccx_frd(
+    coords: dict[int, tuple[float, float, float]], stress: dict[int, float]
+) -> str:
+    """Standard CalculiX output dialect: ' -1' key + I10 node field, with the
+    nodal block opened by a 2C header, closed by -3, and followed by a 3C
+    element block whose -1 records must NOT be parsed as node coordinates."""
+    lines = [
+        "    1C",
+        "    1UPGM               CalculiX",
+        f"    2C                    {len(coords):10d}                                     1",
+    ]
+    for nid, xyz in coords.items():
+        lines.append(" -1" + f"{nid:10d}" + "".join(_ccx_value(v) for v in xyz))
+    lines.append(" -3")
+    lines += [
+        f"    3C                    {1:10d}                                     1",
+        " -1" + f"{1:10d}" + f"{4:5d}{0:5d}{1:5d}",
+        " -2" + "".join(f"{nid:10d}" for nid in list(coords)[:4]),
+        " -3",
+    ]
+    lines += [
+        "  100CL  101 1.00000000         327                     0    1           1",
+        " -4  S           6    1",
+        " -5  SXX         1    4    1    1",
+        " -5  SYY         1    4    2    1",
+        " -5  SZZ         1    4    3    1",
+        " -5  SXY         1    4    4    1",
+        " -5  SXZ         1    4    5    1",
+        " -5  SYZ         1    4    6    1",
+    ]
+    for nid, value in stress.items():
+        lines.append(
+            " -1" + f"{nid:10d}" + "".join(_ccx_value(v) for v in [value, 0, 0, 0, 0, 0])
+        )
+    lines.append(" -3")
+    lines.append(" 9999")
+    return "\n".join(lines) + "\n"
+
+
+def test_standard_ccx_dialect_node_coords_parse(tmp_path: Path) -> None:
+    """Real ccx FRD output (short keys, I10 node ids, 2C/3C mesh blocks) parses.
+
+    Regression for the #368 value-demo finding: the viewer field endpoint and
+    cae.extract_field_regions fell back to synthetic/mock because this parser
+    only understood the wide test dialect and returned zero node coordinates
+    for genuine CalculiX output.
+    """
+    from aieng.simulation.field_region_extractor import _extract_node_coords_from_frd
+
+    coords = {
+        1: (0.0, 0.0, 0.0),
+        2: (0.1, 0.0, 0.0),
+        3: (10.0, 0.0, 0.0),
+        4: (10.1, 0.0, 0.0),
+    }
+    stress = {1: 100.0, 2: 99.0, 3: 5.0, 4: 1.0}
+    frd = tmp_path / "job.frd"
+    frd.write_text(_make_standard_ccx_frd(coords, stress), encoding="utf-8")
+
+    parsed = _extract_node_coords_from_frd(frd)
+    assert set(parsed) == set(coords)  # element-block -1 records not included
+    assert parsed[3] == (10.0, 0.0, 0.0)
+
+    pkg = _package(tmp_path / "test.aieng")
+    result = extract_field_regions_package(pkg, frd, threshold_percentile=80)
+    assert result["cluster_count"] == 1
+
+
 def test_field_summary_writes_json_and_markdown(tmp_path: Path) -> None:
     pkg = _package(tmp_path / "test.aieng")
     frd = tmp_path / "job.frd"

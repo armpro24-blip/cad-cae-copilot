@@ -111,9 +111,33 @@ Tool: `cae.run_simulation_pipeline`.
 This tool is approval-gated. The demo recording must show that the workbench asks
 for approval before the solver executes.
 
-Fallback if the one-call pipeline is unavailable: run `cae.generate_mesh`,
-`cae.generate_solver_input`, approval-gated `cae.run_solver`, and
-`postprocess.refresh_cae_summary` in that order.
+The `task_description` path invokes `ai_preprocessing.run_ai_preprocessing`,
+which needs an Anthropic API key configured in the backend. Without one, the
+pipeline fails fast with `code: preprocessing_failed` and the root cause — do
+not retry with `task_description`; use the deterministic fallback below.
+
+Fallback if AI preprocessing or the one-call pipeline is unavailable — write
+the setup deterministically, then run the remaining stages:
+
+1. `cae.apply_setup_patch` with `create_file` patches for all of:
+   - `simulation/solver_settings.json` — `{"solver": "CalculiX", "analysis_type": "static"}`
+   - `simulation/cae_imports/parsed_materials.json` —
+     `{"materials": [{"name": "Al6061-T6", "elastic": {"youngs_modulus": 68900, "poisson_ratio": 0.33}, "density_kg_m3": 2700, "yield_strength_mpa": 276}]}`
+   - `simulation/cae_imports/parsed_boundary_conditions.json` —
+     `{"boundary_conditions": [{"id": "bc_fixed_end", "type": "fixed", "target": "FIXED_END", "dof_start": 1, "dof_end": 3, "value": 0}]}`
+   - `simulation/cae_imports/parsed_loads.json` —
+     `{"loads": [{"id": "tip_load_50n", "target": "LOAD_END", "dof": 3, "value": -50}]}`
+     (the value is a TOTAL force distributed over the NSET nodes)
+   - `simulation/cae_mapping.json` — bind `FIXED_END` to the copied xmin face id
+     and `LOAD_END` to the copied xmax face id
+   - `simulation/setup.yaml` — the schema-shaped summary of the same setup
+     (material/BCs/loads/mesh + `topology_hash` from `cae.prepare_solver_run`);
+     required by the `aieng.value_demo_check` evidence contract
+2. `cae.generate_mesh` (if the mesh does not exist yet)
+3. `cae.generate_solver_input`
+4. approval-gated `cae.run_solver`
+5. `cae.extract_field_regions` (uses the newest package FRD when `frd_path` is
+   omitted) and `postprocess.refresh_cae_summary`
 
 5. Verify the result is real.
 
