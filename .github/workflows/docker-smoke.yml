@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
     paths:
+      # The image is built by pip-installing these projects, so a manifest
+      # change can break the build without touching any path below.
+      - "**/pyproject.toml"
       - "Dockerfile"
       - "docker/**"
       - "docker-compose.yml"
@@ -12,6 +15,7 @@ on:
   pull_request:
     branches: [main]
     paths:
+      - "**/pyproject.toml"
       - "Dockerfile"
       - "docker/**"
       - "docker-compose.yml"
