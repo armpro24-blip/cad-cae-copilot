@@ -7,15 +7,21 @@ explicit action.
 
 ## Apply
 
+Currently applied as ruleset **`19975288`**
+([settings](https://github.com/armpro24-blip/cad-cae-copilot/rules/19975288)),
+`enforcement: active`.
+
 ```bash
-# create
-gh api --method POST repos/armpro24-blip/cad-cae-copilot/rulesets \
+# update the applied ruleset after editing main.json
+gh api --method PUT repos/armpro24-blip/cad-cae-copilot/rulesets/19975288 \
   --input .github/rulesets/main.json
 
-# update an existing one (find the id with the list command below)
-gh api --method PUT repos/armpro24-blip/cad-cae-copilot/rulesets/<id> \
+# create (if it was deleted, or on a fork)
+gh api --method POST repos/armpro24-blip/cad-cae-copilot/rulesets \
   --input .github/rulesets/main.json
 ```
+
+Editing `main.json` does **not** change enforcement on its own — run the `PUT`.
 
 ## Inspect
 
@@ -80,10 +86,15 @@ Option 1 is preferred while the runtime stays where it is.
 
 ## Escape hatch
 
-No bypass actors are configured. If the ruleset ever blocks legitimate
-emergency work, delete or disable it rather than working around it:
+No bypass actors are configured (`current_user_can_bypass: never`). If the
+ruleset ever blocks legitimate emergency work, disable or delete it rather than
+working around it:
 
 ```bash
-gh api --method DELETE repos/armpro24-blip/cad-cae-copilot/rulesets/<id>
-# or flip "enforcement" to "evaluate" (log-only) or "disabled" and re-apply
+# log-only: rules evaluate and report but do not block
+gh api --method PUT repos/armpro24-blip/cad-cae-copilot/rulesets/19975288 \
+  -f enforcement=evaluate
+
+# off entirely
+gh api --method DELETE repos/armpro24-blip/cad-cae-copilot/rulesets/19975288
 ```
