@@ -4,6 +4,9 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
+      # A dependency bump can move the numbers as easily as a code change
+      # (numpy/scipy/OCP resolution), so any manifest re-runs the gate.
+      - "**/pyproject.toml"
       - ".github/workflows/real-ccx-verification.yml"
       - "scripts/run_real_ccx_verification_gate.py"
       - "aieng/src/aieng/nafems_verification.py"
@@ -20,6 +23,7 @@ on:
   push:
     branches: [main]
     paths:
+      - "**/pyproject.toml"
       - ".github/workflows/real-ccx-verification.yml"
       - "scripts/run_real_ccx_verification_gate.py"
       - "aieng/src/aieng/nafems_verification.py"
@@ -34,9 +38,10 @@ on:
       - "aieng-ui/backend/tests/test_cae_solve_integration.py"
       - "aieng-ui/backend/tests/test_simulation_runner.py"
 
-# Candidate required gate for #373. It auto-runs for solver/V&V path changes and
-# remains manually runnable for release verification. Branch protection can mark
-# this required once runner stability and runtime cost are acceptable.
+# Candidate required gate (originally #373, now closed). It auto-runs for
+# solver/V&V path changes and remains manually runnable for release
+# verification. Branch protection can mark this required once runner stability
+# and runtime cost are acceptable.
 concurrency:
   group: real-ccx-verification-${{ github.ref }}
   cancel-in-progress: true

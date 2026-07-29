@@ -1033,10 +1033,16 @@ AIENG_CCX_CMD=ccx python scripts/run_real_ccx_verification_gate.py
 
 The script runs the NAFEMS real-ccx tests plus the backend CAD→mesh→deck→ccx→FRD
 integration test and fails if any selected test is skipped. Use
-`--allow-skips` only for exploratory local checks. The matching GitHub Actions
-workflow is `.github/workflows/real-ccx-verification.yml`; it is manual while
-the remaining #373 reference calibration work is being finished, then can be
-promoted to a required PR/push gate.
+`--allow-skips` only for exploratory local checks.
+
+The matching GitHub Actions workflow is
+`.github/workflows/real-ccx-verification.yml`. It runs automatically on pull
+requests and pushes to `main` that touch the solver/V&V paths — including any
+`pyproject.toml`, because a dependency change can move the numbers just as
+easily as a code change — and stays manually runnable via `workflow_dispatch`
+for release verification. It is a **candidate** required check: promotion to a
+branch-protection requirement is gated on observed runner stability and runtime
+cost, not on outstanding calibration work (#373 is closed).
 
 **`cae.prepare_solver_run` returns `recommended_next_calls`.** When the package is
 not ready, the response includes a `recommended_next_calls` list. Each entry is
