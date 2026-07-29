@@ -1,0 +1,245 @@
+name: Release
+
+# Publishes `aieng-format` and `aieng-workbench-mcp` to (Test)PyPI and cuts the
+# GitHub release. Nothing here fires on an ordinary push or PR.
+#
+# Owner-gated by design, in two independent ways:
+#   1. It only starts from a `v*` tag push or a manual dispatch — both explicit
+#      owner actions.
+#   2. Each publish job is bound to a GitHub Environment (`pypi` / `testpypi`).
+#      Add a required reviewer to those environments and the job pauses for an
+#      approval click even on a tag push. See .github/rulesets/README.md style
+#      docs in aieng/docs/release/v0.1.0-alpha_publish_runbook.md.
+#
+# Auth is PyPI Trusted Publishing (OIDC) — no API tokens live in this repo.
+# One-time setup per project on PyPI: Publishing -> Add a new pending publisher
+#   Owner: armpro24-blip   Repository: cad-cae-copilot
+#   Workflow: release.yml  Environment: pypi   (repeat with testpypi)
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Index to publish to"
+        type: choice
+        options: [testpypi, pypi]
+        default: testpypi
+      create_github_release:
+        description: "Also create the GitHub release"
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build + verify dists
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      target: ${{ steps.target.outputs.target }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Resolve publish target
+        id: target
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "target=pypi" >> "$GITHUB_OUTPUT"
+          else
+            echo "target=${{ inputs.target }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # aieng-workbench-mcp depends on aieng-format, so a version skew between
+      # the two ships a package that cannot resolve its own dependency.
+      - name: Check both projects declare the same version
+        id: version
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import tomllib, pathlib, sys
+          projects = {
+              "aieng-format": "aieng/pyproject.toml",
+              "aieng-workbench-mcp": "aieng-ui/backend/pyproject.toml",
+          }
+          versions = {}
+          for name, path in projects.items():
+              data = tomllib.loads(pathlib.Path(path).read_text())
+              versions[name] = data["project"]["version"]
+              print(f"{name} {path} -> {versions[name]}", file=sys.stderr)
+          distinct = set(versions.values())
+          if len(distinct) != 1:
+              sys.exit(f"version skew across projects: {versions}")
+          print(f"version={distinct.pop()}")
+          PY
+
+      - name: Show tag / version mapping
+        run: |
+          echo "ref:     ${{ github.ref_name }}"
+          echo "version: ${{ steps.version.outputs.version }}"
+          echo "target:  ${{ steps.target.outputs.target }}"
+          echo
+          echo "Tag and PEP 440 version are intentionally decoupled here"
+          echo "(tag v0.1.0-alpha.3 ships version 0.1.0a2). Confirm the mapping"
+          echo "matches the release draft before approving the publish job."
+
+      # Fail here with a readable message rather than on a 400 from the index.
+      - name: Check the version is not already published
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.version }}"
+          if [ "${{ steps.target.outputs.target }}" = "pypi" ]; then
+            base="https://pypi.org/pypi"
+          else
+            base="https://test.pypi.org/pypi"
+          fi
+          for pkg in aieng-format aieng-workbench-mcp; do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' "$base/$pkg/$version/json" || true)
+            if [ "$code" = "200" ]; then
+              echo "::error::$pkg $version already exists on ${{ steps.target.outputs.target }}. Bump the version; indexes do not allow re-uploads."
+              exit 1
+            fi
+            echo "$pkg $version not present (HTTP $code) - ok"
+          done
+
+      - name: Build
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build --outdir dist/aieng-format ./aieng
+          python -m build --outdir dist/aieng-workbench-mcp ./aieng-ui/backend
+
+      - name: twine check
+        run: python -m twine check dist/*/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dists
+          path: dist/
+          if-no-files-found: error
+
+  # Strictly ordered: aieng-workbench-mcp declares aieng-format>=0.1.0a2, so
+  # publishing the dependent first leaves a window where it cannot be installed.
+  publish-aieng-format:
+    name: Publish aieng-format
+    needs: build
+    runs-on: ubuntu-latest
+    environment: ${{ needs.build.outputs.target }}
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dists
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/aieng-format/
+          repository-url: ${{ needs.build.outputs.target == 'testpypi' && 'https://test.pypi.org/legacy/' || '' }}
+
+  publish-aieng-workbench-mcp:
+    name: Publish aieng-workbench-mcp
+    needs: [build, publish-aieng-format]
+    runs-on: ubuntu-latest
+    environment: ${{ needs.build.outputs.target }}
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dists
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/aieng-workbench-mcp/
+          repository-url: ${{ needs.build.outputs.target == 'testpypi' && 'https://test.pypi.org/legacy/' || '' }}
+
+  # Item 2 of the owner-gated list in
+  # aieng/docs/release/current_alpha_release_gate.md: prove the *published*
+  # artifacts install and run outside a source checkout. A green build job does
+  # not prove this - only pulling from the index does.
+  verify-published-install:
+    name: Verify install from ${{ needs.build.outputs.target }}
+    needs: [build, publish-aieng-workbench-mcp]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install from the index (with propagation retry)
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          TARGET: ${{ needs.build.outputs.target }}
+        run: |
+          set -euo pipefail
+          if [ "$TARGET" = "testpypi" ]; then
+            INDEX="--index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/"
+          else
+            INDEX=""
+          fi
+          python -m venv /tmp/verify
+          /tmp/verify/bin/python -m pip install --upgrade pip
+          # New releases can take a minute to appear on the index CDN.
+          for attempt in 1 2 3 4 5 6; do
+            if /tmp/verify/bin/pip install --pre $INDEX \
+                 "aieng-format==$VERSION" "aieng-workbench-mcp==$VERSION"; then
+              echo "installed on attempt $attempt"
+              exit 0
+            fi
+            echo "not on the index yet; retrying in 30s (attempt $attempt/6)"
+            sleep 30
+          done
+          echo "::error::published artifacts never became installable"
+          exit 1
+
+      # The same assertions the release gate doc specifies by hand.
+      - name: Smoke the installed artifacts
+        run: |
+          set -euo pipefail
+          /tmp/verify/bin/python -c "import aieng; print('FORMAT_VERSION', aieng.FORMAT_VERSION)"
+          /tmp/verify/bin/python -c "
+          from importlib.resources import files
+          p = files('aieng.schemas').joinpath('manifest.schema.json')
+          assert p.is_file(), 'packaged schema missing from the installed wheel'
+          print('packaged schema present')
+          "
+          /tmp/verify/bin/aieng-workbench-mcp-smoke
+
+  github-release:
+    name: GitHub release
+    needs: [build, verify-published-install]
+    if: github.event_name == 'push' || inputs.create_github_release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          notes="aieng/docs/release/github_release_draft_${TAG}.md"
+          if [ -f "$notes" ]; then
+            echo "using drafted notes: $notes"
+            gh release create "$TAG" --prerelease --title "$TAG" --notes-file "$notes"
+          else
+            echo "::warning::no drafted notes at $notes; generating from commits"
+            gh release create "$TAG" --prerelease --title "$TAG" --generate-notes
+          fi
+          gh release view "$TAG" --json url --jq .url

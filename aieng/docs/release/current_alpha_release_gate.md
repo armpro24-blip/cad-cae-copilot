@@ -25,14 +25,37 @@ record.
 These actions must be performed by a human owner with the relevant package and
 release credentials. Do not infer completion from green CI alone.
 
-1. Publish `aieng-format` and `aieng-workbench-mcp` to TestPyPI or PyPI as
-   explicit alpha/pre-release artifacts.
-2. Verify clean installs from the published artifacts, outside the source tree.
+1. **One-time:** configure PyPI/TestPyPI Trusted Publishing and the `pypi` /
+   `testpypi` GitHub Environments. Until this is done nothing can publish at
+   all. See the runbook's *Automated path*.
+2. Publish `aieng-format` and `aieng-workbench-mcp` as explicit alpha/pre-release
+   artifacts — `gh workflow run release.yml -f target=testpypi` for the dry run,
+   then push the `v*` tag for PyPI.
 3. Update install snippets only after the real published artifact names and
    versions are confirmed.
 4. Record baseline embedding-depth metrics.
-5. Create the `v0.1.0-alpha` or chosen alpha tag and GitHub release notes from
-   the exact green release commit.
+5. Confirm the GitHub release the workflow created reads correctly for the tag.
+
+Steps that used to be listed here and are now mechanised by
+[`.github/workflows/release.yml`](../../../.github/workflows/release.yml):
+building both dists, `twine check`, publishing in dependency order,
+**verifying a clean install from the published artifacts outside the source
+tree**, and creating the prerelease. Mechanised does not mean unattended — the
+workflow only starts from a tag push or manual dispatch, and the publish jobs
+sit behind environments that can require an approval click.
+
+## Current Channel Status
+
+| Channel | State |
+|---|---|
+| GHCR `ghcr.io/armpro24-blip/aieng-workbench` | **published** — `latest` plus immutable `sha-*` tags, pushed by `docker-smoke.yml` on every green `main` |
+| PyPI `aieng-format` | not published |
+| PyPI `aieng-workbench-mcp` | not published |
+| TestPyPI (both) | not published |
+| Git tag / GitHub release | none exist in this repository |
+
+The Docker path is therefore already externally usable; PyPI is the only
+unpublished distribution channel.
 
 ## Minimum Pre-Tag Verification
 
