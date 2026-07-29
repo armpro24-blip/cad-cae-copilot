@@ -48,7 +48,9 @@ classifiers = [
 dependencies = [
   "fastapi>=0.110",
   "uvicorn[standard]>=0.27",
-  "mcp>=1.25.0",
+  # Upper bound: mcp 2.0.0 removed `mcp.server.fastmcp`, which app/mcp_server.py
+  # is built on. Lift only together with the FastMCP -> mcp.server.mcpserver port.
+  "mcp>=1.25.0,<2",
   "pydantic>=2.10",
   "pydantic-settings>=2.7.0",
   "python-multipart>=0.0.9",
