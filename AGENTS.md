@@ -136,168 +136,35 @@ changing code:
 > runs apart from active ones. If an in-UI run transcript ever returns, restore a
 > display-state contract along with it.
 
-### Composer slash commands and @-mentions
+### Composer slash commands and routing — REMOVED
 
-The chat composer recognizes leading slash commands (`/build`, `/modify`,
-`/critique`, `/explain`, `/simulate`) and surfaces a suggestion menu.
-`parseComposerIntent` / `toComposerIntentMetadata` (in
-[`composerIntent.ts`](aieng-ui/frontend/src/components/chat/composerIntent.ts))
-attach a `composer_intent` blob to the persisted chat message `extra` and to the
-autopilot run create request (echoed back on `AutopilotRunState.composer_intent`).
-The raw `/command` text is always preserved in the stored user message.
+**Do not go looking for `engine.py`, `intent_resolution.py`, `INTENT_REGISTRY`,
+or `simulation_workflow.py` — they no longer exist.** The in-app chat composer
+and the whole backend intent-routing layer (slash commands `/build` `/modify`
+`/critique` `/explain` `/simulate`, natural-language intent resolution,
+mutation guards, parametric-edit slot bias, follow-up normalization, and
+`@`-mention routing) were deleted in the MCP-first cutover (#17, #8).
 
-**Backend routing status:**
-- **`/build` (routed, mutation-required).** When
-  `AutopilotRunState.composer_intent.command == "build"`, the engine injects a
-  create-geometry instruction into the run context (biasing the agent toward CAD
-  mutation tools such as `cad.execute_build123d`) and **forces the geometry-
-  mutation guard ON** (`intent_type == "create_geometry"`) — a bare `final` is
-  rejected until a CAD mutation tool has succeeded. This holds **even when the
-  free text contains no create trigger word**. Asking the user for clarification
-  (`ask_user`) or reporting a clear blocker is still allowed; a false success is
-  not.
-- **`/modify` (routed, mutation-required).** Same as `/build` but with a modify-
-  geometry instruction (`intent_type == "modify_geometry"`). A read-only result
-  such as `cad.critique` does **not** satisfy the requirement. If no CAD model
-  exists yet, `ask_user` or a clear blocking `final` is acceptable — no false
-  success.
-- **`/critique` (routed, read-only).** When
-  `AutopilotRunState.composer_intent.command == "critique"`, the engine injects a
-  read-only critique/inspection instruction into the run context (biasing the
-  agent toward `cad.critique` and read-only inspection tools such as
-  `aieng.inspect_package` / `aieng.validate` / `cad.get_source`) and **suppresses
-  the geometry-mutation guard** so a `final` is allowed after a read-only result
-  (or a clear "no CAD available" answer) even if the free text contains words
-  like "add". It does **not** force `cad.critique`, change CAD execution, or
-  bypass approval.
-- **`/explain` (routed, read-only).** When
-  `AutopilotRunState.composer_intent.command == "explain"`, the engine injects a
-  read-only explanation instruction into the run context (`intent_type ==
-  "explain_project"`; biasing the agent toward read-only context/source/topology
-  tools such as `aieng.agent_context` / `aieng.inspect_package` / `cad.get_source`
-  / `aieng.agent_readme`) and **suppresses the geometry-mutation guard** so a
-  `final` is allowed after a read-only inspection — or a clear "nothing available
-  to explain" answer — even if the free text contains words like "add"/"change".
-  If no CAD/project/artifact exists, `ask_user` or a clear blocking `final` is
-  acceptable. It does **not** force any specific tool, change CAD execution, or
-  bypass approval.
-- **`/simulate` (routed, approval-gated solver workflow — v3).** When
-  `AutopilotRunState.composer_intent.command == "simulate"`, the engine injects a
-  simulation workflow instruction (`intent_type == "plan_simulation"`) biasing the
-  agent toward CAE setup/preflight + read-only inspection tools
-  (`aieng.agent_context` / `aieng.inspect_package` / `cae.prepare_solver_run` /
-  `aieng.write_completeness_report`) and **suppresses the geometry-mutation
-  guard** (a simulation step is not a CAD edit, and free text like "add a 500N
-  load" must not trip the create/modify heuristic).
-  - **Deterministic readiness report.** Alongside the prompt bias the engine
-    injects a structured, deterministic readiness report from
-    [`simulation_readiness.py`](aieng-ui/backend/app/agent_autopilot/simulation_readiness.py)
-    (`build_simulation_readiness_report`). It classifies the six core inputs —
-    **analysis_type, material, loads, constraints, mesh, solver** — as
-    `present` / `missing` / `defaultable` / `unknown`. `material`, `loads`, and
-    `constraints` are **required** (a `missing` one populates
-    `missing_required_inputs`); `analysis_type`, `mesh`, and `solver` are
-    **present** when explicitly configured, **defaultable** when absent, and
-    **unknown** when explicitly unavailable (`false` / `{"available": false}`).
-    `@part` / `@artifact` mention bindings are reused as `targets`. The summary
-    tells the agent to **ask the user** for any missing required inputs and to
-    **never claim the solver ran** (`solver_executed` is always `false`).
-  - **v2: direct setup-artifact reading.** Readiness source priority is **direct
-    setup artifact > `agent_context["cae"]` block > `not_found`/defaults**.
-    `load_simulation_setup` reads `simulation/setup.{yaml,yml,json}` and
-    `cae/setup.{yaml,yml,json}` from the package (and inline workspace artifacts
-    of kind `cae_setup` / `simulation_setup`), normalizes them, and the report
-    records both `setup_source` and `setup_source_kind`
-    (`setup_artifact` / `workspace_artifact` / `agent_context` / `none`). The
-    file loader is app-wired (`simulation_setup_loader`) and best-effort —
-    malformed/missing setup safely falls back to the cae block, then `not_found`.
-  - **v3: approval-gated prepare → run workflow.**
-    [`simulation_workflow.py`](aieng-ui/backend/app/agent_autopilot/simulation_workflow.py)
-    (`build_simulation_workflow_state`) derives, from the readiness report plus the
-    observed `cae.prepare_solver_run` / `cae.run_solver` results, the phase fields
-    `ready_to_prepare_solver_run`, `solver_deck_prepared`, `deck_path` /
-    `manifest_path`, `ready_to_run_solver`, `solver_run_approval_required`,
-    `solver_executed`, `solver_status`, and `result_artifacts`. The engine enforces
-    it deterministically: **prepare/run are blocked while required inputs are
-    missing or a referenced target is `known=false`** (ask the user instead);
-    **`cae.run_solver` is blocked until a successful `cae.prepare_solver_run`**; and
-    an allowed `cae.run_solver` still goes through the **normal approval gate** (the
-    workflow never bypasses approval). A `final` that **claims solver results is
-    rejected unless `solver_executed` is true** — `solver_executed` only flips true
-    after an approved, non-error `cae.run_solver`, so denied/failed runs never read
-    as success.
-  - v3 does **not** auto-run the solver (`cae.run_solver` stays approval-gated),
-    does **not** modify CAD, and does **not** bypass approval. `/simulate` is
-    **not** read-only (it may patch CAE setup), so it carries
-    `simulation_planning: true` rather than `read_only: true`.
+Prompt-driving now happens entirely in the **connected agent** (Claude Code,
+Codex, Cursor, …) over MCP. The agent reads intent from the user's own sentence
+and selects tools directly; the workbench enforces its boundaries at the tool
+layer — the modeling-plan confirmation and the approval gates on
+`cae.run_solver` / `cad.restore_snapshot` / `aieng.delete_project` /
+`aieng.apply_shape_ir_patch` — not through a command vocabulary. Users do not
+need to learn slash commands; see [`docs/prompt-guide.md`](docs/prompt-guide.md)
+for the sentences that work.
 
-Command-specific routing **never bypasses approval** — `cad.execute_build123d`,
-`cae.run_solver`, and the other gated tools still pause for approval as usual.
-Helpers live in [`engine.py`](aieng-ui/backend/app/agent_autopilot/engine.py):
-`get_composer_command` / `is_critique_command` / `is_read_only_command` /
-`is_simulation_command` / `suppresses_mutation_guard` /
-`is_mutation_required_command` / `command_intent_label` / `command_mutation_intent`.
+Surviving pieces, still used and still accurate:
+- `agent_autopilot/parameter_binding.py` — `build_parameter_index` /
+  `summarize_parameter_index`, the single source behind
+  `cad.list_editable_parameters`, the `editable_parameters` field on build/edit
+  responses, and the Editable Parameters panel below.
+- `agent_autopilot/mention_binding.py` and `agent_autopilot/simulation_readiness.py`
+  — pure helpers; the honesty contract they implement (`known` true/false/null,
+  never a fabricated target) still holds wherever they are called.
+- `components/chat/composerIntent.ts` — the frontend parser survives, but no
+  backend consumes its output; treat it as inert until something does.
 
-**Natural-language intent resolution ("point and shoot").** When a run carries
-**no** explicit slash command, the engine resolves the plain-text message into one
-of the same routed commands so all of the routing + guards above apply unchanged —
-the user does not have to learn the slash vocabulary.
-[`intent_resolution.py`](aieng-ui/backend/app/agent_autopilot/intent_resolution.py)
-owns this:
-- **`INTENT_REGISTRY`** is now the **single source of truth** for the five routed
-  commands (intent_type, mutation-required / read-only / simulation, trigger
-  terms). `engine.py` derives `_MUTATION_REQUIRED_COMMANDS` / `_READ_ONLY_COMMANDS`
-  / `_SIMULATION_COMMANDS` / `_COMMAND_INTENT_LABELS` and the geometry-guard term
-  lists from it — adding a new intent is a one-line registry edit.
-- **`resolve_intent`** is three-tier: an **explicit `/command` always wins**
-  (confidence 1.0); else an optional, app-wired **LLM classifier**
-  (`build_llm_intent_classifier`, degrades silently to keyword when no
-  provider/API key, and is **skipped for fake/replay runs** so tests stay
-  deterministic); else a deterministic **keyword heuristic** (`keyword_classify`,
-  mutation intent takes precedence over read-only/simulation).
-- **`_resolve_natural_language_intent`** (engine) runs **before**
-  `_inject_command_context`. A confident command is written back onto
-  `composer_intent.command` (+ `intent_source`) so existing routing takes over; a
-  plain message with no actionable intent is **left untouched** (backward
-  compatible). When the inferred command is actionable but **low-confidence or
-  ambiguous**, it injects `INTENT_CLARIFY_INSTRUCTION` biasing the agent toward
-  `ask_user` **instead of routing on a guess** — and does **not** set a command.
-  The resolution is recorded on `composer_intent.resolved_intent` for
-  transparency. The resolver **never relaxes a guard**; it only proposes a command.
-
-**Parametric-edit slot bias + deterministic binding.** For a **modify** intent
-(explicit `/modify` or a resolved natural-language modify) whose message names
-concrete dimensional changes ("change the wall thickness to 5mm", "把壁厚改成5"),
-`extract_parameter_slots` (pure, bilingual, best-effort) pulls `{name, value,
-unit}` slots and `_inject_parametric_edit_context` injects
-`PARAMETRIC_EDIT_INSTRUCTION` — biasing the agent to the fast `cad.edit_parameter`
-path instead of regenerating the whole model.
-- **Slot → feature-parameter binding** ([`parameter_binding.py`](aieng-ui/backend/app/agent_autopilot/parameter_binding.py)).
-  Each slot is bound to a concrete editable feature parameter via
-  `build_parameter_index` (flattens `feature_graph.features[].parameters`,
-  tokenizing the `cad_parameter_name` constant — e.g. `WALL_THICKNESS` →
-  `{wall, thickness}` — plus the inferred parameter name and feature name) and
-  `bind_parameter_slots` (best-token-overlap match). On a unique match the agent
-  is handed the exact `featureId` / `parameterName` / constant / current value /
-  range (with an **out-of-range** flag); the feature graph is read through the
-  app-wired `feature_parameter_loader`. Mirrors `@part`/`@artifact` **honesty**:
-  no index → `known=None` (unverified, never a false negative); index present but
-  no overlap → `known=False` (not found); two+ equally-good matches →
-  `known=False` (**ambiguous**, candidates listed → ask the user); never invents a
-  target. Slots + bindings ride on the observation (`parameter_slots` /
-  `parameter_bindings`) for the frontend/audit.
-- Prompt/context only: no tool is selected, CAD execution is unchanged, the
-  mutation guard is unchanged, and `cad.edit_parameter` stays inside the approved modeling-plan boundary — the
-  binding only *proposes* a target, and out-of-range / ambiguous edits are routed
-  to user confirmation.
-
-**Frontend echo (intent chip).** The resolved intent still rides on
-`composer_intent.resolved_intent` (+ the `parameter_bindings` observation) on the
-run state. The former in-UI rendering of it — `resolvedIntentFromRun`,
-`runToTranscriptItems`'s `intent`-kind item, and the `IntentChip.tsx` chip — was
-removed in the MCP-first cutover (#17, #8) along with the chat transcript; the
-backend signal is unchanged and available to any agent/UI that consumes the run
-state. Explicit slash-command runs record no `resolved_intent`.
 **Editable Parameter Explorer (discovery surface).** The "point" half of
 point-and-shoot: the editable-parameter index (`build_parameter_index` +
 `summarize_parameter_index` in
@@ -305,7 +172,8 @@ point-and-shoot: the editable-parameter index (`build_parameter_index` +
 each entry now carrying a `scope` of `local` / `global` / `unscoped`) is exposed
 read-only via the `cad.list_editable_parameters` tool so the user and agent can
 see **what can be edited fast** before editing — and pick a precise
-`cad.edit_parameter` target. Same single source the `/modify` slot binding uses;
+`cad.edit_parameter` target. Same single source the build/edit responses'
+`editable_parameters` field reports;
 `global` parameters are flagged as shared (edits ripple), `local` as the safe
 single-part edit.
 - **Frontend panel.** The workbench renders an **Editable Parameters** panel
@@ -344,7 +212,7 @@ single-part edit.
     **Finer mesh** button drafts `/simulate mesh_size_mm=<half finest>` when the
     result is not converged.
   All are read-only (run no solver, mutate nothing); actions flow through the
-  existing plan-confirmed `/modify` path or approval-gated `/simulate` solver path.
+  existing plan-confirmed CAD-edit path or the approval-gated solver path.
 - **Assembly-check viewer overlay (in-3D affordance).** The model viewer has a
   "Show assembly check" toggle ([`ModelViewer.tsx`](aieng-ui/frontend/src/components/ModelViewer.tsx),
   fed by `useGeometryReport` → `GET /api/projects/{id}/geometry-report`, shaped by
@@ -424,55 +292,8 @@ single-part edit.
   element count and target mesh size. A coarse-mesh warning flag is shown when
   the element count is very low. Read-only; the toggle only appears when a mesh
   is present and degrades cleanly when `mesh.inp` is absent.
-**Follow-up / reply normalization.** Follow-up and reply messages are re-resolved
-so their intent is recorded explicitly rather than left implicit
-(`_normalize_followup_intent` in
-[`engine.py`](aieng-ui/backend/app/agent_autopilot/engine.py), called from
-`reply_to_run` and the queued `follow_up_run` path). **Deliberately lightweight**:
-connected agents (Claude Code, Codex, Kimi, …) infer follow-up meaning on their
-own, so this does NOT try to out-think them — it runs only the *deterministic
-keyword* resolver (no LLM) and lands the normalized result in state. A dimensional
-`modify` follow-up reuses the same parameter binding as the initial message
-(`_emit_parametric_edit_context`), handing the agent a concrete
-`cad.edit_parameter` target; other recognized commands record a visible
-`followup_intent` note; an unrecognized follow-up is a no-op (the agent just
-proceeds). The principle: **let the agent associate, but have the system make the
-association explicit as a normalized intent.**
 - **Future work:** inline value editing in the panel (a field that calls the
-  plan-confirmed `cad.edit_parameter` directly), and consume the LLM classifier's
-  `targets` / `parameters` beyond the deterministic slots.
-
-**`@`-mentions (strict binding, v1).** The composer parses lightweight
-`@kind:value` mentions (`extractComposerMentions` in
-[`composerIntent.ts`](aieng-ui/frontend/src/components/chat/composerIntent.ts))
-into `{ kind, raw, value }` and persists them on `composer_intent.mentions`.
-- **`@part:<label>` and `@artifact:<id>` are routed and bound.** The engine
-  resolves each mention against the available workspace context
-  ([`mention_binding.py`](aieng-ui/backend/app/agent_autopilot/mention_binding.py)
-  `build_mention_bindings`): `@part` against `cad.named_parts` + `topology_map`,
-  `@artifact` against the known workspace artifacts. Each binding records
-  `known` (`true` / `false` / `null`), `source`, `canonical_id`, and a `reason`.
-  The honesty rule: when **no authoritative index is available**, the binding is
-  `known: null` ("unverified") — never a false negative; `known: false` is used
-  only when an index exists and the value is genuinely absent. The bindings ride
-  on the mention-context observation (`mention_bindings`), the label annotates
-  each value with its status (e.g. `bracket (known)`, `ghost (not found)`,
-  `rotor_1 (unverified)`), and `/simulate` readiness reuses them for its
-  `targets` (no duplicate lookup).
-- Still **prompt/context only** — binding does not block commands or change tool
-  selection/approval. Command-aware targeting guidance is unchanged: `/explain` →
-  explain that part (read-only), `/critique` → critique it if available
-  (read-only), `/modify` → target the CAD edit at it (approval + mutation guard
-  unchanged), `/simulate` → scope the plan to it (no solver run). The agent is
-  still told to ask / report "target not found" rather than invent a target, and
-  mentions are never required for any command.
-- Helpers: `mentioned_parts` / `mentioned_artifacts` / `mention_context_label`
-  (engine), `build_mention_bindings` / `bindings_to_targets` /
-  `mention_status_word` (mention_binding) — all robust to missing/malformed
-  metadata.
-- **Future work:** `@workspace` / `@project` / `@face` mention routing (the
-  parser recognizes those kinds, but the backend does not bind them yet) and
-  deeper `/simulate` readiness validation against the live CAE setup artifacts.
+  plan-confirmed `cad.edit_parameter` directly).
 
 ---
 
@@ -1004,7 +825,7 @@ properties, and no fully-coupled (two-way) thermomechanics.
 Honesty boundary: modal results are **linear undamped** natural frequencies (no
 damping / prestress); buckling results are **linear (eigenvalue / Euler)** load
 factors (`critical load = factor × applied reference load`) — no imperfection
-sensitivity or post-buckling. The `/simulate` readiness report
+sensitivity or post-buckling. The simulation-readiness report
 (`simulation_readiness.py`) reflects the analysis-type-aware required inputs (a
 modal request does not flag missing loads; a buckling request does). Modal needs
 material **density** for the mass matrix and uses a consistent mm–tonne–s unit
