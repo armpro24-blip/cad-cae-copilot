@@ -93,6 +93,7 @@ def classify_credibility(
     bolt_preload_modeled: bool | None = None,
     uncertainty_std: float | None = None,
     production_ready: bool | None = None,
+    mesh_accuracy_band: str | None = None,
     notes: str | None = None,
 ) -> dict[str, Any]:
     """Map an evidence kind + its honesty flags to ONE credibility tier.
@@ -103,6 +104,14 @@ def classify_credibility(
     ``evidence_kind="solver"`` output with ``solver_executed`` not ``True`` can
     never be an executed-solver result, so it falls to ``unverified``. This is
     the honesty invariant — the tier is never more credible than the evidence.
+
+    ``mesh_accuracy_band`` extends that invariant past "did it run" to "could it
+    have been right". A band of ``"unreliable"`` (too few elements across the
+    thinnest section for the element order — see
+    ``simulation_runner.assess_mesh_accuracy``) downgrades an executed solver
+    result too: the solver ran, but on a mesh that under-predicts stress. Left
+    unenforced this is exactly how a measured 48%-of-theory result came to be
+    stamped ``executed_solver_result``.
 
     Returns a self-describing stamp::
 
@@ -120,6 +129,19 @@ def classify_credibility(
         base = None
         downgrade_reason = (
             "evidence_kind claims a solver result but solver_executed is not true"
+        )
+    elif base == "executed_solver_result" and str(mesh_accuracy_band or "").lower() == "unreliable":
+        # A solver DID run — but on a mesh that cannot resolve the result it was
+        # asked for. Measured: linear tets with ~1.7 elements through the
+        # thickness returned 48% of the analytical root stress, and the old code
+        # still stamped that `executed_solver_result`. Running the solver is not
+        # the same as earning the top tier, so the mesh verdict is enforced here
+        # rather than left to prose in a report nobody diffs.
+        base = None
+        downgrade_reason = (
+            "a solver ran, but the mesh accuracy band is 'unreliable' — the "
+            "result is likely under-predicted (non-conservative); re-mesh "
+            "(finer, or quadratic elements) before treating it as a result"
         )
     elif base == "surrogate_prediction" and is_solver_evidence is True:
         # Contradictory: a surrogate marked as solver evidence only earns the
@@ -142,6 +164,7 @@ def classify_credibility(
         "contact_physics_modeled": contact_physics_modeled,
         "bolt_preload_modeled": bolt_preload_modeled,
         "uncertainty_std": uncertainty_std,
+        "mesh_accuracy_band": mesh_accuracy_band,
     }
     signals = {k: v for k, v in signals.items() if v is not None}
 

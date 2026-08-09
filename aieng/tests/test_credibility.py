@@ -79,3 +79,43 @@ def test_producers_stamp_their_tier() -> None:
     crit = critique_geometry({}, {})  # no solids → skipped, still stamped
     assert crit["credibility"]["tier"] == "critique_finding"
     assert crit["credibility"]["rank"] == 1
+
+
+def test_unreliable_mesh_downgrades_an_executed_solver_result() -> None:
+    """Running the solver is not the same as earning the top tier.
+
+    Measured on the reference cantilever: linear tets with ~1.7 elements through
+    the thickness returned 48% of the analytical root stress — non-conservative
+    — and were still stamped `executed_solver_result`. The mesh verdict is now
+    part of the honesty invariant, not prose in a report nobody diffs.
+    """
+    out = classify_credibility(
+        "solver", solver_executed=True, mesh_accuracy_band="unreliable"
+    )
+    assert out["tier"] == "unverified"
+    assert out["rank"] == 0
+    assert "under-predicted" in out["downgrade_reason"]
+    assert out["signals"]["mesh_accuracy_band"] == "unreliable"
+    # the reason must tell the caller what to DO about it
+    assert "re-mesh" in out["downgrade_reason"]
+
+
+def test_reliable_and_marginal_meshes_keep_the_executed_solver_tier() -> None:
+    """Only 'unreliable' downgrades. A false alarm on an accurate mesh costs
+    credibility exactly like missing a bad one — ~1.7 QUADRATIC elements across
+    the thickness measured 97% of theory and must keep the tier."""
+    for band in ("reliable", "marginal", None):
+        out = classify_credibility(
+            "solver", solver_executed=True, mesh_accuracy_band=band
+        )
+        assert out["tier"] == "executed_solver_result", band
+        assert "downgrade_reason" not in out, band
+
+
+def test_mesh_band_cannot_promote_an_unexecuted_solver_claim() -> None:
+    """A pristine mesh does not make an un-run solver credible."""
+    out = classify_credibility(
+        "solver", solver_executed=False, mesh_accuracy_band="reliable"
+    )
+    assert out["tier"] == "unverified"
+    assert "solver_executed is not true" in out["downgrade_reason"]

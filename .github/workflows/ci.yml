@@ -79,8 +79,13 @@ jobs:
         # this stays honest on a runner without them.
         run: pytest tests -q
 
-      - name: Analytical FEA benchmark corpus tests
-        run: cd ../../aieng && pytest tests/test_benchmarks_analytical_fea.py -q
+      - name: aieng core library suite
+        # The `.aieng` format/schema/validation library — the thing every
+        # package on disk depends on — previously had ONE file in CI
+        # (test_benchmarks_analytical_fea.py) out of ~3000 tests. Same
+        # allowlist trap as the backend job: cheap to run whole (~2 min), so
+        # run it whole.
+        run: cd ../../aieng && pytest tests -q
 
   vscode-extension:
     name: VS Code extension (test + package + smoke)

@@ -290,6 +290,81 @@ class TestGenerateCaeResultSummary:
         assert "no solver was executed" not in limitations
         assert "linear static" in limitations
 
+    def test_unreliable_mesh_blocks_the_executed_solver_result_claim(self, tmp_path: Path) -> None:
+        """A completed run on a mesh that cannot resolve the answer is not a result.
+
+        Measured on the reference cantilever: linear tets with ~1.7 elements
+        through the thickness returned 48% of the analytical root stress —
+        non-conservative — and this contract still read `executed_solver_result`.
+        """
+        run = json.dumps({
+            "run_id": "run_001", "state": "completed", "solved": True,
+            "solver": "CalculiX",
+            "output_files": ["simulation/runs/run_001/outputs/result.frd"],
+        })
+        metrics = json.dumps({
+            "load_cases": [{"id": "lc1", "metrics": {
+                "max_von_mises_stress": {"value": 7.2, "unit": "MPa"}}}],
+        })
+        mesh_meta = json.dumps({
+            "element_type": "C3D4", "element_order": 1,
+            "accuracy": {"band": "unreliable", "elements_through_thinnest": 1.67},
+        })
+        pkg = _build_package(
+            tmp_path,
+            {
+                "simulation/runs/run_001/solver_run.json": run.encode(),
+                "results/computed_metrics.json": metrics.encode(),
+                "simulation/mesh/mesh_metadata.json": mesh_meta.encode(),
+            },
+        )
+
+        contract = generate_cae_result_summary(pkg)["result_contract"]
+        assert contract["claim_tier"] == "unreliable_mesh"
+        assert "non-conservative" in contract["reason"]
+        assert "Re-mesh" in contract["reason"]
+
+    def test_reliable_mesh_keeps_the_executed_solver_result_claim(self, tmp_path: Path) -> None:
+        """Only 'unreliable' blocks it — a false alarm on an accurate mesh costs
+        credibility exactly like missing a bad one."""
+        run = json.dumps({
+            "run_id": "run_001", "state": "completed", "solved": True,
+            "solver": "CalculiX",
+        })
+        metrics = json.dumps({
+            "load_cases": [{"id": "lc1", "metrics": {
+                "max_von_mises_stress": {"value": 14.49, "unit": "MPa"}}}],
+        })
+        mesh_meta = json.dumps({
+            "element_type": "C3D10", "element_order": 2,
+            "accuracy": {"band": "reliable", "elements_through_thinnest": 1.67},
+        })
+        pkg = _build_package(
+            tmp_path,
+            {
+                "simulation/runs/run_001/solver_run.json": run.encode(),
+                "results/computed_metrics.json": metrics.encode(),
+                "simulation/mesh/mesh_metadata.json": mesh_meta.encode(),
+            },
+        )
+
+        contract = generate_cae_result_summary(pkg)["result_contract"]
+        assert contract["claim_tier"] == "executed_solver_result"
+
+    def test_missing_mesh_metadata_leaves_the_claim_untouched(self, tmp_path: Path) -> None:
+        """Packages meshed before the accuracy block existed must not regress."""
+        run = json.dumps({
+            "run_id": "run_001", "state": "completed", "solved": True,
+            "solver": "CalculiX",
+        })
+        pkg = _build_package(
+            tmp_path,
+            {"simulation/runs/run_001/solver_run.json": run.encode()},
+        )
+
+        contract = generate_cae_result_summary(pkg)["result_contract"]
+        assert contract["claim_tier"] == "executed_solver_result"
+
     def test_computed_metrics_take_priority_over_legacy_rest_summary(self, tmp_path: Path) -> None:
         metrics = json.dumps({
             "metrics_source": {"tool": "frd_parser"},
