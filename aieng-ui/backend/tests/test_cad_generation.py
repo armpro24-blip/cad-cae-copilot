@@ -2174,6 +2174,68 @@ def test_design_review_surfaces_modeling_fidelity_for_crude_build(tmp_path: Path
     assert rev["critique_verdict"] in {"passes", "passes_with_notes", "passes_with_warnings"}
 
 
+def test_build_response_flags_literal_dimensions_as_not_editable(tmp_path: Path) -> None:
+    """A model built from literals has no editable parameter, which dead-ends
+    cad.edit_parameter AND opt.sizing_sweep. The build response must say so with
+    an actionable hint instead of letting the agent discover it a user request
+    later."""
+    pytest.importorskip("build123d")
+    from app.cad_generation import execute_build123d_code
+
+    settings = _make_settings(tmp_path)
+    pid = _make_project(settings, "params-literal")
+    code = (
+        "from build123d import *\n"
+        "beam = Box(100.0, 20.0, 10.0); beam.label = 'beam'\n"
+        "result = beam\n"
+    )
+    out = execute_build123d_code(settings, pid, {"code": code, "thumbnail": False})
+    assert out["status"] == "ok", out
+
+    editable = out["editable_parameters"]
+    assert editable["total"] == 0
+    assert editable["by_scope"] == {"local": 0, "global": 0, "unscoped": 0}
+    hint = editable["hint"]
+    assert "UPPER_SNAKE_CASE" in hint
+    assert "cad.edit_parameter" in hint and "opt.sizing_sweep" in hint
+
+
+def test_build_response_reports_named_constants_as_editable(tmp_path: Path) -> None:
+    """The same geometry written with UPPER_SNAKE_CASE constants reports its
+    parameters as editable — no hint needed — so the agent knows the fast-edit
+    and sizing-sweep paths are open. Mirrors the canonical #368 value-demo
+    fixture."""
+    pytest.importorskip("build123d")
+    from app.cad_generation import execute_build123d_code
+
+    settings = _make_settings(tmp_path)
+    pid = _make_project(settings, "params-named")
+    code = (
+        "from build123d import *\n"
+        "BEAM_LENGTH = 100.0\n"
+        "BEAM_WIDTH = 20.0\n"
+        "BEAM_THICKNESS = 10.0\n"
+        "beam = Box(BEAM_LENGTH, BEAM_WIDTH, BEAM_THICKNESS); beam.label = 'beam'\n"
+        "result = beam\n"
+    )
+    out = execute_build123d_code(settings, pid, {"code": code, "thumbnail": False})
+    assert out["status"] == "ok", out
+
+    editable = out["editable_parameters"]
+    assert editable["total"] >= 1
+    assert "hint" not in editable
+
+    # Same index the cad.list_editable_parameters tool serves, so the reported
+    # count is actually targetable by cad.edit_parameter / opt.sizing_sweep.
+    from app.agent_autopilot.parameter_binding import build_parameter_index
+
+    constants = {
+        entry["cad_parameter_name"]
+        for entry in build_parameter_index(out["feature_graph"])
+    }
+    assert {"BEAM_LENGTH", "BEAM_WIDTH", "BEAM_THICKNESS"} & constants
+
+
 def test_housing_helper_builds_and_reads_designed(tmp_path: Path) -> None:
     pytest.importorskip("build123d")
     from app.cad_generation import design_review, execute_build123d_code

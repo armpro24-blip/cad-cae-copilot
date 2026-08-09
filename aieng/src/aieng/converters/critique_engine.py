@@ -205,6 +205,25 @@ def is_named_part_feature(feature: dict[str, Any]) -> bool:
     return feature.get("type") in {"named_part", "standard_part"} and bool(feature.get("name"))
 
 
+def _feature_face_count(geometry_refs: Any) -> int | None:
+    """Face count from a feature's ``geometry_refs``, in either stored shape.
+
+    The `.aieng` package writes the full ``faces: [id, ...]`` list, while the
+    slimmed tool-response graph carries a ``face_count`` integer. Reading only
+    one shape silently disables every face-count check on the other — which is
+    how the bare-box fidelity guard came to never fire on real packages.
+    """
+    if not isinstance(geometry_refs, dict):
+        return None
+    count = geometry_refs.get("face_count")
+    if isinstance(count, int):
+        return count
+    faces = geometry_refs.get("faces")
+    if isinstance(faces, list):
+        return len(faces)
+    return None
+
+
 def _has_canonical_engineering_label(feat: dict[str, Any]) -> bool:
     name = (feat.get("name") or "").lower()
     canonical = (
@@ -366,7 +385,7 @@ def assess_modeling_fidelity(
     featureless = 0
     for feat in named:
         geo = feat.get("geometry_refs") or {}
-        fc = geo.get("face_count") if isinstance(geo, dict) else None
+        fc = _feature_face_count(geo)
         if fc == 6:
             featureless += 1
             if featureless <= 3:
@@ -422,6 +441,14 @@ def assess_modeling_fidelity(
 
     score = max(0, min(100, score))
     level = "designed" if score >= 75 else ("basic" if score >= 45 else "crude")
+    # Level and findings must agree. Mechanical intent suppresses the cosmetic
+    # findings (#378), so a clean engineering part reaches `designed` with no
+    # findings at all, and a filleted-but-boxy body keeps `designed` despite its
+    # mild no-loft note. But a body with NO edge breaking that still carries an
+    # unfinished-work finding is not `designed` — an agent reading that level
+    # stops iterating on a part the same response calls a bare box.
+    if findings and level == "designed" and not has_finishing:
+        level = "basic"
     return {
         "score": score,
         "level": level,

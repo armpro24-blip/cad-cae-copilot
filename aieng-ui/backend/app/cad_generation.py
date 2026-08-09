@@ -63,6 +63,41 @@ def _fidelity_brief(topology_map: dict[str, Any], feature_graph: dict[str, Any])
     }
 
 
+def _editable_parameters_brief(feature_graph: dict[str, Any]) -> dict[str, Any] | None:
+    """Compact editable-parameter count for build/edit responses.
+
+    A model whose dimensions are literals has NO editable parameters, which
+    silently dead-ends the two things a user asks for next: the fast
+    ``cad.edit_parameter`` resize and ``opt.sizing_sweep`` optimization (both
+    address a named constant). Surfacing the count at build time lets the agent
+    self-correct immediately instead of discovering it one user request later.
+
+    Same index as ``cad.list_editable_parameters`` (single source). Best-effort:
+    never breaks a build.
+    """
+    try:
+        from .agent_autopilot.parameter_binding import (
+            build_parameter_index,
+            summarize_parameter_index,
+        )
+
+        summary = summarize_parameter_index(build_parameter_index(feature_graph))
+    except Exception:
+        return None
+    brief: dict[str, Any] = {
+        "total": summary["total"],
+        "by_scope": summary["by_scope"],
+    }
+    if not summary["total"]:
+        brief["hint"] = (
+            "No dimension is editable: cad.edit_parameter and opt.sizing_sweep "
+            "cannot target this model. Declare dimensions as UPPER_SNAKE_CASE "
+            "constants (e.g. WALL_THICKNESS = 3.0) and rebuild to unlock the "
+            "fast-edit and sizing-optimization paths."
+        )
+    return brief
+
+
 def _standard_fastener_plan_from_feature_graph(feature_graph: dict[str, Any] | None) -> dict[str, Any]:
     """Return advisory hole-to-fastener plans for design_review.
 
@@ -3420,6 +3455,7 @@ def _finish_execute_build123d_response(
         "geometry_report": _geometry_report_for_response(geometry_report_for_response, response_detail),
         "geometry_report_summary": _geometry_report_summary(geometry_report_for_response),
         "modeling_fidelity": _fidelity_brief(topo, feature_graph),
+        "editable_parameters": _editable_parameters_brief(feature_graph),
         "written_artifacts": written,
         "write_files": write_files,
         "preview_url": f"/api/projects/{project_id}/cad-preview",
@@ -7391,6 +7427,7 @@ def execute_build123d_code(
         "geometry_report": _geometry_report_for_response(geometry_report_for_response, response_detail),
         "geometry_report_summary": _geometry_report_summary(geometry_report_for_response),
         "modeling_fidelity": _fidelity_brief(topo, feature_graph),
+        "editable_parameters": _editable_parameters_brief(feature_graph),
         "written_artifacts": written,
         "write_files": write_files,
         "preview_url": f"/api/projects/{project_id}/cad-preview",
@@ -9400,6 +9437,7 @@ def edit_build123d_parameter(
         "geometry_report": _geometry_report_for_response(geometry_report_full, response_detail),
         "geometry_report_summary": _geometry_report_summary(geometry_report_full),
         "modeling_fidelity": _fidelity_brief(topo, feature_graph),
+        "editable_parameters": _editable_parameters_brief(feature_graph),
         "topology_changed": topology_change["topology_changed"],
         "topology_change": topology_change,
         "geometry_verification": geometry_verification,
@@ -9671,6 +9709,7 @@ def _rebuild_after_part_edit(
         "geometry_report": _geometry_report_for_response(geometry_report_full, response_detail),
         "geometry_report_summary": _geometry_report_summary(geometry_report_full),
         "modeling_fidelity": _fidelity_brief(topo, feature_graph),
+        "editable_parameters": _editable_parameters_brief(feature_graph),
         "geometry_verification": geometry_verification,
         "regression_diff": regression_diff,
         "critique_diff": critique_diff,

@@ -18,7 +18,13 @@ VALUE_DEMO_CAD_CODE = """from build123d import *
 
 # Single connected solid, 100 x 20 x 10 mm, centered at the origin.
 # The integration test for the real solve loop uses the same dimensions.
-beam = Box(100.0, 20.0, 10.0)
+# Dimensions are UPPER_SNAKE_CASE constants so they stay editable via
+# cad.edit_parameter and sweepable via opt.sizing_sweep after the solve.
+BEAM_LENGTH = 100.0
+BEAM_WIDTH = 20.0
+BEAM_THICKNESS = 10.0
+
+beam = Box(BEAM_LENGTH, BEAM_WIDTH, BEAM_THICKNESS)
 beam.label = "value_demo_cantilever"
 beam.color = Color(0.18, 0.45, 0.85)
 result = beam

@@ -149,3 +149,48 @@ def test_mechanical_intent_by_model_kind_suppresses_fidelity_noise() -> None:
 def test_empty_model_fidelity_skipped() -> None:
     out = critique_geometry({"entities": []}, {"features": []})
     assert out["fidelity"]["level"] == "skipped"
+
+
+def test_featureless_box_detected_from_package_faces_list() -> None:
+    """The bare-box guard must fire on the shape the .aieng package actually
+    stores.
+
+    The package writes ``geometry_refs.faces`` (the id list); only the slimmed
+    tool-response graph carries ``face_count``. Reading just ``face_count``
+    silently disabled this guard for every real project while the whole test
+    suite — which used the slimmed shape — stayed green.
+    """
+    topo = _topo([("body_001", "block", [0, 0, 0, 80, 60, 10])])
+    package_graph = {
+        "model_kind": "mechanical",
+        "features": [
+            {
+                "id": "feat_body_001",
+                "type": "named_part",
+                "name": "block",
+                "geometry_refs": {
+                    "body": "body_001",
+                    "faces": [f"face_{i:03d}" for i in range(1, 7)],
+                },
+            }
+        ],
+    }
+    fid = assess_modeling_fidelity(topo, package_graph, model_kind="mechanical")
+
+    assert fid["signals"]["featureless_box_parts"] == 1
+    assert any(f["rule"] == "featureless_box" for f in fid["findings"])
+    # An unfinished body (no edge breaking) carrying a finding must not read as
+    # 'designed' — that level would tell the agent to stop iterating.
+    assert fid["level"] == "basic"
+
+
+def test_designed_level_survives_a_mild_note_when_edges_are_broken() -> None:
+    """A filleted but boxy body keeps 'designed' — its no-loft note is
+    informational, not unfinished work. Guards the level/finding coherence rule
+    against over-demoting."""
+    topo = _topo([("body_001", "product_body", [0, 0, 0, 120, 80, 60])])
+    fid = assess_modeling_fidelity(topo, _fg([("product_body", 18, "body_001")], adv=("fillet",)))
+
+    assert fid["signals"]["has_edge_breaking"] is True
+    assert any(f["rule"] == "primitive_stacking_only" for f in fid["findings"])
+    assert fid["level"] == "designed"

@@ -605,6 +605,26 @@ build's quality self-check; a `crude`/`basic` level means it reads as a primitiv
 (no edge-breaking, bare boxes) — don't report it done, improve it (e.g. via the `housing()` /
 `rounded_box()` / `boss()` / `rib()` scaffolds) and re-build.
 
+**`editable_parameters` — did you keep the model editable?** Every
+`cad.execute_build123d` / `cad.edit_parameter` / `cad.replace_part` /
+`cad.remove_part` response carries
+`editable_parameters` ({`total`, `by_scope`, and a `hint` when total is 0}).
+A model whose dimensions are **literals** has zero editable parameters, which
+silently dead-ends the two things a user asks for next:
+- the fast resize (`cad.edit_parameter`), and
+- sizing optimization (`opt.sizing_sweep` / `opt.doe_sizing_study`) —
+  both address a **named constant**, not a number in an expression.
+
+`total: 0` is your cue to re-emit the same geometry with UPPER_SNAKE_CASE
+constants **before** reporting done — not after the user asks "make it 8mm".
+Declaring constants costs nothing and keeps the whole edit→verify→optimize loop
+open:
+```python
+BEAM_LENGTH = 100.0      # editable + sweepable
+BEAM_THICKNESS = 10.0
+beam = Box(BEAM_LENGTH, 20.0, BEAM_THICKNESS)   # 20.0 stays frozen
+```
+
 **Quantitative geometry report (`geometry_report`).** Every `cad.execute_build123d`
 and `cad.edit_parameter` response carries a deterministic `geometry_report` —
 judge proportions from these *numbers*, not only the blurry thumbnail (LLMs read
