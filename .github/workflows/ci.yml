@@ -67,25 +67,20 @@ jobs:
       - name: Version surface anti-drift
         run: python ../../scripts/update_version_surface.py --check
 
-      - name: Version surface anti-drift tests
-        run: pytest tests/test_version_surface_drift.py -q
-
-      - name: Autopilot / adapter tests
-        # Adapter tests mock the CLI subprocess (no real Claude/Codex needed);
-        # autopilot tests use the deterministic fake adapter (no LLM/network).
-        run: pytest tests -q -k "claude or adapter or autopilot"
-
-      - name: Credibility report tests
-        run: pytest tests/test_credibility_report.py -q
-
-      - name: Geometry verification tests
-        run: pytest tests/test_geometry_verification.py -q
+      - name: Backend test suite
+        # The WHOLE suite, deliberately. This job used to run a hand-picked list
+        # of files and -k expressions, which meant every NEW test file was
+        # invisible to CI until someone remembered to add it — that is exactly
+        # how a doc-contract regression in tests/test_agent_guides.py shipped
+        # through a green PR. An allowlist that has to be maintained is a
+        # guarantee of future gaps; running everything needs no maintenance.
+        #
+        # Solver/mesh tests skip themselves when Gmsh/CalculiX are absent, so
+        # this stays honest on a runner without them.
+        run: pytest tests -q
 
       - name: Analytical FEA benchmark corpus tests
         run: cd ../../aieng && pytest tests/test_benchmarks_analytical_fea.py -q
-
-      - name: CAD generation tests (labels / named parts / append)
-        run: pytest tests/test_cad_generation.py -q -k "label or named_parts or append_preserves or single_labeled"
 
   vscode-extension:
     name: VS Code extension (test + package + smoke)
