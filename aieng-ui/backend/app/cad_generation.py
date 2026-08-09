@@ -63,6 +63,41 @@ def _fidelity_brief(topology_map: dict[str, Any], feature_graph: dict[str, Any])
     }
 
 
+def _editable_parameters_brief(feature_graph: dict[str, Any]) -> dict[str, Any] | None:
+    """Compact editable-parameter count for build/edit responses.
+
+    A model whose dimensions are literals has NO editable parameters, which
+    silently dead-ends the two things a user asks for next: the fast
+    ``cad.edit_parameter`` resize and ``opt.sizing_sweep`` optimization (both
+    address a named constant). Surfacing the count at build time lets the agent
+    self-correct immediately instead of discovering it one user request later.
+
+    Same index as ``cad.list_editable_parameters`` (single source). Best-effort:
+    never breaks a build.
+    """
+    try:
+        from .agent_autopilot.parameter_binding import (
+            build_parameter_index,
+            summarize_parameter_index,
+        )
+
+        summary = summarize_parameter_index(build_parameter_index(feature_graph))
+    except Exception:
+        return None
+    brief: dict[str, Any] = {
+        "total": summary["total"],
+        "by_scope": summary["by_scope"],
+    }
+    if not summary["total"]:
+        brief["hint"] = (
+            "No dimension is editable: cad.edit_parameter and opt.sizing_sweep "
+            "cannot target this model. Declare dimensions as UPPER_SNAKE_CASE "
+            "constants (e.g. WALL_THICKNESS = 3.0) and rebuild to unlock the "
+            "fast-edit and sizing-optimization paths."
+        )
+    return brief
+
+
 def _standard_fastener_plan_from_feature_graph(feature_graph: dict[str, Any] | None) -> dict[str, Any]:
     """Return advisory hole-to-fastener plans for design_review.
 
@@ -3420,6 +3455,7 @@ def _finish_execute_build123d_response(
         "geometry_report": _geometry_report_for_response(geometry_report_for_response, response_detail),
         "geometry_report_summary": _geometry_report_summary(geometry_report_for_response),
         "modeling_fidelity": _fidelity_brief(topo, feature_graph),
+        "editable_parameters": _editable_parameters_brief(feature_graph),
         "written_artifacts": written,
         "write_files": write_files,
         "preview_url": f"/api/projects/{project_id}/cad-preview",
@@ -6427,6 +6463,90 @@ def _replace_member(pkg_path: Path, name: str, data: bytes) -> None:
         raise
 
 
+def _run_mesh_analysis_chain(package_path: Path) -> dict[str, Any]:
+    """Region graph + fits + readiness for a MESH package. Returns summary keys.
+
+    A mesh result only stays referenceable downstream through
+    ``graph/mesh_region_graph.json`` and the fit/readiness artifacts built on
+    top of it. This must therefore run on EVERY path that lands a mesh in a
+    package — including a GeometryCache HIT, which restores the binary
+    artifacts but used to return before this chain, silently yielding a
+    package with no regions. Whether a topology-optimization writeback
+    produced a usable result then depended on whether that geometry hash had
+    been seen before.
+    """
+    out: dict[str, Any] = {}
+    try:
+        from aieng.converters.mesh_region_segmentation import write_mesh_region_graph
+        rg = write_mesh_region_graph(package_path)
+        out["mesh_region_count"] = len(rg.get("regions") or [])
+        from aieng.converters.mesh_surface_fitting import write_mesh_surface_fit
+        sf = write_mesh_surface_fit(package_path)
+        out["mesh_plane_fit_count"] = len(sf.get("surfaces") or [])
+        # Freeform/NURBS surface fitting evidence v0 (evidence-only; no B-Rep/STEP).
+        from aieng.converters.mesh_freeform_surface_fitting import write_freeform_surface_fit
+        ff = write_freeform_surface_fit(package_path)
+        out["mesh_freeform_fit_count"] = len(ff.get("surfaces") or [])
+        # Freeform readiness scoring v0 (advisory; does NOT generate B-Rep faces/STEP).
+        from aieng.converters.mesh_freeform_surface_readiness import write_freeform_readiness
+        fr = write_freeform_readiness(package_path)
+        out["mesh_freeform_readiness"] = fr.get("status")
+        # Freeform B-Rep FACE candidate generation v0 (candidate-only; no stitch/solid/STEP).
+        from aieng.converters.mesh_freeform_brep_face_generation import write_freeform_brep_faces
+        fbf = write_freeform_brep_faces(package_path)
+        out["mesh_freeform_face_candidate_count"] = (fbf.get("summary") or {}).get("generated_face_count", 0)
+        # Freeform face TRIMMING readiness v0 (diagnostic-only; no trimming/stitch/STEP).
+        from aieng.converters.mesh_freeform_face_trimming_readiness import write_freeform_trimming_readiness
+        ftr = write_freeform_trimming_readiness(package_path)
+        out["mesh_freeform_trimming_readiness"] = ftr.get("status")
+        from aieng.converters.mesh_reconstruction_readiness import write_mesh_reconstruction_readiness
+        rr = write_mesh_reconstruction_readiness(package_path)
+        out["reconstruction_next_action"] = (rr.get("readiness") or {}).get("recommended_next_action")
+        # Partial B-Rep PLANNING: accepted fits -> face candidates (no stitching/solid/STEP).
+        from aieng.converters.mesh_brep_reconstruction import write_partial_brep_plan
+        bp = write_partial_brep_plan(package_path)
+        out["brep_face_candidate_count"] = (bp.get("summary") or {}).get("candidate_face_count", 0)
+        # Generate + validate real OCC faces from the candidates (no stitch/solid/STEP).
+        from aieng.converters.mesh_brep_face_generation import write_brep_faces
+        gf = write_brep_faces(package_path)
+        out["brep_generated_face_count"] = (gf.get("summary") or {}).get("generated_face_count", 0)
+        # Stitching readiness + edge matching (plan only; no sewing/shell/STEP).
+        from aieng.converters.mesh_brep_stitching import write_brep_stitching_plan
+        sp = write_brep_stitching_plan(package_path)
+        out["brep_matched_edge_pairs"] = (sp.get("summary") or {}).get("matched_edge_pair_count", 0)
+        # Conservative mesh-to-CAD continuation: sew candidate faces, create/export
+        # STEP only if OCC validates a closed solid, then roundtrip-verify.
+        from aieng.converters.mesh_brep_solidification import reconstruct_brep_step
+        br = reconstruct_brep_step(package_path)
+        out["brep_shell_type"] = ((br.get("sewing") or {}).get("summary") or {}).get("shell_type")
+        out["brep_step_exported"] = bool((br.get("step_export") or {}).get("step_exported"))
+        out["brep_roundtrip_status"] = (br.get("roundtrip_verification") or {}).get("status")
+        # Mesh-to-CAD reconstruction STATUS AGGREGATOR v0 (diagnostic summary only).
+        from aieng.converters.mesh_to_cad_reconstruction_status import write_mesh_to_cad_reconstruction_status
+        rs = write_mesh_to_cad_reconstruction_status(package_path)
+        out["mesh_to_cad_status"] = rs.get("status")
+        out["mesh_to_cad_next_action"] = rs.get("recommended_next_action")
+        # Mesh region SEGMENTATION QUALITY + re-segmentation hints v0 (advisory only).
+        from aieng.converters.mesh_segmentation_quality import write_segmentation_quality
+        sq, sh = write_segmentation_quality(package_path)
+        out["mesh_segmentation_quality"] = sq.get("status")
+        out["mesh_segmentation_quality_score"] = (sq.get("summary") or {}).get("overall_quality_score")
+        out["mesh_resegmentation_next_action"] = sh.get("recommended_next_action")
+    except Exception as _mesh_exc:  # noqa: BLE001 - mesh analysis is best-effort
+        # Best-effort, but NEVER silent: this chain builds the region
+        # graph a mesh result needs to stay referenceable downstream
+        # (and every fit/readiness step after it). Swallowing without a
+        # record left an optimized mesh with no regions, no counts, and
+        # no reason — invisible to the user and undiagnosable from a
+        # failing test.
+        out["mesh_analysis_error"] = f"{type(_mesh_exc).__name__}: {_mesh_exc}"
+        LOGGER.warning(
+            "mesh analysis chain failed for %s: %s",
+            package_path, out["mesh_analysis_error"], exc_info=True,
+        )
+    return out
+
+
 def recompile_shape_ir_package(package_path: Path, *, timeout: int = 120, use_cache: bool = True) -> dict[str, Any]:
     """Recompile + re-execute a package whose geometry/shape_ir.json changed.
 
@@ -6495,7 +6615,7 @@ def recompile_shape_ir_package(package_path: Path, *, timeout: int = 120, use_ca
                         refresh(package_path)
                     except Exception:  # noqa: BLE001 - cache restore remains best-effort
                         pass
-                return {
+                cached_summary: dict[str, Any] = {
                     "representation": representation,
                     "runtime": runtime,
                     "executed": True,
@@ -6504,6 +6624,14 @@ def recompile_shape_ir_package(package_path: Path, *, timeout: int = 120, use_ca
                     "cache_hit": True,
                     "source_path": cached.metadata.get("source_path", "geometry/source.py"),
                 }
+                # A cache hit restores the binary artifacts but NOT the derived
+                # mesh analysis, so the region graph (and every fit/readiness
+                # artifact built on it) has to be rebuilt here too — otherwise a
+                # mesh result is referenceable or not depending purely on
+                # whether its geometry hash had been seen before.
+                if geometry_kind == "mesh":
+                    cached_summary.update(_run_mesh_analysis_chain(package_path))
+                return cached_summary
             metrics.record_miss()
         except Exception:
             # Cache failure is non-fatal; fall through to normal compilation
@@ -6600,64 +6728,7 @@ def recompile_shape_ir_package(package_path: Path, *, timeout: int = 120, use_ca
             summary.update(executed=True, geometry_kind="mesh")
             # Mesh outputs get a solver-neutral region graph + analytic plane fits for
             # planar_candidate regions (observational mesh analysis; not B-Rep).
-            try:
-                from aieng.converters.mesh_region_segmentation import write_mesh_region_graph
-                rg = write_mesh_region_graph(package_path)
-                summary["mesh_region_count"] = len(rg.get("regions") or [])
-                from aieng.converters.mesh_surface_fitting import write_mesh_surface_fit
-                sf = write_mesh_surface_fit(package_path)
-                summary["mesh_plane_fit_count"] = len(sf.get("surfaces") or [])
-                # Freeform/NURBS surface fitting evidence v0 (evidence-only; no B-Rep/STEP).
-                from aieng.converters.mesh_freeform_surface_fitting import write_freeform_surface_fit
-                ff = write_freeform_surface_fit(package_path)
-                summary["mesh_freeform_fit_count"] = len(ff.get("surfaces") or [])
-                # Freeform readiness scoring v0 (advisory; does NOT generate B-Rep faces/STEP).
-                from aieng.converters.mesh_freeform_surface_readiness import write_freeform_readiness
-                fr = write_freeform_readiness(package_path)
-                summary["mesh_freeform_readiness"] = fr.get("status")
-                # Freeform B-Rep FACE candidate generation v0 (candidate-only; no stitch/solid/STEP).
-                from aieng.converters.mesh_freeform_brep_face_generation import write_freeform_brep_faces
-                fbf = write_freeform_brep_faces(package_path)
-                summary["mesh_freeform_face_candidate_count"] = (fbf.get("summary") or {}).get("generated_face_count", 0)
-                # Freeform face TRIMMING readiness v0 (diagnostic-only; no trimming/stitch/STEP).
-                from aieng.converters.mesh_freeform_face_trimming_readiness import write_freeform_trimming_readiness
-                ftr = write_freeform_trimming_readiness(package_path)
-                summary["mesh_freeform_trimming_readiness"] = ftr.get("status")
-                from aieng.converters.mesh_reconstruction_readiness import write_mesh_reconstruction_readiness
-                rr = write_mesh_reconstruction_readiness(package_path)
-                summary["reconstruction_next_action"] = (rr.get("readiness") or {}).get("recommended_next_action")
-                # Partial B-Rep PLANNING: accepted fits -> face candidates (no stitching/solid/STEP).
-                from aieng.converters.mesh_brep_reconstruction import write_partial_brep_plan
-                bp = write_partial_brep_plan(package_path)
-                summary["brep_face_candidate_count"] = (bp.get("summary") or {}).get("candidate_face_count", 0)
-                # Generate + validate real OCC faces from the candidates (no stitch/solid/STEP).
-                from aieng.converters.mesh_brep_face_generation import write_brep_faces
-                gf = write_brep_faces(package_path)
-                summary["brep_generated_face_count"] = (gf.get("summary") or {}).get("generated_face_count", 0)
-                # Stitching readiness + edge matching (plan only; no sewing/shell/STEP).
-                from aieng.converters.mesh_brep_stitching import write_brep_stitching_plan
-                sp = write_brep_stitching_plan(package_path)
-                summary["brep_matched_edge_pairs"] = (sp.get("summary") or {}).get("matched_edge_pair_count", 0)
-                # Conservative mesh-to-CAD continuation: sew candidate faces, create/export
-                # STEP only if OCC validates a closed solid, then roundtrip-verify.
-                from aieng.converters.mesh_brep_solidification import reconstruct_brep_step
-                br = reconstruct_brep_step(package_path)
-                summary["brep_shell_type"] = ((br.get("sewing") or {}).get("summary") or {}).get("shell_type")
-                summary["brep_step_exported"] = bool((br.get("step_export") or {}).get("step_exported"))
-                summary["brep_roundtrip_status"] = (br.get("roundtrip_verification") or {}).get("status")
-                # Mesh-to-CAD reconstruction STATUS AGGREGATOR v0 (diagnostic summary only).
-                from aieng.converters.mesh_to_cad_reconstruction_status import write_mesh_to_cad_reconstruction_status
-                rs = write_mesh_to_cad_reconstruction_status(package_path)
-                summary["mesh_to_cad_status"] = rs.get("status")
-                summary["mesh_to_cad_next_action"] = rs.get("recommended_next_action")
-                # Mesh region SEGMENTATION QUALITY + re-segmentation hints v0 (advisory only).
-                from aieng.converters.mesh_segmentation_quality import write_segmentation_quality
-                sq, sh = write_segmentation_quality(package_path)
-                summary["mesh_segmentation_quality"] = sq.get("status")
-                summary["mesh_segmentation_quality_score"] = (sq.get("summary") or {}).get("overall_quality_score")
-                summary["mesh_resegmentation_next_action"] = sh.get("recommended_next_action")
-            except Exception:  # noqa: BLE001 - mesh analysis is best-effort
-                pass
+            summary.update(_run_mesh_analysis_chain(package_path))
         else:
             summary["skipped"] = True
             # Honest record: representation emitted source but no runner is wired.
@@ -7391,6 +7462,7 @@ def execute_build123d_code(
         "geometry_report": _geometry_report_for_response(geometry_report_for_response, response_detail),
         "geometry_report_summary": _geometry_report_summary(geometry_report_for_response),
         "modeling_fidelity": _fidelity_brief(topo, feature_graph),
+        "editable_parameters": _editable_parameters_brief(feature_graph),
         "written_artifacts": written,
         "write_files": write_files,
         "preview_url": f"/api/projects/{project_id}/cad-preview",
@@ -9400,6 +9472,7 @@ def edit_build123d_parameter(
         "geometry_report": _geometry_report_for_response(geometry_report_full, response_detail),
         "geometry_report_summary": _geometry_report_summary(geometry_report_full),
         "modeling_fidelity": _fidelity_brief(topo, feature_graph),
+        "editable_parameters": _editable_parameters_brief(feature_graph),
         "topology_changed": topology_change["topology_changed"],
         "topology_change": topology_change,
         "geometry_verification": geometry_verification,
@@ -9671,6 +9744,7 @@ def _rebuild_after_part_edit(
         "geometry_report": _geometry_report_for_response(geometry_report_full, response_detail),
         "geometry_report_summary": _geometry_report_summary(geometry_report_full),
         "modeling_fidelity": _fidelity_brief(topo, feature_graph),
+        "editable_parameters": _editable_parameters_brief(feature_graph),
         "geometry_verification": geometry_verification,
         "regression_diff": regression_diff,
         "critique_diff": critique_diff,

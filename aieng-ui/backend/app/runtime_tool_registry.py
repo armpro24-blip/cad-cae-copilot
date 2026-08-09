@@ -125,10 +125,15 @@ def resolve_ccx_command() -> tuple[list[str] | None, str]:
         if not parts:
             return None, "AIENG_CCX_CMD is set but empty."
         launcher = parts[0]
-        # Direct PATH hit: keep the original argv unchanged (subprocess resolves
-        # the launcher at run time, as before — no behavioral change) — EXCEPT a
-        # bare conda-env ccx.exe, which crashes on Windows (DLL load); rewrite it
-        # to the conda-run launcher that activates the env.
+        # Direct PATH hit: substitute the ABSOLUTE launcher path — EXCEPT a bare
+        # conda-env ccx.exe, which crashes on Windows (DLL load); that is
+        # rewritten to the conda-run launcher that activates the env.
+        #
+        # Resolving to an absolute path matters: a bare name is re-resolved by
+        # CreateProcess at launch time, and libraries loaded in between (gmsh in
+        # particular) mutate PATH, after which `conda` no longer resolves and the
+        # solver dies with a bare "[WinError 2] file not found" — which is how
+        # every sizing-sweep variant failed after meshing.
         resolved_direct = shutil.which(launcher)
         if resolved_direct:
             if len(parts) == 1:
@@ -139,7 +144,9 @@ def resolve_ccx_command() -> tuple[list[str] | None, str]:
                         f"auto-using the conda-run launcher to avoid a Windows "
                         f"DLL-load crash"
                     )
-            return parts, f"AIENG_CCX_CMD launcher {launcher!r} found on PATH"
+            return [resolved_direct, *parts[1:]], (
+                f"AIENG_CCX_CMD launcher {launcher!r} found on PATH ({resolved_direct})"
+            )
         # Fallback: resolve a conda-family launcher via its *_EXE env var / .exe
         # (the Windows case where bare `conda` is a shim not on the process PATH).
         resolved = _resolve_launcher(launcher)

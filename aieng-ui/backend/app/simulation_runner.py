@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import shutil
 import subprocess
 import tempfile
@@ -29,12 +30,36 @@ from fastapi import HTTPException
 
 # ── Tool availability ─────────────────────────────────────────────────────────
 
-def _find_ccx() -> str | None:
-    for candidate in ("ccx", "ccx_linux", "ccx2.21", "ccx_static"):
-        cmd = shutil.which(candidate)
-        if cmd:
-            return cmd
-    return None
+def _subprocess_env() -> dict[str, str]:
+    """Environment for solver subprocesses.
+
+    Passing this EXPLICITLY is required on Windows: importing and running gmsh
+    in-process corrupts the native (Win32) environment block that child
+    processes inherit — ``PATH`` loses even ``System32`` — while Python's
+    ``os.environ`` stays intact. Without it, any flow that meshes and then
+    solves in the SAME process (sizing sweep, DOE, mesh convergence,
+    ``cae.run_simulation_pipeline``) fails to launch ccx with a bare
+    ``[WinError 2] file not found``, or launches a conda shim that then cannot
+    find ``chcp``. Handing CreateProcess this dict bypasses the corrupted block.
+    """
+    return dict(os.environ)
+
+
+def _find_ccx() -> list[str] | None:
+    """Resolve the CalculiX argv, honouring ``AIENG_CCX_CMD``.
+
+    Delegates to the same resolver ``cae.run_solver`` uses so every solver path
+    agrees on how ccx is launched. This must NOT be a bare ``shutil.which``:
+    the documented Windows setup is ``AIENG_CCX_CMD="conda run -n calculix-env
+    ccx"`` (a multi-token launcher), and a bare ``ccx.exe`` path crashes there
+    on missing runtime DLLs. Reading only PATH made every sweep/DOE/convergence
+    variant report ``required tools unavailable: ccx`` on a correctly
+    configured machine.
+    """
+    from .runtime_tool_registry import resolve_ccx_command
+
+    argv, _reason = resolve_ccx_command()
+    return argv
 
 
 def _gmsh_available() -> bool:
@@ -53,7 +78,9 @@ def check_simulation_tools() -> dict[str, Any]:
     return {
         "gmsh": gmsh_ok,
         "calculix": ccx is not None,
-        "calculix_cmd": ccx,
+        # Reported as a readable string (the launcher may be multi-token, e.g.
+        # "conda run -n calculix-env ccx"); callers that execute it use _find_ccx.
+        "calculix_cmd": " ".join(ccx) if ccx else None,
         "ready": len(missing) == 0,
         "missing": missing,
     }
@@ -1713,6 +1740,26 @@ def _count_solver_step_cards(deck_text: str) -> tuple[int, int]:
     return boundary_count, load_count
 
 
+#: Setup artifacts the core deck generator falls back to when ``setup.yaml``
+#: entries cannot be resolved to an NSET. They must travel with the synthesized
+#: runtime package or the runtime path is strictly weaker than the MCP one.
+_PARSED_SETUP_MEMBERS = (
+    "simulation/cae_imports/parsed_materials.json",
+    "simulation/cae_imports/parsed_boundary_conditions.json",
+    "simulation/cae_imports/parsed_loads.json",
+)
+
+
+def _read_parsed_setup_members(package_path: Path) -> dict[str, bytes]:
+    """Return the parsed_* setup artifacts present in a package."""
+    members: dict[str, bytes] = {}
+    for name in _PARSED_SETUP_MEMBERS:
+        blob = _read_member(package_path, name)
+        if blob:
+            members[name] = blob
+    return members
+
+
 def _build_core_solver_deck_from_mesh(
     mesh_inp_text: str,
     setup: dict[str, Any],
@@ -1720,6 +1767,7 @@ def _build_core_solver_deck_from_mesh(
     cae_mapping: dict[str, Any],
     *,
     run_id: str = "run_runtime",
+    parsed_members: dict[str, bytes] | None = None,
 ) -> tuple[str, int, int, list[str]]:
     """Build a solver deck through the canonical core deck generator.
 
@@ -1727,6 +1775,13 @@ def _build_core_solver_deck_from_mesh(
     source deck. Synthesize that source deck, then call the public
     ``generate_solver_input_package`` API so runtime solves and MCP solver input
     generation share material, BC, load, unit, and step assembly code.
+
+    ``parsed_members`` carries the package's ``parsed_*.json`` setup artifacts
+    into the synthesized package. Without them the generator can only resolve
+    BCs/loads that ``setup.yaml`` maps to an NSET, so a package that
+    ``cae.generate_solver_input`` decks successfully (it reads the full package)
+    failed here with "missing required setup: boundary_conditions, loads" —
+    which silently blocked every sizing sweep / DOE / convergence variant.
     """
     ensure_aieng_on_path()
     from aieng.simulation.deck_generator import generate_solver_input_package
@@ -1745,6 +1800,8 @@ def _build_core_solver_deck_from_mesh(
             zf.writestr("simulation/setup.yaml", yaml.safe_dump(setup))
             zf.writestr(_CAE_MAPPING_PATH, json.dumps(cae_mapping, indent=2))
             zf.writestr(SOURCE_SOLVER_DECK_PATH, source_deck)
+            for name, blob in (parsed_members or {}).items():
+                zf.writestr(name, blob)
 
         result = generate_solver_input_package(pkg, run_id=run_id, overwrite=True)
         warnings.extend(result.get("warnings") or [])
@@ -1766,11 +1823,12 @@ def _run_calculix(
         raise RuntimeError("CalculiX (ccx) not found")
 
     result = subprocess.run(
-        [ccx_cmd, inp_path.stem],
+        [*ccx_cmd, inp_path.stem],
         cwd=str(work_dir),
         capture_output=True,
         text=True,
         timeout=timeout,
+        env=_subprocess_env(),
     )
     log = result.stdout + "\n" + result.stderr
     frd = work_dir / f"{inp_path.stem}.frd"
@@ -1961,7 +2019,8 @@ def solve_package_static(
                 _load_count,
                 deck_warnings,
             ) = _build_core_solver_deck_from_mesh(
-                mesh_text, setup, nsets, cae_mapping, run_id="sizing_solve"
+                mesh_text, setup, nsets, cae_mapping, run_id="sizing_solve",
+                parsed_members=_read_parsed_setup_members(package_path),
             )
             deck_inp = work / "aieng_run.inp"
             deck_inp.write_text(deck_text)
@@ -2181,7 +2240,8 @@ def _run_simulation_core(
             load_count,
             deck_warnings,
         ) = _build_core_solver_deck_from_mesh(
-            mesh_text, setup, nsets, cae_mapping, run_id="rest_simulation"
+            mesh_text, setup, nsets, cae_mapping, run_id="rest_simulation",
+            parsed_members=_read_parsed_setup_members(package_path),
         )
         deck_inp = work_dir / "aieng_run.inp"
         deck_inp.write_text(deck_text)

@@ -8,6 +8,11 @@ the LLM tool-calling loop or context management.
 > the full [AGENTS.md](AGENTS.md) guide in-band, or read it directly in this directory.
 > It covers tool taxonomy, workflow patterns, pointer syntax (`@face:`, `@feature:`, …),
 > and approval-gated operations.
+>
+> **Just want to use it?** You do not need any of that. See
+> [`docs/prompt-guide.md`](../../docs/prompt-guide.md) for the plain sentences to
+> type — model a part, check it, resize it, run a static analysis, optimize the
+> sizing. AGENTS.md is for the agent; the prompt guide is for you.
 
 ## What gets exposed
 

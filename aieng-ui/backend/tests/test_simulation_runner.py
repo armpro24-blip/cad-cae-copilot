@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import zipfile
 from pathlib import Path
@@ -240,16 +241,85 @@ def test_check_tools_ready_only_when_both_present() -> None:
     from app.simulation_runner import check_simulation_tools
 
     with patch("app.simulation_runner._gmsh_available", return_value=True), \
-         patch("app.simulation_runner._find_ccx", return_value="/usr/bin/ccx"):
+         patch("app.simulation_runner._find_ccx", return_value=["/usr/bin/ccx"]):
         result = check_simulation_tools()
         assert result["ready"] is True
         assert result["missing"] == []
+        assert result["calculix_cmd"] == "/usr/bin/ccx"
 
     with patch("app.simulation_runner._gmsh_available", return_value=False), \
          patch("app.simulation_runner._find_ccx", return_value=None):
         result = check_simulation_tools()
         assert result["ready"] is False
         assert set(result["missing"]) == {"gmsh", "ccx"}
+        assert result["calculix_cmd"] is None
+
+
+def test_find_ccx_honours_aieng_ccx_cmd(monkeypatch) -> None:
+    """The sweep/DOE/convergence solver must resolve ccx the same way
+    cae.run_solver does — via AIENG_CCX_CMD, not a bare PATH lookup.
+
+    Regression: reading only ``shutil.which("ccx")`` made every sizing-sweep
+    variant report "required tools unavailable: ccx" on the documented Windows
+    setup (AIENG_CCX_CMD="conda run -n calculix-env ccx"), so the whole sizing
+    optimization path was unusable on a correctly configured machine.
+    """
+    import app.simulation_runner as sr
+
+    monkeypatch.setenv("AIENG_CCX_CMD", "conda run -n calculix-env ccx")
+    monkeypatch.setattr(
+        "app.runtime_tool_registry.shutil.which",
+        lambda name: r"C:\conda\condabin\conda.BAT" if name == "conda" else None,
+    )
+
+    argv = sr._find_ccx()
+    assert argv is not None
+    # multi-token launcher preserved, and argv[0] resolved to an ABSOLUTE path so
+    # a later PATH mutation cannot break the launch
+    assert argv[0] == r"C:\conda\condabin\conda.BAT"
+    assert argv[1:] == ["run", "-n", "calculix-env", "ccx"]
+
+    with patch("app.simulation_runner._gmsh_available", return_value=True):
+        assert sr.check_simulation_tools()["ready"] is True
+
+
+def test_run_calculix_passes_explicit_env_and_full_argv(tmp_path, monkeypatch) -> None:
+    """ccx must be launched with the full multi-token argv AND an explicit env.
+
+    Regression: gmsh corrupts the native Win32 environment block that children
+    inherit (PATH loses even System32) while Python's os.environ stays intact,
+    so any flow that meshes then solves in one process failed to launch ccx.
+    Passing env= explicitly bypasses the corrupted block.
+    """
+    import subprocess as _subprocess
+
+    import app.simulation_runner as sr
+
+    captured: dict = {}
+
+    class _Result:
+        returncode = 0
+        stdout = "Job finished"
+        stderr = ""
+
+    def _fake_run(argv, **kwargs):
+        captured["argv"] = argv
+        captured["kwargs"] = kwargs
+        return _Result()
+
+    monkeypatch.setattr(sr, "_find_ccx", lambda: ["conda-abs", "run", "-n", "env", "ccx"])
+    monkeypatch.setattr(_subprocess, "run", _fake_run)
+
+    deck = tmp_path / "job.inp"
+    deck.write_text("*HEADING\n")
+    rc, _log, _frd = sr._run_calculix(deck, tmp_path, timeout=60)
+
+    assert rc == 0
+    # every launcher token survives, with the deck stem appended
+    assert captured["argv"] == ["conda-abs", "run", "-n", "env", "ccx", "job"]
+    env = captured["kwargs"].get("env")
+    assert isinstance(env, dict) and env, "ccx must receive an explicit environment"
+    assert env.get("PATH") == os.environ.get("PATH")
 
 
 # ── _nodes_on_face ────────────────────────────────────────────────────────────
@@ -2117,3 +2187,69 @@ def test_ensure_source_deck_reports_faces_that_caught_no_nodes(tmp_path: Path) -
     assert "BASE" in result["nset_names"]  # bottom face caught the 4 z=0 nodes
     assert result["empty_nsets"] == ["LOAD"]  # ghost face caught nothing
     assert result["empty_nset_faces"]["LOAD"] == ["@face:face_ghost"]
+
+
+def test_read_parsed_setup_members_collects_present_artifacts(tmp_path: Path) -> None:
+    """The runtime deck path must carry the package's parsed_* setup artifacts.
+
+    Regression: the synthesized runtime package held only manifest + setup.yaml
+    + cae_mapping + source deck, so the core generator lost its fallback to
+    parsed_boundary_conditions/parsed_loads. A package that
+    cae.generate_solver_input decks fine (it reads the full package) failed here
+    with "missing required setup: boundary_conditions, loads" — which blocked
+    every sizing-sweep / DOE / mesh-convergence variant.
+    """
+    import app.simulation_runner as sr
+
+    pkg = tmp_path / "p.aieng"
+    with zipfile.ZipFile(pkg, "w") as zf:
+        zf.writestr("manifest.json", json.dumps({"schema_version": "0.1"}))
+        zf.writestr(
+            "simulation/cae_imports/parsed_boundary_conditions.json",
+            json.dumps({"boundary_conditions": [{"id": "bc", "target": "FIXED_END"}]}),
+        )
+        zf.writestr(
+            "simulation/cae_imports/parsed_loads.json",
+            json.dumps({"loads": [{"id": "ld", "target": "LOAD_END", "dof": 3, "value": -50}]}),
+        )
+        # parsed_materials deliberately absent — only present members are carried
+
+    members = sr._read_parsed_setup_members(pkg)
+
+    assert set(members) == {
+        "simulation/cae_imports/parsed_boundary_conditions.json",
+        "simulation/cae_imports/parsed_loads.json",
+    }
+    assert json.loads(members["simulation/cae_imports/parsed_loads.json"])["loads"][0]["value"] == -50
+
+
+def test_core_deck_from_mesh_writes_parsed_members_into_runtime_package(monkeypatch) -> None:
+    """_build_core_solver_deck_from_mesh must place the parsed_* artifacts in the
+    package it hands to the core deck generator."""
+    import app.simulation_runner as sr
+
+    seen: dict = {}
+
+    def _fake_generate(pkg_path, run_id="", overwrite=False):
+        with zipfile.ZipFile(pkg_path, "a") as zf:
+            seen["members"] = set(zf.namelist())
+            zf.writestr(f"simulation/runs/{run_id}/solver_input.inp", "*HEADING\ndeck\n")
+        return {"warnings": []}
+
+    import aieng.simulation.deck_generator as dg
+
+    monkeypatch.setattr(dg, "generate_solver_input_package", _fake_generate)
+    monkeypatch.setattr(
+        sr, "build_source_deck_from_mesh", lambda *_a, **_k: ("*HEADING\nsrc\n", [])
+    )
+
+    parsed = {
+        "simulation/cae_imports/parsed_loads.json": b'{"loads": []}',
+        "simulation/cae_imports/parsed_boundary_conditions.json": b'{"boundary_conditions": []}',
+    }
+    sr._build_core_solver_deck_from_mesh(
+        "*NODE\n", {"material_name": "Al"}, {"FIXED_END": [1]}, {"mappings": []},
+        run_id="t", parsed_members=parsed,
+    )
+
+    assert parsed.keys() <= seen["members"], seen["members"]

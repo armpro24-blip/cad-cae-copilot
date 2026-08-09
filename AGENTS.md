@@ -605,6 +605,26 @@ build's quality self-check; a `crude`/`basic` level means it reads as a primitiv
 (no edge-breaking, bare boxes) — don't report it done, improve it (e.g. via the `housing()` /
 `rounded_box()` / `boss()` / `rib()` scaffolds) and re-build.
 
+**`editable_parameters` — did you keep the model editable?** Every
+`cad.execute_build123d` / `cad.edit_parameter` / `cad.replace_part` /
+`cad.remove_part` response carries
+`editable_parameters` ({`total`, `by_scope`, and a `hint` when total is 0}).
+A model whose dimensions are **literals** has zero editable parameters, which
+silently dead-ends the two things a user asks for next:
+- the fast resize (`cad.edit_parameter`), and
+- sizing optimization (`opt.sizing_sweep` / `opt.doe_sizing_study`) —
+  both address a **named constant**, not a number in an expression.
+
+`total: 0` is your cue to re-emit the same geometry with UPPER_SNAKE_CASE
+constants **before** reporting done — not after the user asks "make it 8mm".
+Declaring constants costs nothing and keeps the whole edit→verify→optimize loop
+open:
+```python
+BEAM_LENGTH = 100.0      # editable + sweepable
+BEAM_THICKNESS = 10.0
+beam = Box(BEAM_LENGTH, 20.0, BEAM_THICKNESS)   # 20.0 stays frozen
+```
+
 **Quantitative geometry report (`geometry_report`).** Every `cad.execute_build123d`
 and `cad.edit_parameter` response carries a deterministic `geometry_report` —
 judge proportions from these *numbers*, not only the blurry thumbnail (LLMs read
@@ -1024,6 +1044,21 @@ verify these paths — see `aieng/docs/nafems_vv_cases.md`.
 
 - **Docker image:** already bundles `ccx`; no extra setup needed.
 
+**One resolver, one launch contract.** Every solver path (`cae.run_solver`,
+`cae.run_simulation_pipeline`, `opt.sizing_sweep`, `opt.doe_sizing_study`,
+`cae.mesh_convergence`, the design-study candidate solver) resolves ccx through
+`resolve_ccx_command()` and launches it with an **explicit environment**. Both
+halves are load-bearing on Windows:
+- the resolver substitutes the launcher's **absolute** path, so a later PATH
+  mutation cannot break the launch;
+- gmsh corrupts the native Win32 environment block that child processes inherit
+  (`PATH` loses even `System32`) while Python's `os.environ` stays intact, so a
+  flow that **meshes and then solves in the same process** must hand
+  `subprocess` an explicit `env=` or ccx fails to launch at all.
+
+If you add a new solver invocation, use `simulation_runner._find_ccx()` +
+`_subprocess_env()` rather than `shutil.which("ccx")`.
+
 **Real-ccx V&V gate.** On a machine with CalculiX plus the optional CAD/mesh
 stack installed, run the strict numerical gate with:
 
@@ -1418,6 +1453,12 @@ uvicorn app.main:app --reload --port 8000
 Verify with `aieng.list_projects`. Note: if the backend is down, the MCP server
 **falls back to in-process execution automatically** — tools still work (no live
 UI), so you can usually continue regardless.
+
+The fallback is fast in both failure modes: the server probes `/api/health`
+(5s) before committing to the long forward timeout, so a **hung** backend (port
+still open, never replies) falls back in seconds instead of blocking the full
+900s read timeout. A backend that is merely **busy** with a long solver run
+still answers health, so real work is never cut short.
 
 ---
 
