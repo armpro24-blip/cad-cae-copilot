@@ -178,9 +178,59 @@ The short summary must cite:
 - Show the viewer using real FRD-derived fields, not synthetic fallback.
 - Show report output with cited metrics and limitations.
 
+## Optional: the sizing-optimization follow-on
+
+The demo fixture declares its dimensions as UPPER_SNAKE_CASE constants
+(`BEAM_LENGTH` / `BEAM_WIDTH` / `BEAM_THICKNESS`), so the natural next request —
+"make it lighter while it still meets strength" — runs directly on the solved
+project. Confirm the targets first:
+
+```text
+cad.list_editable_parameters { project_id }
+```
+
+Then sweep one dimension, solving every variant with the real solver:
+
+```json
+{
+  "project_id": "<project_id>",
+  "featureId": "feat_body_001",
+  "parameterName": "thickness_mm",
+  "range": {"min": 6.0, "max": 10.0, "steps": 5},
+  "objective": "min_mass",
+  "stress_limit": 276.0,
+  "safety_factor": 2.0,
+  "mesh_size_mm": 6
+}
+```
+
+Tool: `opt.sizing_sweep` (approval-gated — it runs N solver executions).
+
+Reference result on this fixture (Gmsh + CalculiX 2.23, allowable 138 MPa):
+
+| thickness | max von Mises | mass | verdict |
+|---|---|---|---|
+| 6 mm | 16.69 MPa | 12000 | feasible — recommended (min mass) |
+| 7 mm | 12.58 MPa | 14000 | feasible |
+| 8 mm | 9.77 MPa | 16000 | feasible |
+| 9 mm | 7.50 MPa | 18000 | feasible |
+| 10 mm | 7.196 MPa | 20000 | feasible — matches the baseline solve |
+
+Every variant must report `solver_executed: true` and credibility tier
+`executed_solver_result`; a variant that fails to build or solve is reported
+honestly and never recommended. The baseline is untouched unless you pass
+`apply_winner=true`, which applies the winning value through the audited
+`cad.edit_parameter` path and reports its `regression_diff`.
+
+The 10 mm variant reproducing the baseline's max von Mises is a useful
+end-to-end cross-check: it means the sweep's regenerate → mesh → rebind → solve
+chain agrees with the single solve the demo already recorded.
+
 ## Honesty Boundaries
 
 - Linear static only.
+- Sweep rankings inherit every static-analysis limit below; a recommended
+  dimension is a starting point for engineering judgement, not a sign-off.
 - Mesh-dependent until a convergence study is run.
 - CalculiX execution and FRD extraction are solver evidence, not certification.
 - No physical validation, fatigue, buckling, nonlinear contact, or bolt preload
