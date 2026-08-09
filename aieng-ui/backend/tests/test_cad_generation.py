@@ -4288,3 +4288,98 @@ def _named_parts_in(out: dict) -> list:
         if nm:
             names.append(nm)
     return names
+
+
+def test_mesh_analysis_chain_runs_on_geometry_cache_hit(tmp_path: Path, monkeypatch) -> None:
+    """A cache-hit recompile of a MESH package must still build the region graph.
+
+    Regression: the cache-hit branch restored the binary artifacts and returned
+    early, skipping the whole mesh-analysis chain. A mesh result therefore kept
+    its downstream-referenceable region graph (and every fit/readiness artifact
+    built on it) only when its geometry hash had NOT been seen before — so a
+    topology-optimization writeback silently produced an unusable package the
+    second time the same geometry appeared.
+    """
+    from app import cad_generation as cg
+
+    calls: list[Path] = []
+
+    def _fake_chain(package_path: Path) -> dict[str, Any]:
+        calls.append(package_path)
+        return {"mesh_region_count": 3}
+
+    class _Cached:
+        topology_map = {"entities": []}
+        feature_graph = {"features": []}
+        metadata = {
+            "representation": "manifold_mesh",
+            "runtime": "manifold",
+            "geometry_kind": "mesh",
+            "source_path": "geometry/manifold_source.py",
+        }
+
+    class _Cache:
+        def get(self, _h):
+            return _Cached()
+
+    class _Metrics:
+        def record_hit(self):
+            pass
+
+        def record_miss(self):
+            pass
+
+    monkeypatch.setattr(cg, "_run_mesh_analysis_chain", _fake_chain)
+    monkeypatch.setattr(cg, "_cached_geometry_has_real_artifacts", lambda _c: True)
+    monkeypatch.setattr(cg, "_write_cached_artifacts_to_package", lambda *_a, **_k: None)
+    monkeypatch.setattr(cg, "reconcile_shape_ir_provenance", lambda *_a, **_k: None)
+    # These are imported locally inside recompile_shape_ir_package, so patch them
+    # at their source module rather than on cad_generation.
+    monkeypatch.setattr(
+        "aieng.converters.shape_ir_verification.write_shape_ir_verification",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        "aieng.converters.shape_ir_object_registry.write_shape_ir_object_registry",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "aieng.cache.geometry_cache",
+        type("_M", (), {
+            "GeometryCache": _Cache,
+            "compute_shape_ir_hash": staticmethod(lambda _p: "h"),
+        }),
+    )
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "aieng.cache.metrics",
+        type("_M", (), {"get_default_metrics": staticmethod(lambda: _Metrics())}),
+    )
+
+    pkg = tmp_path / "cached.aieng"
+    with zipfile.ZipFile(pkg, "w") as zf:
+        zf.writestr("geometry/shape_ir.json", json.dumps({"nodes": [], "representation": "manifold_mesh"}))
+
+    out = cg.recompile_shape_ir_package(pkg, use_cache=True)
+
+    assert out["cache_hit"] is True and out["geometry_kind"] == "mesh"
+    assert calls == [pkg], "mesh analysis chain must run on the cache-hit path too"
+    assert out["mesh_region_count"] == 3
+
+
+def test_mesh_analysis_chain_failure_is_recorded_not_swallowed(tmp_path: Path, monkeypatch) -> None:
+    """A failing mesh-analysis chain must report a reason instead of vanishing."""
+    from app import cad_generation as cg
+
+    def _boom(_package_path):
+        raise RuntimeError("segmentation exploded")
+
+    monkeypatch.setattr(
+        "aieng.converters.mesh_region_segmentation.write_mesh_region_graph", _boom
+    )
+
+    out = cg._run_mesh_analysis_chain(tmp_path / "nope.aieng")
+
+    assert "mesh_analysis_error" in out
+    assert "segmentation exploded" in out["mesh_analysis_error"]
