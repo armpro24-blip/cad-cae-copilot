@@ -1433,6 +1433,12 @@ Verify with `aieng.list_projects`. Note: if the backend is down, the MCP server
 **falls back to in-process execution automatically** — tools still work (no live
 UI), so you can usually continue regardless.
 
+The fallback is fast in both failure modes: the server probes `/api/health`
+(5s) before committing to the long forward timeout, so a **hung** backend (port
+still open, never replies) falls back in seconds instead of blocking the full
+900s read timeout. A backend that is merely **busy** with a long solver run
+still answers health, so real work is never cut short.
+
 ---
 
 ## .aieng package structure (reference)

@@ -122,12 +122,41 @@ def _guide_required_result(tool_name: str, topic: str, read_topics: set[str]) ->
     }
 
 
+_BACKEND_HEALTH_TIMEOUT_SECONDS = 5
+
+
+def _backend_is_responsive() -> bool:
+    """Cheap liveness probe before committing to the long forward timeout.
+
+    A *dead* backend refuses the connection and the forward already fails in
+    ~2s. A *hung* one still holds the port open but never replies, so the
+    forward blocks for its full 900s timeout and only then falls back — the
+    agent sees ~15 minutes of silence for what should be an instant fallback.
+
+    ``/api/health`` separates the two honestly: uvicorn serves it concurrently,
+    so a backend that is merely *busy* with a long solver run still answers,
+    while a hung or dead one does not.
+    """
+    try:
+        with urllib.request.urlopen(
+            f"{_BACKEND_URL}/api/health", timeout=_BACKEND_HEALTH_TIMEOUT_SECONDS
+        ) as resp:
+            return 200 <= resp.status < 300
+    except Exception:
+        return False
+
+
 def _forward_to_backend(tool_name: str, args: dict[str, Any]) -> Any:
     """POST the tool call to the running backend; return its JSON result.
 
     Raises urllib.error.URLError if the backend is unreachable so the caller
     can decide whether to fall back to in-process execution.
     """
+    if not _backend_is_responsive():
+        raise urllib.error.URLError(
+            f"backend at {_BACKEND_URL} did not answer /api/health within "
+            f"{_BACKEND_HEALTH_TIMEOUT_SECONDS}s"
+        )
     url = f"{_BACKEND_URL}/api/agent/invoke-tool"
     body = json.dumps({"tool": tool_name, "input": args}).encode("utf-8")
     req = urllib.request.Request(

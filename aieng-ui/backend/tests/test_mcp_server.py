@@ -730,26 +730,37 @@ def test_finalize_result_with_thumbnail_returns_text_and_image() -> None:
     assert isinstance(image, Image)
 
 
+class _FakeResp:
+    """Minimal urlopen response stand-in (context manager + read + status)."""
+
+    def __init__(self, payload: bytes, status: int = 200) -> None:
+        self._payload = payload
+        self.status = status
+
+    def read(self) -> bytes:
+        return self._payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
 def test_forward_to_backend_posts_and_parses(monkeypatch) -> None:
     """When AIENG_BACKEND_URL is set, _forward_to_backend POSTs the tool call."""
-    import io
     import json as _json
     from app import mcp_server as _ms
 
     captured: dict = {}
-
-    class _FakeResp:
-        def __init__(self, payload: bytes) -> None:
-            self._payload = payload
-        def read(self) -> bytes:
-            return self._payload
-        def __enter__(self):
-            return self
-        def __exit__(self, *a):
-            return False
+    urls: list[str] = []
 
     def _fake_urlopen(req, timeout=0):
-        captured["url"] = req.full_url
+        url = req if isinstance(req, str) else req.full_url
+        urls.append(url)
+        if url.endswith("/api/health"):
+            return _FakeResp(b'{"status": "ok"}')
+        captured["url"] = url
         captured["body"] = _json.loads(req.data.decode())
         return _FakeResp(_json.dumps({"status": "ok", "echo": captured["body"]}).encode())
 
@@ -760,6 +771,64 @@ def test_forward_to_backend_posts_and_parses(monkeypatch) -> None:
     assert out["status"] == "ok"
     assert captured["url"].endswith("/api/agent/invoke-tool")
     assert captured["body"] == {"tool": "aieng.inspect_package", "input": {"project_id": "p1"}}
+    # health is probed before committing to the long forward timeout
+    assert any(u.endswith("/api/health") for u in urls)
+
+
+def test_forward_falls_back_fast_when_backend_hangs(monkeypatch) -> None:
+    """A hung backend (holds the port, never replies) must not burn the 900s
+    forward timeout before falling back to in-process execution.
+
+    Regression: a dead backend already failed in ~2s (connection refused), but a
+    hung one blocked the full read timeout, so the agent saw ~15 minutes of
+    silence for what should be an instant fallback.
+    """
+    import urllib.error
+    from app import mcp_server as _ms
+
+    long_timeouts: list[int] = []
+
+    def _hung_urlopen(req, timeout=0):
+        url = req if isinstance(req, str) else req.full_url
+        if url.endswith("/api/health"):
+            # never answers within the probe window
+            raise TimeoutError("timed out")
+        long_timeouts.append(timeout)
+        raise AssertionError("must not POST the tool call to a hung backend")
+
+    monkeypatch.setattr(_ms, "_BACKEND_URL", "http://127.0.0.1:8000")
+    monkeypatch.setattr(_ms.urllib.request, "urlopen", _hung_urlopen)
+
+    with pytest.raises(urllib.error.URLError) as excinfo:
+        _ms._forward_to_backend("aieng.inspect_package", {"project_id": "p1"})
+
+    # URLError is exactly what _execute catches to run in-process instead
+    assert "/api/health" in str(excinfo.value) or "health" in str(excinfo.value)
+    assert not long_timeouts
+
+
+def test_backend_is_responsive_reports_health_honestly(monkeypatch) -> None:
+    """The probe says healthy only on a 2xx answer — never on an error status
+    or an unreachable host."""
+    from app import mcp_server as _ms
+
+    monkeypatch.setattr(_ms, "_BACKEND_URL", "http://127.0.0.1:8000")
+
+    monkeypatch.setattr(
+        _ms.urllib.request, "urlopen", lambda *a, **k: _FakeResp(b"{}", status=200)
+    )
+    assert _ms._backend_is_responsive() is True
+
+    monkeypatch.setattr(
+        _ms.urllib.request, "urlopen", lambda *a, **k: _FakeResp(b"{}", status=503)
+    )
+    assert _ms._backend_is_responsive() is False
+
+    def _refused(*_a, **_k):
+        raise ConnectionRefusedError("refused")
+
+    monkeypatch.setattr(_ms.urllib.request, "urlopen", _refused)
+    assert _ms._backend_is_responsive() is False
 
 
 def test_mcp_hard_block_refuses_every_gated_registry_tool(monkeypatch) -> None:
