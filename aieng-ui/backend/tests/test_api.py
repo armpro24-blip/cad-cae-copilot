@@ -5946,7 +5946,9 @@ def test_resolve_ccx_command_auto_discovers_conda_env_ccx(monkeypatch, tmp_path)
 
     monkeypatch.delenv("AIENG_CCX_CMD", raising=False)
     monkeypatch.setenv("CONDA_EXE", str(conda_exe))
-    monkeypatch.setattr("os.name", "nt")
+    # Local, platform-safe: patching global os.name makes pathlib build
+    # WindowsPath on Linux and crashes pytest itself.
+    monkeypatch.setattr("app.runtime_tool_registry._is_windows", lambda: True)
     # nothing named ccx* on PATH; the conda launcher resolves
     monkeypatch.setattr(
         "app.runtime_tool_registry.shutil.which",
@@ -6015,7 +6017,9 @@ def test_resolve_ccx_command_conda_env_exe_autorewrites_to_conda_run(monkeypatch
     conda-run launcher on Windows — avoids the 0xC0000005 DLL-load crash."""
     from app.runtime_tool_registry import resolve_ccx_command
 
-    monkeypatch.setattr("os.name", "nt")
+    # Local, platform-safe: patching global os.name makes pathlib build
+    # WindowsPath on Linux and crashes pytest itself.
+    monkeypatch.setattr("app.runtime_tool_registry._is_windows", lambda: True)
     abs_ccx = r"C:\anaconda3\envs\calculix-env\Library\bin\ccx.exe"
     conda_exe = r"C:\anaconda3\Scripts\conda.exe"
     monkeypatch.setenv("AIENG_CCX_CMD", abs_ccx)
@@ -6033,7 +6037,9 @@ def test_resolve_ccx_command_conda_env_exe_kept_when_conda_unresolvable(monkeypa
     fallback — the crash hint then guides the operator)."""
     from app.runtime_tool_registry import resolve_ccx_command
 
-    monkeypatch.setattr("os.name", "nt")
+    # Local, platform-safe: patching global os.name makes pathlib build
+    # WindowsPath on Linux and crashes pytest itself.
+    monkeypatch.setattr("app.runtime_tool_registry._is_windows", lambda: True)
     abs_ccx = r"C:\anaconda3\envs\calculix-env\Library\bin\ccx.exe"
     monkeypatch.setenv("AIENG_CCX_CMD", abs_ccx)
     monkeypatch.delenv("CONDA_EXE", raising=False)
@@ -6049,7 +6055,9 @@ def test_resolve_ccx_command_conda_env_exe_via_path_discovery(monkeypatch) -> No
     to conda-run (the env-var-unset failure mode)."""
     from app.runtime_tool_registry import resolve_ccx_command
 
-    monkeypatch.setattr("os.name", "nt")
+    # Local, platform-safe: patching global os.name makes pathlib build
+    # WindowsPath on Linux and crashes pytest itself.
+    monkeypatch.setattr("app.runtime_tool_registry._is_windows", lambda: True)
     env_ccx = r"C:\anaconda3\envs\calculix-env\Library\bin\ccx.exe"
     conda_exe = r"C:\anaconda3\Scripts\conda.exe"
     monkeypatch.delenv("AIENG_CCX_CMD", raising=False)

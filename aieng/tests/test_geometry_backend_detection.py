@@ -437,13 +437,44 @@ def test_geometry_capability_probe_returns_bool():
     assert isinstance(result, bool)
 
 
-def test_geometry_capability_probe_false_when_ocp_missing():
+def _ocp_importable() -> bool:
+    """Whether OCP is actually available in the running environment."""
+    try:
+        import OCP  # noqa: F401
+    except Exception:  # noqa: BLE001 - any import failure means "not usable"
+        return False
+    return True
+
+
+def test_geometry_capability_probe_matches_environment():
+    """The probe must AGREE with the environment, in both directions.
+
+    This previously hard-coded ``is False`` on the assumption that OCP is never
+    installed. That holds for the bare core library but not for any environment
+    carrying build123d (which requires OCP) — so the test asserted the
+    environment rather than the code, and failed on every dev machine and any
+    CI runner with the CAD stack installed.
+    """
     from _geometry_capability import has_working_occ_step_backend
-    # In this environment OCP is not installed, so the probe must return False.
-    assert has_working_occ_step_backend() is False
+
+    result = has_working_occ_step_backend()
+    if _ocp_importable():
+        # OCP present: the probe may still be False if OCP cannot parse a real
+        # STEP (a broken install) — but it must never be False while the deeper
+        # parser check succeeds.
+        from _geometry_capability import _ocp_can_parse_real_step
+
+        if _ocp_can_parse_real_step():
+            assert result is True
+    else:
+        assert result is False
 
 
 def test_geometry_capability_probe_uses_real_bracket_step():
+    """The parser check reflects whether OCP can actually read a real STEP."""
     from _geometry_capability import _ocp_can_parse_real_step
-    # Without OCP the parser check itself returns False.
-    assert _ocp_can_parse_real_step() is False
+
+    result = _ocp_can_parse_real_step()
+    assert isinstance(result, bool)
+    if not _ocp_importable():
+        assert result is False
