@@ -1024,6 +1024,17 @@ to the user** and never present a lower tier as if it were an executed-solver
 result. `production_ready` is `false` unless explicitly certified — the workbench
 does not certify by default.
 
+**Running the solver is not the same as being right.** The invariant extends past
+"did it run" to "could it have been right": a completed run whose mesh carries
+`accuracy.band == "unreliable"` is also downgraded — in `classify_credibility`
+(via `mesh_accuracy_band`) and in the result summary, whose `claim_tier` becomes
+`unreliable_mesh` instead of `executed_solver_result`. This is enforced in code
+rather than described in a report, because the failure it guards against is
+exactly a real one: linear tets with ~1.7 elements through the thickness
+returned **48% of the analytical root stress** — non-conservative — and were
+stamped `executed_solver_result` with no warning. A `reliable` or `marginal`
+band, or a package with no mesh metadata at all, leaves the tier untouched.
+
 ---
 
 ## Tool taxonomy

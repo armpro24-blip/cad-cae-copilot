@@ -138,6 +138,7 @@ def generate_cae_result_summary(package_path: str | Path) -> dict[str, Any]:
         if computed_metrics is None:
             computed_metrics = _legacy_rest_summary_to_computed_metrics(legacy_rest_summary)
         solver_runs = _read_solver_runs(zf)
+        mesh_accuracy_band = _read_mesh_accuracy_band(zf)
         design_targets = _read_design_targets(zf)
 
     # Artifact presence used by the Phase 35 PR 2 design-target evaluator to
@@ -158,6 +159,7 @@ def generate_cae_result_summary(package_path: str | Path) -> dict[str, Any]:
         computed_values=computed_values,
         solver_runs=solver_runs,
         legacy_rest_summary=legacy_rest_summary,
+        mesh_accuracy_band=mesh_accuracy_band,
     )
     targets = _compare_design_targets(design_targets, computed_values)
     design_target_comparisons = _build_design_target_comparisons(
@@ -1124,12 +1126,29 @@ def _solver_run_completed(run: dict[str, Any]) -> bool:
     return status == "completed" and run.get("solved") is True
 
 
+def _read_mesh_accuracy_band(zf: zipfile.ZipFile) -> str | None:
+    """Read ``accuracy.band`` from the package's mesh metadata, if present.
+
+    Best-effort: a package meshed before the accuracy block existed simply has
+    no band, and the caller then leaves the claim tier untouched.
+    """
+    try:
+        raw = zf.read("simulation/mesh/mesh_metadata.json")
+        meta = json.loads(raw.decode("utf-8"))
+    except Exception:  # noqa: BLE001 - missing/unreadable metadata is not fatal
+        return None
+    accuracy = meta.get("accuracy") if isinstance(meta, dict) else None
+    band = accuracy.get("band") if isinstance(accuracy, dict) else None
+    return str(band) if band else None
+
+
 def _build_result_contract(
     *,
     namelist: set[str],
     computed_values: dict[str, Any],
     solver_runs: list[dict[str, Any]],
     legacy_rest_summary: dict[str, Any] | None,
+    mesh_accuracy_band: str | None = None,
 ) -> dict[str, Any]:
     """Build the normalized solver-result contract block.
 
@@ -1147,7 +1166,18 @@ def _build_result_contract(
     source_artifacts.extend(run["source_artifact"] for run in solver_runs if run.get("source_artifact"))
 
     metrics_source = computed_values.get("source")
-    if completed_runs:
+    if completed_runs and str(mesh_accuracy_band or "").lower() == "unreliable":
+        # The solver ran, but on a mesh that cannot resolve what it was asked
+        # for. Measured: linear tets with ~1.7 elements through the thickness
+        # returned 48% of the analytical root stress and this tier still read
+        # `executed_solver_result`. Running is not the same as being right.
+        claim_tier = "unreliable_mesh"
+        reason = (
+            "A solver run completed, but the mesh accuracy band is 'unreliable' "
+            "— the result is likely under-predicted (non-conservative). Re-mesh "
+            "finer or with quadratic elements before treating this as a result."
+        )
+    elif completed_runs:
         claim_tier = "executed_solver_result"
         reason = "Completed solver_run.json evidence is present."
     elif computed_values.get("extrema_computed") and metrics_source != LEGACY_REST_RESULT_SUMMARY_PATH:
