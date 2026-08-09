@@ -20,6 +20,18 @@ from .logging_utils import log_exception
 LOGGER = logging.getLogger("app.app_factory")
 
 
+def _is_windows() -> bool:
+    """Whether this process runs on Windows.
+
+    An indirection on purpose: tests that need Windows-only behaviour used to
+    do ``monkeypatch.setattr("os.name", "nt")``, which mutates the interpreter
+    globally — on Linux every later ``Path()`` then tries to build a
+    ``WindowsPath`` and raises, taking pytest's own machinery down with it.
+    Patching this function keeps that intent local and platform-safe.
+    """
+    return os.name == "nt"
+
+
 def _split_ccx_cmd(command: str, *, platform: str | None = None) -> list[str]:
     """Split an operator-provided ccx command into subprocess argv."""
     import shlex
@@ -82,7 +94,7 @@ def _conda_run_for_env_ccx(exe_path: str) -> list[str] | None:
     DLLs. Windows-only: on POSIX a bare conda-env ccx runs fine, so we leave it
     unchanged to avoid the per-call ``conda run`` overhead.
     """
-    if os.name != "nt":
+    if not _is_windows():
         return None
     try:
         p = Path(exe_path)
