@@ -5871,8 +5871,15 @@ def test_run_solver_uses_aieng_ccx_cmd_env_var(tmp_path: Path, monkeypatch) -> N
 
     assert len(mock_run.call_args_list) == 1
     args, kwargs = mock_run.call_args_list[0]
-    assert args[0] == ["conda", "run", "-n", "calculix-env", "ccx", "solver_input"]
+    # The launcher is substituted with its RESOLVED absolute path; the rest of
+    # the operator-supplied argv is preserved verbatim. Resolving up front makes
+    # the launch immune to later PATH mutation — gmsh corrupts the child PATH,
+    # so a bare name re-resolved at CreateProcess time fails once a run has
+    # meshed first (sizing sweep / run_simulation_pipeline).
+    assert args[0] == ["/fake/conda", "run", "-n", "calculix-env", "ccx", "solver_input"]
     assert kwargs.get("shell") is False
+    # An explicit environment must be handed to the solver for the same reason.
+    assert isinstance(kwargs.get("env"), dict) and kwargs["env"]
 
 
 def test_split_ccx_cmd_preserves_windows_paths() -> None:

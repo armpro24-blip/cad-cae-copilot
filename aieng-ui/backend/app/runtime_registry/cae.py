@@ -35,6 +35,13 @@ def _audit_artifact_paths(artifacts: list) -> list[str]:
     return paths
 
 
+def _solver_subprocess_env() -> dict[str, str]:
+    """Environment for the ccx subprocess (see simulation_runner._subprocess_env)."""
+    from .. import simulation_runner as _simulation_runner
+
+    return _simulation_runner._subprocess_env()
+
+
 def _ccx_dll_crash_hint(return_code: int | None, stdout: str, frd_exists: bool) -> str | None:
     """Return a remediation hint when ccx appears to have crashed on DLL load.
 
@@ -1447,6 +1454,10 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                     text=True,
                     timeout=timeout_seconds,
                     shell=False,
+                    # Explicit env: gmsh corrupts the native Win32 environment
+                    # block that children inherit, so a run_simulation_pipeline
+                    # that meshed first would otherwise fail to launch ccx.
+                    env=_solver_subprocess_env(),
                 )
                 return_code = proc.returncode
                 stdout = proc.stdout or ""

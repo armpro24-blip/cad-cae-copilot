@@ -1044,6 +1044,21 @@ verify these paths — see `aieng/docs/nafems_vv_cases.md`.
 
 - **Docker image:** already bundles `ccx`; no extra setup needed.
 
+**One resolver, one launch contract.** Every solver path (`cae.run_solver`,
+`cae.run_simulation_pipeline`, `opt.sizing_sweep`, `opt.doe_sizing_study`,
+`cae.mesh_convergence`, the design-study candidate solver) resolves ccx through
+`resolve_ccx_command()` and launches it with an **explicit environment**. Both
+halves are load-bearing on Windows:
+- the resolver substitutes the launcher's **absolute** path, so a later PATH
+  mutation cannot break the launch;
+- gmsh corrupts the native Win32 environment block that child processes inherit
+  (`PATH` loses even `System32`) while Python's `os.environ` stays intact, so a
+  flow that **meshes and then solves in the same process** must hand
+  `subprocess` an explicit `env=` or ccx fails to launch at all.
+
+If you add a new solver invocation, use `simulation_runner._find_ccx()` +
+`_subprocess_env()` rather than `shutil.which("ccx")`.
+
 **Real-ccx V&V gate.** On a machine with CalculiX plus the optional CAD/mesh
 stack installed, run the strict numerical gate with:
 
