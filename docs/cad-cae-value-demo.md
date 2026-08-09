@@ -206,15 +206,25 @@ Then sweep one dimension, solving every variant with the real solver:
 
 Tool: `opt.sizing_sweep` (approval-gated — it runs N solver executions).
 
-Reference result on this fixture (Gmsh + CalculiX 2.23, allowable 138 MPa):
+Reference result on this fixture (Gmsh + CalculiX 2.23, quadratic C3D10
+elements, allowable 138 MPa). The last column is the closed-form cantilever
+stress `σ = M·c/I` — the sweep is expected to track it within a few percent, so
+this table doubles as a validation check you can redo by hand:
 
-| thickness | max von Mises | mass | verdict |
-|---|---|---|---|
-| 6 mm | 16.69 MPa | 12000 | feasible — recommended (min mass) |
-| 7 mm | 12.58 MPa | 14000 | feasible |
-| 8 mm | 9.77 MPa | 16000 | feasible |
-| 9 mm | 7.50 MPa | 18000 | feasible |
-| 10 mm | 7.196 MPa | 20000 | feasible — matches the baseline solve |
+| thickness | max von Mises | mass | beam theory | agreement | verdict |
+|---|---|---|---|---|---|
+| 6 mm | 40.45 MPa | 12000 | 41.67 MPa | 97% | feasible — recommended (min mass) |
+| 7 mm | 29.66 MPa | 14000 | 30.61 MPa | 97% | feasible |
+| 8 mm | 22.86 MPa | 16000 | 23.44 MPa | 98% | feasible |
+| 9 mm | 17.86 MPa | 18000 | 18.52 MPa | 96% | feasible |
+| 10 mm | 14.49 MPa | 20000 | 15.00 MPa | 97% | feasible — matches the baseline solve |
+
+> **These numbers replaced an earlier table that was ~2.5× too low.** With the
+> previous linear (C3D4) default, 6 mm reported 16.69 MPa against a true
+> ~41.7 MPa — a *non-conservative* error, stamped `executed_solver_result` with
+> no warning. Linear tets shear-lock in bending; the default is now quadratic.
+> If you ever see solver output that disagrees with a hand calculation by this
+> much, check `mesh_metadata.json` → `element_order` and `accuracy` first.
 
 Every variant must report `solver_executed: true` and credibility tier
 `executed_solver_result`; a variant that fails to build or solve is reported

@@ -1765,7 +1765,11 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "Mesh the project's STEP geometry in-process with Gmsh and persist the FE mesh "
             "(simulation/mesh/mesh.inp + simulation/mesh/mesh_metadata.json) into the .aieng package. "
             "Produces only the mesh — does not bind loads/BCs, assemble a solver deck, or run a solver. "
-            "Typical input: {project_id, mesh_size_mm: 2.5}."
+            "Emits QUADRATIC tetrahedra (C3D10) by default: linear tets shear-lock in bending and "
+            "under-predict stress (measured 48% of the analytical root stress on the reference "
+            "cantilever). The response and metadata carry an `accuracy` block (band "
+            "reliable/marginal/unreliable + elements across the thinnest extent) — read it before "
+            "quoting a stress. Typical input: {project_id, mesh_size_mm: 2.5}."
         ),
         "properties": {
             "project_id": {"type": "string"},
@@ -1773,6 +1777,15 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                 "type": "number",
                 "exclusiveMinimum": 0,
                 "description": "Target element size (mm). Defaults to the package's configured size, else 2.5 mm.",
+            },
+            "element_order": {
+                "type": "integer",
+                "enum": [1, 2],
+                "description": (
+                    "FE element order: 2 = quadratic C3D10 (default, accurate in bending), "
+                    "1 = linear C3D4 (cheaper/coarser; the accuracy block will then report "
+                    "the result as untrustworthy for bending)."
+                ),
             },
         },
         "additionalProperties": True,

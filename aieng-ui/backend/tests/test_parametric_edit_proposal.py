@@ -340,8 +340,10 @@ def test_stale_proposal_is_rejected_without_mutating_package(tmp_path: Path) -> 
         thumbnail=False,
         proposal_id=proposal["proposal_id"],
     )
-    assert stale["status"] == "error"
-    assert stale["code"] == "stale_parametric_edit_proposal"
+    assert stale["status"] == "error", stale
+    # Include the payload: this assertion has failed in full-suite runs on
+    # Windows with code='invalid_contract' and no way to see WHY from the log.
+    assert stale["code"] == "stale_parametric_edit_proposal", stale
     assert stale["proposal_old_value"] == 120
     assert stale["current_value"] == 150
 

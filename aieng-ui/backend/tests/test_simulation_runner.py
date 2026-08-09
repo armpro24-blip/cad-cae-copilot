@@ -1415,7 +1415,10 @@ def test_generate_mesh_for_package_meshes_real_box(tmp_path: Path) -> None:
     assert result["status"] == "success", result
     assert result["node_count"] > 0
     assert result["element_count"] > 0
-    assert result["element_type"] == "C3D4"
+    # Quadratic by default: linear tets shear-lock in bending and returned only
+    # ~48% of the analytical root stress on the #368 cantilever.
+    assert result["element_type"] == "C3D10"
+    assert result["element_order"] == 2
     assert result["target_size_mm"] == 8.0
     assert CANONICAL_MESH_INP_PATH in result["written_artifacts"]
     assert MESH_METADATA_PATH in result["written_artifacts"]
@@ -1431,12 +1434,79 @@ def test_generate_mesh_for_package_meshes_real_box(tmp_path: Path) -> None:
         assert metadata["node_count"] == result["node_count"]
         assert metadata["element_count"] == result["element_count"]
         assert metadata["generator"] == "gmsh"
+        assert metadata["element_order"] == 2
+        assert metadata["accuracy"]["element_order"] == 2
 
     # The persisted mesh.inp lights up the existing mesh-preview reader.
     preview = get_mesh_preview(pkg)
     assert preview["available"] is True
     assert preview["mesh_path"] == CANONICAL_MESH_INP_PATH
     assert preview["element_count"] == result["element_count"]
+
+
+def test_generate_mesh_can_be_forced_back_to_linear(tmp_path: Path) -> None:
+    """element_order=1 still available for a cheap/coarse pass — and the accuracy
+    verdict must then say the result is not trustworthy for bending."""
+    pytest.importorskip("gmsh")
+    from app.simulation_runner import generate_mesh_for_package
+
+    pkg = tmp_path / "box.aieng"
+    _build_real_step_package(pkg)
+
+    result = generate_mesh_for_package(pkg, mesh_size_mm=8.0, element_order=1)
+
+    assert result["status"] == "success", result
+    assert result["element_type"] == "C3D4"
+    assert result["element_order"] == 1
+    acc = result["accuracy"]
+    assert acc["element_order"] == 1
+    # a linear mesh this coarse cannot resolve a bending gradient
+    assert acc["reliable_for_bending"] is False
+    assert acc["band"] == "unreliable"
+    assert "non-conservative" in acc["reason"]
+    assert "element_order=2" in (acc["recommended_action"] or "")
+
+
+def test_mesh_accuracy_verdict_is_pure_and_honest() -> None:
+    """assess_mesh_accuracy judges elements-through-thinnest against an
+    order-dependent floor, and degrades honestly on unusable input."""
+    from app.simulation_runner import assess_mesh_accuracy
+
+    # 10 mm thin direction, 1 mm quadratic elements -> 10 across, plenty
+    nodes = {1: (0.0, 0.0, 0.0), 2: (100.0, 20.0, 10.0)}
+    good = assess_mesh_accuracy(nodes, "C3D10", 1.0)
+    assert good["element_order"] == 2
+    assert good["reliable_for_bending"] is True
+    assert good["elements_through_thinnest"] == 10.0
+    assert "mesh_convergence" in good["reason"]  # never claims convergence
+
+    # same geometry, linear elements at 6 mm -> ~1.7 across: not trustworthy
+    bad = assess_mesh_accuracy(nodes, "C3D4", 6.0)
+    assert bad["element_order"] == 1
+    assert bad["band"] == "unreliable"
+    assert bad["reliable_for_bending"] is False
+    assert bad["min_elements_required"] == 6
+    assert bad["recommended_action"].startswith("re-mesh with mesh_size_mm <=")
+
+    # ...but QUADRATIC at that same ~1.7 elements measured 97% of theory, so it
+    # must NOT be flagged. Crying wolf on an accurate mesh costs credibility
+    # exactly like missing a bad one.
+    ok_quadratic = assess_mesh_accuracy(nodes, "C3D10", 6.0)
+    assert ok_quadratic["band"] == "reliable"
+    assert ok_quadratic["reliable_for_bending"] is True
+
+    # Between the bars (1.25 quadratic elements): usable first pass, but say so.
+    marginal = assess_mesh_accuracy(nodes, "C3D10", 8.0)
+    assert marginal["band"] == "marginal"
+    assert marginal["reliable_for_bending"] is False
+    assert "first-pass" in marginal["reason"]
+    assert "mesh_convergence" in marginal["recommended_action"]
+
+    # unusable input degrades instead of guessing
+    empty = assess_mesh_accuracy({}, "C3D10", 1.0)
+    assert empty["reliable_for_bending"] is None
+    assert "cannot assess" in empty["reason"]
+
 
 
 def test_generate_mesh_for_package_no_geometry(tmp_path: Path) -> None:
