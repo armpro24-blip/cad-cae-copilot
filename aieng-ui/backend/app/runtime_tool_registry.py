@@ -107,6 +107,69 @@ def _conda_run_for_env_ccx(exe_path: str) -> list[str] | None:
     return [launcher, "run", "-n", env_name, "ccx"]
 
 
+#: Where a conda env keeps ccx, relative to the env root.
+_CCX_ENV_RELATIVE_PATHS: tuple[tuple[str, ...], ...] = (
+    ("Library", "bin", "ccx.exe"),   # Windows
+    ("bin", "ccx"),                  # POSIX
+    ("bin", "ccx_linux"),
+)
+
+
+def _conda_envs_roots() -> list[Path]:
+    """Candidate conda ``envs`` directories, derived from the running process."""
+    roots: list[Path] = []
+
+    def _add(path: Path | None) -> None:
+        if path and path.is_dir() and path not in roots:
+            roots.append(path)
+
+    # CONDA_EXE is <root>/Scripts/conda.exe (Windows) or <root>/bin/conda (POSIX)
+    conda_exe = os.environ.get("CONDA_EXE")
+    if conda_exe:
+        exe = Path(conda_exe)
+        if len(exe.parents) >= 2:
+            _add(exe.parents[1] / "envs")
+    # An ACTIVE env is <root>/envs/<name>; the base env is <root> itself.
+    for var in ("CONDA_PREFIX", "CONDA_ROOT"):
+        value = os.environ.get(var)
+        if not value:
+            continue
+        prefix = Path(value)
+        if prefix.parent.name == "envs":
+            _add(prefix.parent)
+        _add(prefix / "envs")
+    return roots
+
+
+def _discover_ccx_in_conda_envs() -> tuple[str | None, str | None]:
+    """Find a ccx executable inside a sibling conda env. Returns ``(path, env_name)``.
+
+    The documented CalculiX install deliberately uses a SEPARATE env (installing
+    it into the backend env downgrades OpenSSL), so ccx is never on the backend
+    process's PATH and ``shutil.which`` cannot see it. Rather than make the
+    operator hand-write ``AIENG_CCX_CMD`` in the exact shell that launches the
+    backend — easy to forget, and silently disables every solver path — derive
+    it: scan the conda ``envs`` directory for the known ccx locations.
+
+    Envs whose name mentions calculix/ccx are preferred so a machine with
+    several envs resolves predictably. Read-only and bounded to one directory
+    level; returns ``(None, None)`` when nothing is found.
+    """
+    for envs_dir in _conda_envs_roots():
+        try:
+            candidates = sorted(p for p in envs_dir.iterdir() if p.is_dir())
+        except OSError:
+            continue
+        # Prefer an env that names itself after the solver.
+        candidates.sort(key=lambda p: 0 if ("calculix" in p.name.lower() or "ccx" in p.name.lower()) else 1)
+        for env_dir in candidates:
+            for rel in _CCX_ENV_RELATIVE_PATHS:
+                exe = env_dir.joinpath(*rel)
+                if exe.is_file():
+                    return str(exe), env_dir.name
+    return None, None
+
+
 def resolve_ccx_command() -> tuple[list[str] | None, str]:
     """Resolve the CalculiX (ccx) command, respecting AIENG_CCX_CMD.
 
@@ -169,11 +232,27 @@ def resolve_ccx_command() -> tuple[list[str] | None, str]:
                     f"conda-run launcher to avoid a Windows DLL-load crash"
                 )
             return [path], f"found {candidate!r} on PATH"
+    # Last resort: the DOCUMENTED install puts ccx in its own conda env
+    # (`conda create -n calculix-env -c conda-forge calculix`), which is never on
+    # the backend env's PATH — so requiring AIENG_CCX_CMD was really just asking
+    # the operator to hand-write a path we can derive. Scan sibling envs.
+    discovered, env_name = _discover_ccx_in_conda_envs()
+    if discovered:
+        conda_form = _conda_run_for_env_ccx(discovered)
+        if conda_form:
+            return conda_form, (
+                f"auto-discovered ccx in conda env {env_name!r} ({discovered}); "
+                f"using the conda-run launcher (no AIENG_CCX_CMD needed)"
+            )
+        return [discovered], (
+            f"auto-discovered ccx in conda env {env_name!r} ({discovered}) "
+            f"(no AIENG_CCX_CMD needed)"
+        )
     return None, (
-        "AIENG_CCX_CMD is not set and no ccx executable was found on PATH. "
-        "Install CalculiX and set AIENG_CCX_CMD — on Windows + conda the most "
-        "reliable form is 'conda run -n calculix-env ccx' (a bare ccx.exe path "
-        "can crash on missing runtime DLLs)."
+        "AIENG_CCX_CMD is not set, no ccx executable was found on PATH, and no "
+        "conda env containing ccx was discoverable. Install CalculiX — on "
+        "Windows + conda, `conda create -n calculix-env -c conda-forge calculix` "
+        "is auto-detected; otherwise set AIENG_CCX_CMD explicitly."
     )
 
 

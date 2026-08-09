@@ -84,8 +84,14 @@ def test_cad_topic_keeps_feedback_loop_after_python_comments() -> None:
                 "## Workspace layout",
                 "## Frontend maintainability rules",
                 "### Agent run display state",
-                "### Composer slash commands and @-mentions",
-                "**Natural-language intent resolution",
+                # The composer/intent-routing layer was deleted in the MCP-first
+                # cutover; the guide must still SAY so, because an agent that
+                # goes looking for engine.py / intent_resolution.py wastes a
+                # detour on modules that no longer exist.
+                "### Composer slash commands and routing — REMOVED",
+                "no longer exist",
+                # …and it must still carry the panels that DO exist.
+                "**Editable Parameter Explorer",
             ),
         ),
         (
