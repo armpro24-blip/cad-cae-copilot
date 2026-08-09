@@ -11,7 +11,7 @@ import os
 import re
 import shutil
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from .legacy_app_symbols import sync_main_symbols
@@ -97,7 +97,11 @@ def _conda_run_for_env_ccx(exe_path: str) -> list[str] | None:
     if not _is_windows():
         return None
     try:
-        p = Path(exe_path)
+        # PureWindowsPath, not Path: this branch is Windows-only by definition,
+        # and the PURE class parses Windows separators on any host (a concrete
+        # WindowsPath cannot even be instantiated on Linux). That keeps the
+        # segment split correct AND lets the behaviour be tested off-Windows.
+        p = PureWindowsPath(exe_path)
     except (TypeError, ValueError):
         return None
     if not p.name.lower().startswith("ccx"):
