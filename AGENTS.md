@@ -840,7 +840,13 @@ verify these paths — see `aieng/docs/nafems_vv_cases.md`.
   ```powershell
   conda create -n calculix-env -c conda-forge calculix
   ```
-  Then point the backend at it with the `AIENG_CCX_CMD` environment variable.
+  **That is normally all you need — `AIENG_CCX_CMD` is optional.** The backend
+  auto-discovers a `ccx` inside a sibling conda env and builds the `conda run`
+  launcher itself, so the solver works no matter which shell started the
+  backend. Set the env var only to override that choice (a non-conda install, or
+  several CalculiX envs and you want a specific one).
+
+  To point the backend at a specific build, use the `AIENG_CCX_CMD` variable.
   **Use the `conda run` launcher form — it is the most reliable on Windows**
   because it activates the CalculiX environment so `ccx` can find its runtime
   DLLs:

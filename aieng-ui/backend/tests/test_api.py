@@ -4944,8 +4944,13 @@ def test_prepare_solver_run_reports_missing_artifacts(tmp_path: Path) -> None:
     assert len(preflight["missing_items"]) >= 4
 
 
-def test_prepare_solver_run_blocked_reason_codes_are_stable(tmp_path: Path) -> None:
+def test_prepare_solver_run_blocked_reason_codes_are_stable(tmp_path: Path, monkeypatch) -> None:
     """cae.prepare_solver_run exposes stable blocked_reason_codes and preserves prose fields."""
+    # ccx resolution auto-discovers a sibling conda env, so a configured dev
+    # machine really does have a solver. Clear the conda hints to assert the
+    # 'solver unavailable' preflight deterministically.
+    for _var in ("CONDA_EXE", "CONDA_PREFIX", "CONDA_ROOT"):
+        monkeypatch.delenv(_var, raising=False)
     from unittest.mock import patch
     from app.main import create_app, default_project, project_dir, save_project
     from starlette.testclient import TestClient
@@ -5002,8 +5007,13 @@ def test_prepare_solver_run_blocked_reason_codes_are_stable(tmp_path: Path) -> N
     assert result["preflight"]["missing_items"]
 
 
-def test_prepare_solver_run_next_actions_resolve_blocker_codes(tmp_path: Path) -> None:
+def test_prepare_solver_run_next_actions_resolve_blocker_codes(tmp_path: Path, monkeypatch) -> None:
     """Repair recommendations identify which stable blocked_reason_codes they address."""
+    # ccx resolution auto-discovers a sibling conda env, so a configured dev
+    # machine really does have a solver. Clear the conda hints to assert the
+    # 'solver unavailable' preflight deterministically.
+    for _var in ("CONDA_EXE", "CONDA_PREFIX", "CONDA_ROOT"):
+        monkeypatch.delenv(_var, raising=False)
     from unittest.mock import patch
     from app.main import create_app, default_project, project_dir, save_project
     from starlette.testclient import TestClient
@@ -5085,9 +5095,19 @@ def test_prepare_solver_run_accepts_legacy_top_level_mesh(tmp_path: Path) -> Non
     assert preflight["mesh_artifact_path"] == "simulation/mesh.inp"
 
 
-def test_prepare_solver_run_ready_to_run_false_when_ccx_unavailable(tmp_path: Path) -> None:
-    """cae.prepare_solver_run returns ready_to_run=false when ccx is not on PATH."""
+def test_prepare_solver_run_ready_to_run_false_when_ccx_unavailable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """cae.prepare_solver_run returns ready_to_run=false when ccx is unavailable.
+
+    Nulling shutil.which is not enough on a dev machine: resolution also
+    auto-discovers ccx in a sibling conda env, so the conda hints must be
+    cleared for this to be a genuine "no ccx anywhere" simulation.
+    """
     from unittest.mock import patch
+
+    for _var in ("CONDA_EXE", "CONDA_PREFIX", "CONDA_ROOT"):
+        monkeypatch.delenv(_var, raising=False)
     from app.main import create_app, default_project, project_dir, save_project
     from starlette.testclient import TestClient
 
@@ -5229,8 +5249,13 @@ def test_prepare_solver_run_no_solver_subprocess(tmp_path: Path) -> None:
     mock_run.assert_not_called()
 
 
-def test_prepare_solver_run_recommended_next_calls(tmp_path: Path) -> None:
+def test_prepare_solver_run_recommended_next_calls(tmp_path: Path, monkeypatch) -> None:
     """cae.prepare_solver_run returns actionable next-call recommendations for missing artifacts."""
+    # ccx resolution auto-discovers a sibling conda env, so a configured dev
+    # machine really does have a solver. Clear the conda hints to assert the
+    # 'solver unavailable' preflight deterministically.
+    for _var in ("CONDA_EXE", "CONDA_PREFIX", "CONDA_ROOT"):
+        monkeypatch.delenv(_var, raising=False)
     from app.main import create_app, default_project, project_dir, save_project
     from starlette.testclient import TestClient
 
@@ -5790,9 +5815,16 @@ def test_run_solver_rejects_non_inp(tmp_path: Path) -> None:
     assert result["solver_execution_performed"] is False
 
 
-def test_run_solver_ccx_unavailable_returns_error(tmp_path: Path) -> None:
-    """cae.run_solver returns a clear error when ccx is not on PATH."""
+def test_run_solver_ccx_unavailable_returns_error(tmp_path: Path, monkeypatch) -> None:
+    """cae.run_solver returns a clear error when ccx is unavailable.
+
+    Conda hints are cleared as well as PATH: auto-discovery would otherwise find
+    a real calculix env on a configured developer machine.
+    """
     from unittest.mock import patch
+
+    for _var in ("CONDA_EXE", "CONDA_PREFIX", "CONDA_ROOT"):
+        monkeypatch.delenv(_var, raising=False)
     from app.main import create_app, default_project, project_dir, save_project
     from starlette.testclient import TestClient
 
@@ -5890,6 +5922,79 @@ def test_split_ccx_cmd_preserves_windows_paths() -> None:
         r"C:\Program Files\CalculiX\ccx.exe",
         "--solver-option",
     ]
+
+
+def test_resolve_ccx_command_auto_discovers_conda_env_ccx(monkeypatch, tmp_path) -> None:
+    """With AIENG_CCX_CMD unset and ccx not on PATH, a sibling conda env is found.
+
+    The documented install puts CalculiX in its OWN env (installing it into the
+    backend env downgrades OpenSSL), so ccx is never on the backend's PATH.
+    Requiring the operator to hand-write AIENG_CCX_CMD in the exact shell that
+    launches uvicorn is easy to forget and silently disables every solver path —
+    so the path is derived instead.
+    """
+    from app.runtime_tool_registry import resolve_ccx_command
+
+    conda_root = tmp_path / "anaconda3"
+    env_ccx = conda_root / "envs" / "calculix-env" / "Library" / "bin" / "ccx.exe"
+    env_ccx.parent.mkdir(parents=True)
+    env_ccx.write_text("")
+    (conda_root / "envs" / "unrelated-env").mkdir(parents=True)
+    conda_exe = conda_root / "Scripts" / "conda.exe"
+    conda_exe.parent.mkdir(parents=True)
+    conda_exe.write_text("")
+
+    monkeypatch.delenv("AIENG_CCX_CMD", raising=False)
+    monkeypatch.setenv("CONDA_EXE", str(conda_exe))
+    monkeypatch.setattr("os.name", "nt")
+    # nothing named ccx* on PATH; the conda launcher resolves
+    monkeypatch.setattr(
+        "app.runtime_tool_registry.shutil.which",
+        lambda n: str(conda_exe) if n.lower().startswith("conda") else None,
+    )
+
+    parts, reason = resolve_ccx_command()
+
+    assert parts == [str(conda_exe), "run", "-n", "calculix-env", "ccx"]
+    assert "auto-discovered" in reason and "calculix-env" in reason
+    assert "no AIENG_CCX_CMD needed" in reason
+
+
+def test_resolve_ccx_command_explicit_env_var_still_wins(monkeypatch, tmp_path) -> None:
+    """Auto-discovery is a pure fallback — an explicit AIENG_CCX_CMD is untouched."""
+    from app.runtime_tool_registry import resolve_ccx_command
+
+    conda_root = tmp_path / "anaconda3"
+    env_ccx = conda_root / "envs" / "calculix-env" / "Library" / "bin" / "ccx.exe"
+    env_ccx.parent.mkdir(parents=True)
+    env_ccx.write_text("")
+    monkeypatch.setenv("CONDA_EXE", str(conda_root / "Scripts" / "conda.exe"))
+
+    abs_ccx = r"C:\tools\calculix\ccx.exe"
+    monkeypatch.setenv("AIENG_CCX_CMD", abs_ccx)
+    monkeypatch.setattr(
+        "app.runtime_tool_registry.shutil.which",
+        lambda n: n if n.endswith("ccx.exe") else None,
+    )
+
+    parts, reason = resolve_ccx_command()
+    assert parts == [abs_ccx]
+    assert "auto-discovered" not in reason
+
+
+def test_resolve_ccx_command_reports_honestly_when_nothing_is_installed(monkeypatch, tmp_path) -> None:
+    """No env var, no PATH hit, no conda env with ccx -> None plus actionable advice."""
+    from app.runtime_tool_registry import resolve_ccx_command
+
+    monkeypatch.delenv("AIENG_CCX_CMD", raising=False)
+    # Clear every conda hint so discovery cannot reach the real machine's envs.
+    for var in ("CONDA_EXE", "CONDA_PREFIX", "CONDA_ROOT"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr("app.runtime_tool_registry.shutil.which", lambda _n: None)
+
+    parts, reason = resolve_ccx_command()
+    assert parts is None
+    assert "conda-forge calculix" in reason  # tells the operator what to install
 
 
 def test_resolve_ccx_command_absolute_path(monkeypatch) -> None:
@@ -5993,6 +6098,11 @@ def test_resolve_ccx_command_path_fallback_and_unset(monkeypatch) -> None:
     from app.runtime_tool_registry import resolve_ccx_command
 
     monkeypatch.delenv("AIENG_CCX_CMD", raising=False)
+    # Isolate from the developer machine's conda envs: with the env var unset,
+    # resolution now falls back to auto-discovering ccx in a sibling conda env,
+    # which would otherwise make the "nothing found" half machine-dependent.
+    for var in ("CONDA_EXE", "CONDA_PREFIX", "CONDA_ROOT"):
+        monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr("shutil.which", lambda n: "/usr/bin/ccx" if n == "ccx" else None)
     parts, reason = resolve_ccx_command()
     assert parts == ["/usr/bin/ccx"]
