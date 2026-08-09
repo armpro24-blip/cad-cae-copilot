@@ -1830,8 +1830,30 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                     "message": f"mesh_size_mm must be a number, got {mesh_size_raw!r}.",
                 }
 
+        order_raw = inp.get("element_order", inp.get("elementOrder"))
+        element_order = simulation_runner.DEFAULT_ELEMENT_ORDER
+        if order_raw is not None:
+            try:
+                element_order = int(order_raw)
+            except (TypeError, ValueError):
+                return {
+                    "ok": False,
+                    "tool": "cae.generate_mesh",
+                    "status": "error",
+                    "code": "bad_input",
+                    "message": f"element_order must be 1 or 2, got {order_raw!r}.",
+                }
+            if element_order not in (1, 2):
+                return {
+                    "ok": False,
+                    "tool": "cae.generate_mesh",
+                    "status": "error",
+                    "code": "bad_input",
+                    "message": f"element_order must be 1 or 2, got {order_raw!r}.",
+                }
+
         result = simulation_runner.generate_mesh_for_package(
-            package_path, mesh_size_mm=mesh_size_mm
+            package_path, mesh_size_mm=mesh_size_mm, element_order=element_order
         )
         status = result.get("status")
         ok = status == "success"
@@ -1847,9 +1869,13 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             "node_count": result.get("node_count"),
             "element_count": result.get("element_count"),
             "element_type": result.get("element_type"),
+            "element_order": result.get("element_order"),
             "target_size_mm": result.get("target_size_mm"),
             "quality_verdict": result.get("quality_verdict"),
             "quality": result.get("quality"),
+            # Element quality says nothing about whether a BENDING stress from
+            # this mesh can be trusted; `accuracy` is the block that does.
+            "accuracy": result.get("accuracy"),
             "code": result.get("code"),
             "message": result.get("message"),
             "missing_tools": result.get("missing_tools"),

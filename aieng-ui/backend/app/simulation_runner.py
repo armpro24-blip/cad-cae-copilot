@@ -190,8 +190,29 @@ class _suppress_offthread_signal:
         self._signal.signal = self._orig
 
 
-def _mesh_with_gmsh(step_path: Path, work_dir: Path, mesh_size_mm: float) -> Path:
-    """Mesh the STEP file with Gmsh and export a CalculiX-format .inp mesh."""
+#: Default FE element order. SECOND order (C3D10) on purpose.
+#:
+#: Linear tets (C3D4) shear-lock in bending and are far too stiff unless the mesh
+#: is very fine through the thickness. Measured on the #368 cantilever at the
+#: same 6 mm size (theory: 0.1451 mm tip / 15.0 MPa root):
+#:     C3D4  -> 0.0786 mm (54% of theory), 7.20 MPa (48%)   <- ~2x NON-conservative
+#:     C3D10 -> 0.1438 mm (99% of theory), 14.49 MPa (97%)
+#: Reporting half the real stress as an `executed_solver_result` is the worst
+#: failure mode this product can have, so accuracy wins over element count.
+DEFAULT_ELEMENT_ORDER = 2
+
+
+def _mesh_with_gmsh(
+    step_path: Path,
+    work_dir: Path,
+    mesh_size_mm: float,
+    *,
+    element_order: int = DEFAULT_ELEMENT_ORDER,
+) -> Path:
+    """Mesh the STEP file with Gmsh and export a CalculiX-format .inp mesh.
+
+    ``element_order=2`` emits quadratic tets (C3D10); ``1`` keeps linear C3D4.
+    """
     import gmsh
 
     out_inp = work_dir / "mesh.inp"
@@ -246,6 +267,9 @@ def _mesh_with_gmsh(step_path: Path, work_dir: Path, mesh_size_mm: float) -> Pat
             gmsh.model.addPhysicalGroup(2, [surf_tag], tag=1000 + surf_tag, name=f"SURF{surf_tag}")
 
         gmsh.model.mesh.generate(3)
+        if int(element_order) >= 2:
+            # Promote to quadratic AFTER generation (gmsh's documented order).
+            gmsh.model.mesh.setOrder(2)
         gmsh.write(str(out_inp))
     finally:
         gmsh.finalize()
@@ -724,10 +748,112 @@ def _write_members_to_package(package_path: Path, files: dict[str, bytes]) -> No
         raise
 
 
+#: Elements needed across the thinnest section before a BENDING stress is
+#: trustworthy, as ``{order: (reliable_at, marginal_at)}``.
+#:
+#: Calibrated against the #368 cantilever (100x20x10, tip load, theory
+#: 0.1451 mm / 15.0 MPa), same 6 mm size, i.e. ~1.7 elements across:
+#:     order 1 (C3D4)  -> 54% / 48% of theory   -> unusable
+#:     order 2 (C3D10) -> 99% / 97% of theory   -> good
+#: So ~1.7 quadratic elements already resolve the bending gradient (a quadratic
+#: element carries a linear strain variation), while linear elements need many
+#: more. The thresholds say that instead of inventing a single round number —
+#: crying wolf on an accurate mesh costs credibility just like missing a bad one.
+_ELEMENTS_THROUGH_THICKNESS_BANDS = {1: (6.0, 3.0), 2: (1.5, 1.0)}
+
+
+def assess_mesh_accuracy(
+    nodes: dict[int, tuple[float, float, float]],
+    element_type: str | None,
+    target_size_mm: float,
+) -> dict[str, Any]:
+    """Judge whether this mesh can carry a trustworthy BENDING stress result.
+
+    Pure and deterministic. The product's worst failure mode is reporting a
+    number it has no right to trust: on the #368 cantilever, linear tets at
+    6 mm returned 48% of the analytical root stress and it was still stamped
+    ``executed_solver_result``. This gives that stamp something to check.
+
+    The signal is the count of elements across the SMALLEST overall dimension
+    (the thin direction, where a bending gradient has to be resolved) together
+    with the element order. It is a heuristic on the model bounding box, not a
+    convergence study — ``cae.mesh_convergence`` remains the real answer, and
+    the reason string says so.
+    """
+    order = 2 if str(element_type or "").upper() in {"C3D10", "C3D20", "C3D15"} else 1
+    result: dict[str, Any] = {
+        "element_order": order,
+        "element_type": element_type,
+        "reliable_for_bending": None,
+        "reason": "",
+        "recommended_action": None,
+    }
+    if not nodes:
+        result["reason"] = "no nodes — cannot assess."
+        return result
+
+    xs = [c[0] for c in nodes.values()]
+    ys = [c[1] for c in nodes.values()]
+    zs = [c[2] for c in nodes.values()]
+    extents = [max(xs) - min(xs), max(ys) - min(ys), max(zs) - min(zs)]
+    thinnest = min(e for e in extents if e > 0) if any(e > 0 for e in extents) else 0.0
+    result["thinnest_extent_mm"] = round(thinnest, 6)
+
+    if thinnest <= 0 or target_size_mm <= 0:
+        result["reason"] = "degenerate extent or mesh size — cannot assess."
+        return result
+
+    through = thinnest / float(target_size_mm)
+    reliable_at, marginal_at = _ELEMENTS_THROUGH_THICKNESS_BANDS[order]
+    result["elements_through_thinnest"] = round(through, 2)
+    result["min_elements_required"] = reliable_at
+
+    if through >= reliable_at:
+        band = "reliable"
+    elif through >= marginal_at:
+        band = "marginal"
+    else:
+        band = "unreliable"
+    result["band"] = band
+    result["reliable_for_bending"] = band == "reliable"
+
+    where = (
+        f"~{through:.1f} order-{order} element(s) across the thinnest extent "
+        f"({thinnest:.3g} mm)"
+    )
+    if band == "reliable":
+        result["reason"] = (
+            f"{where} meets the {reliable_at:g}-element bar for bending. Results "
+            f"remain mesh-dependent until cae.mesh_convergence is run."
+        )
+    elif band == "marginal":
+        result["reason"] = (
+            f"{where} — enough to resolve the bending gradient, but with little "
+            f"margin. Treat as a first-pass number and confirm with "
+            f"cae.mesh_convergence before relying on it."
+        )
+        result["recommended_action"] = (
+            f"confirm with cae.mesh_convergence, or re-mesh with "
+            f"mesh_size_mm <= {thinnest / reliable_at:g}"
+        )
+    else:
+        result["reason"] = (
+            f"only {where}, below the {marginal_at:g}-element minimum. Bending "
+            f"stress from this mesh is likely UNDER-predicted (non-conservative) "
+            f"and must not be treated as a reliable result."
+        )
+        result["recommended_action"] = (
+            f"re-mesh with mesh_size_mm <= {thinnest / reliable_at:g}"
+            + ("" if order >= 2 else " or use quadratic elements (element_order=2)")
+        )
+    return result
+
+
 def generate_mesh_for_package(
     package_path: Path,
     *,
     mesh_size_mm: float | None = None,
+    element_order: int = DEFAULT_ELEMENT_ORDER,
 ) -> dict[str, Any]:
     """Mesh the package's STEP geometry with Gmsh and persist the FE mesh.
 
@@ -766,6 +892,7 @@ def generate_mesh_for_package(
     if size <= 0:
         return {"status": "error", "code": "bad_input",
                 "message": f"mesh_size_mm must be positive, got {size}"}
+    order = 2 if int(element_order or DEFAULT_ELEMENT_ORDER) >= 2 else 1
 
     with tempfile.TemporaryDirectory(prefix="aieng_generate_mesh_") as tmp_str:
         work = Path(tmp_str)
@@ -777,7 +904,7 @@ def generate_mesh_for_package(
             }
 
         try:
-            mesh_inp = _mesh_with_gmsh(step_path, work, size)
+            mesh_inp = _mesh_with_gmsh(step_path, work, size, element_order=order)
         except Exception as exc:  # noqa: BLE001 — surface the mesher error honestly
             return {
                 "status": "mesh_failed",
@@ -803,16 +930,20 @@ def generate_mesh_for_package(
             "target_size_mm": size,
         }
 
+    accuracy = assess_mesh_accuracy(nodes, element_type, size)
+
     metadata = {
         "schema_version": "0.1",
         "generator": "gmsh",
         "element_type": element_type,
+        "element_order": order,
         "node_count": node_count,
         "element_count": element_count,
         "target_size_mm": size,
         "min_size_mm": size / 4.0,
         "algorithm_3d": "frontal_delaunay",
         "quality": quality,
+        "accuracy": accuracy,
     }
 
     _write_members_to_package(
@@ -828,9 +959,13 @@ def generate_mesh_for_package(
         "node_count": node_count,
         "element_count": element_count,
         "element_type": element_type,
+        "element_order": order,
         "target_size_mm": size,
         "quality_verdict": quality.get("verdict"),
         "quality": quality,
+        # Element quality alone says nothing about whether a BENDING stress from
+        # this mesh can be trusted — that is what `accuracy` answers.
+        "accuracy": accuracy,
         "written_artifacts": [
             CANONICAL_MESH_INP_PATH,
             MESH_METADATA_PATH,

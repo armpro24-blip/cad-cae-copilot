@@ -93,10 +93,10 @@ so:
 
 > 把最优的那个应用上去。
 
-Measured on the reference cantilever (real Gmsh + CalculiX): 6 mm → 16.69 MPa /
-mass 12000, 10 mm → 7.196 MPa / mass 20000, winner 6 mm under a 138 MPa
-allowable. A variant that fails to build or solve is reported honestly and never
-recommended.
+Measured on the reference cantilever (real Gmsh + CalculiX): 6 mm → 40.4 MPa /
+mass 12000, 10 mm → 14.5 MPa / mass 20000, winner 6 mm under a 138 MPa
+allowable. Both agree with hand calculation to ~3%. A variant that fails to
+build or solve is reported honestly and never recommended.
 
 **Two or more dimensions at once:**
 

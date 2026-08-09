@@ -833,6 +833,31 @@ system for physically-meaningful Hz. NAFEMS-style reference cases
 `cantilever_modal` (first natural frequency) and `column_buckling` (Euler factor)
 verify these paths — see `aieng/docs/nafems_vv_cases.md`.
 
+**Element order — quadratic (C3D10) by default, and why it matters.**
+`cae.generate_mesh` emits **second-order tetrahedra**. Linear tets (C3D4)
+shear-lock in bending and are far too stiff unless the mesh is very fine through
+the thickness, so they under-predict stress — the *non-conservative* direction.
+Measured on the #368 cantilever at the same 6 mm size (theory: 0.1451 mm tip /
+15.0 MPa root):
+
+| elements | tip deflection | root stress |
+|---|---|---|
+| C3D4 (linear) | 0.0786 mm — **54%** of theory | 7.20 MPa — **48%** of theory |
+| C3D10 (quadratic) | 0.1438 mm — 99% | 14.49 MPa — 97% |
+
+Pass `element_order=1` only for a deliberately cheap/coarse pass; the accuracy
+verdict then says the result is not trustworthy for bending.
+
+**Read `accuracy` before quoting a stress.** Every `cae.generate_mesh` response
+and `mesh_metadata.json` carries an `accuracy` block: `band`
+(`reliable`/`marginal`/`unreliable`), `elements_through_thinnest`,
+`min_elements_required`, a plain-language `reason`, and a
+`recommended_action`. It counts elements across the model's thinnest extent —
+where a bending gradient has to be resolved — against an order-dependent bar.
+An `unreliable` band means the stress is likely UNDER-predicted; do not present
+it as a result. This is a bounding-box heuristic, **not** a convergence study —
+`cae.mesh_convergence` remains the real answer, and the `reason` says so.
+
 **Installing CalculiX.** `cae.run_solver` needs the `ccx` executable available at runtime.
 
 - **Windows + conda (recommended):** create a dedicated environment so installing
