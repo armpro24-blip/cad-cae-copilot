@@ -133,3 +133,45 @@ def test_convergence_persists_report_to_package(valid_project: Path) -> None:
         persisted = json.loads(zf.read(MESH_CONVERGENCE_REPORT_PATH).decode("utf-8"))
     assert persisted["tool"] == "cae.mesh_convergence"
     assert persisted["overall_verdict"] == "converged"
+
+
+def test_default_evaluator_rebinds_faces_against_the_same_package(tmp_path: Path) -> None:
+    """The PRODUCTION per-size evaluator must ask for a self-rebind.
+
+    Regression: every other test in this file injects a fake evaluate_value, so
+    the real one was never exercised — and it omitted rebind_faces. A
+    convergence study changes only mesh density (the geometry is byte-identical),
+    but any CAD rebuild after CAE setup marks the recorded topology_hash stale,
+    so every single solve failed with "CAE face references do not match current
+    topology". The tool that answers "can I trust this number" was unusable on
+    the normal workflow.
+    """
+    import app.simulation_runner as sr
+    from app.mesh_convergence_runner import make_default_evaluate_size
+
+    pkg = tmp_path / "proj.aieng"
+    pkg.write_bytes(b"PK\x03\x04")
+    captured: dict = {}
+
+    def _fake_solve(package_path, **kwargs):
+        captured["package_path"] = package_path
+        captured.update(kwargs)
+        return {"solver_executed": True, "status": "success",
+                "metrics": {"max_von_mises_stress": 14.5}}
+
+    original = sr.solve_package_static
+    sr.solve_package_static = _fake_solve
+    try:
+        out = make_default_evaluate_size(pkg, timeout=42)(3.0)
+    finally:
+        sr.solve_package_static = original
+
+    assert out["solver_executed"] is True
+    assert out["size"] == 3.0
+    assert captured["mesh_size_mm"] == 3.0
+    assert captured["timeout"] == 42
+    # the fix: rebind, and against the package ITSELF (an exact rebind — the
+    # source and target topology are the same file, not a guess)
+    assert captured["rebind_faces"] is True
+    assert captured["baseline_package_path"] == pkg
+    assert captured["package_path"] == pkg

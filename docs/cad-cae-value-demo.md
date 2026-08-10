@@ -236,12 +236,52 @@ The 10 mm variant reproducing the baseline's max von Mises is a useful
 end-to-end cross-check: it means the sweep's regenerate → mesh → rebind → solve
 chain agrees with the single solve the demo already recorded.
 
+## Discharge the "mesh-dependent" caveat
+
+Every result above is qualified by "mesh-dependent until a convergence study is
+run". Run it — the tool exists and takes one call:
+
+```json
+{
+  "project_id": "<project_id>",
+  "mesh_sizes": [8.0, 5.0, 3.0],
+  "timeout": 600
+}
+```
+
+Tool: `cae.mesh_convergence`. It solves the same geometry at each size and
+computes a Grid Convergence Index (GCI) per metric. Nothing is mutated.
+
+Measured on this fixture:
+
+| mesh size | max von Mises | max displacement |
+|---|---|---|
+| 8 mm | 14.402 MPa | 0.14341 mm |
+| 5 mm | 14.599 MPa | 0.14386 mm |
+| 3 mm | 14.721 MPa | 0.14422 mm |
+
+```
+apparent_order        1.14
+extrapolated_value    14.875 MPa      <- beam theory: 15.00 MPa (99.2%)
+gci_fine_percent      1.31%           <- threshold 5%
+verdict               converged
+```
+
+The Richardson-extrapolated value lands within **0.8% of the closed-form
+solution**, and the finest-grid GCI (1.31%) is the honest numerical uncertainty
+band on the reported stress. That is what "mesh-converged" is allowed to mean
+here — it is discretization uncertainty for *this* metric on *this* geometry,
+**not** model validity and not certification. The report says so itself and is
+persisted to `analysis/mesh_convergence_report.json`.
+
 ## Honesty Boundaries
 
 - Linear static only.
 - Sweep rankings inherit every static-analysis limit below; a recommended
   dimension is a starting point for engineering judgement, not a sign-off.
-- Mesh-dependent until a convergence study is run.
+- Mesh-dependent until a convergence study is run — so run it (above). A GCI
+  bounds *discretization* uncertainty only; it says nothing about whether the
+  model itself is right.
 - CalculiX execution and FRD extraction are solver evidence, not certification.
 - No physical validation, fatigue, buckling, nonlinear contact, or bolt preload
   is claimed.

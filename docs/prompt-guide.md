@@ -102,7 +102,24 @@ build or solve is reported honestly and never recommended.
 
 > 同时调壁厚和筋高，找最轻的组合。
 
-## 6. Topology optimization
+## 6. Ask whether the number is actually converged
+
+Any single solve is mesh-dependent. Ask for the check in a sentence:
+
+> 这个结果收敛了吗？换几个网格密度验证一下。
+
+> Is this mesh-converged? Run a convergence study.
+
+Solves the same part at several mesh densities and reports a Grid Convergence
+Index per metric, plus a Richardson-extrapolated value. On the reference
+cantilever: extrapolated **14.875 MPa** against a closed-form **15.00 MPa**, with
+a **1.31%** numerical uncertainty band — i.e. converged.
+
+A GCI bounds *discretization* uncertainty only. It does not say the model is
+right — wrong loads, wrong supports, or the wrong physics stay wrong at any mesh
+density.
+
+## 7. Topology optimization
 
 > 帮我做一个拓扑优化，看看材料该怎么分布。
 
