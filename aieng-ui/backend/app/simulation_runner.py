@@ -1964,6 +1964,11 @@ def _run_calculix(
         text=True,
         timeout=timeout,
         env=_subprocess_env(),
+        # Never inherit the parent's stdin: under the MCP stdio server the
+        # parent's stdin is the JSON-RPC protocol pipe, and on Windows a child
+        # that inherits it blocks at startup and never runs (measured — same
+        # class as the CAD runner hang; see _runner_subprocess_env docs).
+        stdin=subprocess.DEVNULL,
     )
     log = result.stdout + "\n" + result.stderr
     frd = work_dir / f"{inp_path.stem}.frd"

@@ -4788,6 +4788,25 @@ def _extract_source_label_map(source_code: str) -> dict[str, dict[str, Any]]:
     return hints
 
 
+def _runner_subprocess_env() -> dict[str, str]:
+    """Explicit environment for CAD runner subprocesses.
+
+    On Windows, in-process gmsh use corrupts the NATIVE Win32 environment block
+    that a child inherits when ``env=None`` (PATH loses even System32) while
+    Python's ``os.environ`` stays intact — the same failure class fixed for the
+    solver launches in simulation_runner (#467). Every CAD runner spawn hands
+    the child a snapshot of ``os.environ`` so a prior in-process mesh (or the
+    MCP server's gmsh preload) can never poison the build subprocess.
+
+    Every runner spawn must ALSO pass ``stdin=subprocess.DEVNULL``: under the
+    MCP stdio server the parent's stdin is the JSON-RPC protocol pipe, and on
+    Windows a child that inherits it blocks at interpreter startup and never
+    executes at all (measured 2026-08-10 — even ``python -c "print('hi')"``
+    hangs until its timeout; with DEVNULL it returns instantly).
+    """
+    return dict(os.environ)
+
+
 def _build_build123d_runner_script(code: str, timeout: int) -> str:
     source_hints = json.dumps(_extract_source_label_map(code), sort_keys=True)
     return (
@@ -4829,6 +4848,8 @@ def _execute_build123d_code(
                 capture_output=True,
                 text=True,
                 timeout=timeout,
+                env=_runner_subprocess_env(),
+                stdin=subprocess.DEVNULL,
             )
         except subprocess.TimeoutExpired as exc:
             # Match the streaming path's failure mode: surface a clean RuntimeError
@@ -5512,6 +5533,8 @@ def _execute_build123d_code_streaming(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            env=_runner_subprocess_env(),
+            stdin=subprocess.DEVNULL,
         )
         start = time.monotonic()
         timed_out = False
@@ -6278,6 +6301,7 @@ def _execute_sdf_code(
             proc = subprocess.run(
                 [sys.executable, str(runner_path), str(out_stl), str(out_glb), str(out_topo), str(samples)],
                 capture_output=True, text=True, timeout=timeout,
+                env=_runner_subprocess_env(), stdin=subprocess.DEVNULL,
             )
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError(f"SDF execution timed out after {timeout}s") from exc
@@ -6462,6 +6486,7 @@ def _execute_manifold_code(
             proc = subprocess.run(
                 [sys.executable, str(runner_path), str(out_stl), str(out_glb), str(out_topo)],
                 capture_output=True, text=True, timeout=timeout,
+                env=_runner_subprocess_env(), stdin=subprocess.DEVNULL,
             )
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError(f"Manifold execution timed out after {timeout}s") from exc
