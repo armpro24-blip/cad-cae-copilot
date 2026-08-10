@@ -46,21 +46,25 @@ Choose one tier:
 3. **Docker all-in-one** - recommended when native CAD dependencies are the
    blocker. The container starts backend, viewer, and MCP HTTP/SSE together.
 
-Headless install/run after publication:
+Headless run directly from this Git repository without cloning it first —
+**this is the current primary install path** (pinned to the published release
+tag; PyPI publication is planned but not yet live, so a bare
+`uvx aieng-workbench-mcp` does not resolve yet):
 
 ```bash
-uvx "aieng-workbench-mcp[full]" \
+uvx \
+  --from "aieng-workbench-mcp[full] @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.3#subdirectory=aieng-ui/backend" \
+  --with "aieng-format @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.3#subdirectory=aieng" \
+  aieng-workbench-mcp \
   --approval-mode client \
   --data-dir ~/.aieng-workbench
 ```
 
-Headless run directly from this Git repository without cloning it first:
+(Drop the `@v0.1.0-alpha.3` pins to track `main` instead.) Once the packages
+are on PyPI, the short form becomes available:
 
 ```bash
-uvx \
-  --from "aieng-workbench-mcp[full] @ git+https://github.com/armpro24-blip/cad-cae-copilot.git#subdirectory=aieng-ui/backend" \
-  --with "aieng-format @ git+https://github.com/armpro24-blip/cad-cae-copilot.git#subdirectory=aieng" \
-  aieng-workbench-mcp \
+uvx "aieng-workbench-mcp[full]" \
   --approval-mode client \
   --data-dir ~/.aieng-workbench
 ```
@@ -103,13 +107,14 @@ The install extras are intentionally explicit:
 | `aieng-workbench-mcp[llm]` | Adds Anthropic/OpenAI SDKs for compatibility endpoints. BYO MCP agents do not need this. |
 | `aieng-workbench-mcp[full]` | CAD + LLM extras; closest to the local backend environment. |
 
-Until both distributions are published, the Git `uvx --from ... --with ...`
-form above is the no-clone install path. If dependency resolution for native CAD
-wheels fails on your platform, use the Docker tier.
+PyPI publication is planned but not yet live, so the per-client snippets below
+use the Git `uvx --from ... --with ...` no-clone form pinned to the published
+release tag. If dependency resolution for native CAD wheels fails on your
+platform, use the Docker tier.
 
 ### Claude Code snippets
 
-Headless local install:
+Headless no-clone install (from the published release tag):
 
 ```json
 {
@@ -117,7 +122,9 @@ Headless local install:
     "aieng-workbench": {
       "command": "uvx",
       "args": [
-        "aieng-workbench-mcp[full]",
+        "--from", "aieng-workbench-mcp[full] @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.3#subdirectory=aieng-ui/backend",
+        "--with", "aieng-format @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.3#subdirectory=aieng",
+        "aieng-workbench-mcp",
         "--approval-mode", "client",
         "--data-dir", "~/.aieng-workbench"
       ]
@@ -152,7 +159,9 @@ Add to `~/.codex/config.toml`:
 [mcp_servers.aieng-workbench]
 command = "uvx"
 args = [
-  "aieng-workbench-mcp[full]",
+  "--from", "aieng-workbench-mcp[full] @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.3#subdirectory=aieng-ui/backend",
+  "--with", "aieng-format @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.3#subdirectory=aieng",
+  "aieng-workbench-mcp",
   "--approval-mode", "client",
   "--compact-tool-surface",
   "--data-dir", "~/.aieng-workbench",
@@ -186,7 +195,9 @@ Use `.vscode/mcp.json` style configuration:
       "type": "stdio",
       "command": "uvx",
       "args": [
-        "aieng-workbench-mcp[full]",
+        "--from", "aieng-workbench-mcp[full] @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.3#subdirectory=aieng-ui/backend",
+        "--with", "aieng-format @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.3#subdirectory=aieng",
+        "aieng-workbench-mcp",
         "--approval-mode", "client",
         "--compact-tool-surface",
         "--data-dir", "~/.aieng-workbench"
@@ -386,14 +397,25 @@ created before a `docker restart` is still readable afterward.
 
 **Running the CalculiX solver from a separate conda env (Windows).**
 Installing `calculix` directly into `aieng311` downgrades OpenSSL and breaks SSL.
-Create a dedicated env and point the MCP server / backend at it:
+Create a dedicated env:
+
+```powershell
+conda create -n calculix-env -c conda-forge calculix
+```
+
+**That is normally all you need — `AIENG_CCX_CMD` is optional.** The backend
+auto-discovers a `ccx` inside a sibling conda env and builds the `conda run`
+launcher itself (on Windows it rewrites the launcher to an absolute path so the
+solver works no matter which shell started the backend). Set the variable only
+to override the discovered binary:
 
 ```text
 AIENG_CCX_CMD="conda run -n calculix-env ccx"
 ```
 
 The command is parsed with `shlex.split` and invoked with `shell=False`.
-On Linux/macOS, leave `AIENG_CCX_CMD` unset if `ccx` is already on PATH.
+On Linux/macOS, auto-discovery also applies; a `ccx` already on PATH works
+without any variable.
 For container deployments, `ccx` is bundled and no extra variable is needed.
 Disable managed approval only when using a trusted client-managed approval flow; set
 `AIENG_MCP_BLOCK_APPROVAL_TOOLS=1` for planning/inspection-only containers.

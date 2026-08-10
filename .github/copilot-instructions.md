@@ -12,4 +12,4 @@ root. Read it before acting.
   The real CAD engine is `cad.execute_build123d` (build123d / OpenCASCADE).
 - Do NOT diagnose the backend with `pylanceRunCodeSnippet`, subprocess, or psutil.
   If the backend at `http://127.0.0.1:8000` is down, ask the user to start it
-  (`conda activate aieng311 && uvicorn app.main:app --reload` from `aieng-ui/backend`).
+  (`conda activate aieng311 && uvicorn app.main:app --reload --port 8000` from `aieng-ui/backend`).
