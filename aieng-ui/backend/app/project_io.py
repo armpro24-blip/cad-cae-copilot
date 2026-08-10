@@ -1783,9 +1783,17 @@ def _validate_cad_parameter_edit_contract(
             raise ValueError("graph/feature_graph.json missing; cannot validate editable CAD parameter")
         feature_graph = json.loads(zf.read("graph/feature_graph.json"))
 
-    feature = next((f for f in _feature_list_from_graph(feature_graph) if f.get("id") == feature_id), None)
+    features = _feature_list_from_graph(feature_graph)
+    feature = next((f for f in features if f.get("id") == feature_id), None)
     if feature is None:
-        raise ValueError(f"feature_id not found in feature graph: {feature_id}")
+        # Name what IS there — an agent (or a flaky-test log) needs the actual
+        # ids to re-target, not just the absence.
+        available = ", ".join(
+            f"{f.get('id')}({f.get('name') or f.get('type') or '?'})" for f in features
+        ) or "none"
+        raise ValueError(
+            f"feature_id not found in feature graph: {feature_id} (available: {available})"
+        )
 
     params = feature.get("parameters", [])
     if isinstance(params, dict):

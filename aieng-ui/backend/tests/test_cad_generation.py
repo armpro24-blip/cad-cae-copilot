@@ -3794,16 +3794,25 @@ def test_concurrent_cache_writes_produce_one_valid_entry(tmp_path: Path) -> None
         return _FAKE_STEP, _FAKE_STL, _FAKE_GLB, dict(_SAMPLE_TOPOLOGY), None
 
     def _write_once():
-        with patch("app.cad_generation._execute_build123d_code", side_effect=_counting_executor):
-            return cad_generation._execute_build123d_cached(
-                settings, code, mode="replace", model_kind="auto",
-            )
+        return cad_generation._execute_build123d_cached(
+            settings, code, mode="replace", model_kind="auto",
+        )
 
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        f1 = pool.submit(_write_once)
-        f2 = pool.submit(_write_once)
-        r1 = f1.result(timeout=30)
-        r2 = f2.result(timeout=30)
+    # Patch ONCE, outside the worker threads. unittest.mock.patch is not
+    # thread-safe: entering/exiting it concurrently in two threads can restore
+    # the FIRST thread's mock instead of the real function, permanently
+    # replacing _execute_build123d_code for the rest of the pytest process.
+    # That leak made every later non-streaming build in the suite return
+    # _SAMPLE_TOPOLOGY — the cross-test contamination behind the intermittent
+    # test_stale_proposal_is_rejected_without_mutating_package failure
+    # (full-suite Windows runs only, where thread startup is slow enough for
+    # the enter/exit windows to interleave).
+    with patch("app.cad_generation._execute_build123d_code", side_effect=_counting_executor):
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            f1 = pool.submit(_write_once)
+            f2 = pool.submit(_write_once)
+            r1 = f1.result(timeout=30)
+            r2 = f2.result(timeout=30)
 
     assert "step_bytes" in r1
     assert "step_bytes" in r2
