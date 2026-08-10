@@ -1,9 +1,7 @@
 > **Experimental pre-release.** This is the first published release of the
 > AIENG Workbench line. `v0.1.0-alpha.1` / `v0.1.0-alpha.2` were internal
 > drafts that were never tagged or published anywhere; the version history
-> starts here in public. Tag `v0.1.0-alpha.3` ships Python package version
-> `0.1.0a2` (the mapping is printed by the release workflow before anything
-> publishes).
+> starts here in public. The Python packages carry version `0.1.0a2`.
 
 ## What this is
 
@@ -16,11 +14,11 @@ command vocabulary.
 
 Two Python packages plus a Docker image:
 
-| Artifact | What it contains |
-|---|---|
-| `aieng-format==0.1.0a2` (PyPI) | The `.aieng` package format library: Shape IR, schemas, validation, evidence/credibility model, CLI |
-| `aieng-workbench-mcp==0.1.0a2` (PyPI) | The MCP server + FastAPI backend: CAD/CAE/optimization tools, approval gating, web viewer API |
-| `ghcr.io/armpro24-blip/aieng-workbench:latest` (GHCR) | All-in-one image (backend + built web workbench); every published tag is smoke-validated on `main` |
+| Artifact | Where | What it contains |
+|---|---|---|
+| `ghcr.io/armpro24-blip/aieng-workbench:latest` | **GHCR (published)** | All-in-one image (backend + built web workbench + CalculiX); every published tag is smoke-validated on `main` |
+| `aieng-format` `0.1.0a2` | this repo (`aieng/`); PyPI publication planned | The `.aieng` package format library: Shape IR, schemas, validation, evidence/credibility model, CLI |
+| `aieng-workbench-mcp` `0.1.0a2` | this repo (`aieng-ui/backend/`); PyPI publication planned | The MCP server + FastAPI backend: CAD/CAE/optimization tools, approval gating, web viewer API |
 
 ## Capabilities (evidence-backed)
 
@@ -60,27 +58,8 @@ Two Python packages plus a Docker image:
 
 ## Install
 
-Python packages (pre-release — pip requires the explicit pin or `--pre`):
-
-```bash
-pip install --pre aieng-format==0.1.0a2 aieng-workbench-mcp==0.1.0a2
-aieng-workbench-mcp-smoke   # packaged smoke: onboarding + stubbed CAD + approval fail-safe
-```
-
-MCP server for your agent (after PyPI publish):
-
-```json
-{
-  "mcpServers": {
-    "aieng-workbench": {
-      "command": "uvx",
-      "args": ["aieng-workbench-mcp[full]"]
-    }
-  }
-}
-```
-
-Docker all-in-one (already published; includes CalculiX):
+**Docker all-in-one** (recommended — published on GHCR, bundles the full CAD
+stack and CalculiX):
 
 ```bash
 docker pull ghcr.io/armpro24-blip/aieng-workbench:latest
@@ -88,13 +67,29 @@ docker run --rm -it -p 8000:8000 -p 8765:8765 -v aieng-data:/data \
   ghcr.io/armpro24-blip/aieng-workbench:latest
 ```
 
+**MCP server without cloning**, straight from this repository (Python 3.11+):
+
+```bash
+uvx \
+  --from "aieng-workbench-mcp[full] @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.3#subdirectory=aieng-ui/backend" \
+  --with "aieng-format @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.3#subdirectory=aieng" \
+  aieng-workbench-mcp \
+  --approval-mode client \
+  --data-dir ~/.aieng-workbench
+```
+
+PyPI publication of `aieng-format` / `aieng-workbench-mcp` is planned; the
+`pip install --pre` path activates once the packages are on the index (the
+release workflow that publishes them is already in the repository,
+owner-gated).
+
 Full wiring for Claude Code / VS Code / Codex: `aieng-ui/backend/MCP_SETUP.md`.
 Prompt phrasing that works: `docs/prompt-guide.md`.
 
-Python 3.11+ required. The optional real-CAD/FEA stack (build123d/OCP, gmsh,
-CalculiX) is heavy; the Docker image bundles all of it, while the pip path
-runs with honest degradation (stubbed CAD smoke, preflight reports missing
-solver) until you install the extras.
+The optional real-CAD/FEA stack (build123d/OCP, gmsh, CalculiX) is heavy; the
+Docker image bundles all of it, while the Python path runs with honest
+degradation (stubbed CAD smoke, preflight reports the missing solver) until
+you install the extras.
 
 ## Honesty boundary (read before trusting any output)
 

@@ -4,12 +4,15 @@ name: Release
 # GitHub release. Nothing here fires on an ordinary push or PR.
 #
 # Owner-gated by design, in two independent ways:
-#   1. It only starts from a `v*` tag push or a manual dispatch — both explicit
-#      owner actions.
+#   1. It only starts from a manual dispatch — an explicit owner action.
+#      (The former `v*` tag-push trigger was removed for v0.1.0-alpha.3: the
+#      owner chose to tag + release WITHOUT PyPI for now, and an automatic
+#      publish attempt without Trusted Publishing configured would just fail
+#      red on every tag. Re-add `push: tags: ["v*"]` once PyPI is set up if
+#      tag-driven publishing is wanted again.)
 #   2. Each publish job is bound to a GitHub Environment (`pypi` / `testpypi`).
 #      Add a required reviewer to those environments and the job pauses for an
-#      approval click even on a tag push. See .github/rulesets/README.md style
-#      docs in aieng/docs/release/v0.1.0-alpha_publish_runbook.md.
+#      approval click. See aieng/docs/release/v0.1.0-alpha_publish_runbook.md.
 #
 # Auth is PyPI Trusted Publishing (OIDC) — no API tokens live in this repo.
 # One-time setup per project on PyPI: Publishing -> Add a new pending publisher
@@ -17,8 +20,6 @@ name: Release
 #   Workflow: release.yml  Environment: pypi   (repeat with testpypi)
 
 on:
-  push:
-    tags: ["v*"]
   workflow_dispatch:
     inputs:
       target:
