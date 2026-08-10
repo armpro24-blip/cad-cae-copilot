@@ -953,6 +953,29 @@ check the recorded hash and the existence of every referenced face. If they do n
 match the current topology, the run is refused with code
 `stale_topology_references` and a list of the stale or missing face IDs.
 
+**Binding re-verification — evidence beats suspicion.** A hash mismatch (or the
+`stale` flag that *every* CAD write sets) only means the geometry changed, which
+is exactly what a parametric edit is supposed to do. Measured on the reference
+beam: after a thickness edit **all six face ids still resolve**, yet the setup
+was declared invalid — the blanket refusal that forced adaptive-rebind machinery
+into every solver path, and that killed `cae.mesh_convergence` outright when one
+path forgot to pass it.
+
+So when a mapping is written, each bound face's **character** is recorded into
+`simulation/cae_mapping.json` as `face_signatures: {face_id: {surface_type,
+normal}}` (`project_io.annotate_cae_mapping_face_character`). Deliberately not
+position or area — an edit is meant to move and resize faces. On the next check:
+
+- every reference resolves **and** still matches its recorded character →
+  `references_reverified: true`, the run proceeds, and a `reverification_note`
+  records why;
+- a reference is **missing**, or a face **changed character** (planar → cylinder,
+  normal flipped) → refused exactly as before;
+- a mapping written **before** `face_signatures` existed carries no evidence, so
+  it keeps the old conservative refusal. Existence alone is not proof that an id
+  still means the same physical face, and no silent loosening is applied to data
+  that cannot be checked.
+
 For batch/parametric workflows (`opt.sizing_sweep`, `opt.cae_evaluate_candidate`,
 `solve_candidate_geometry`) the runner can attempt an **adaptive geometric rebind**
 instead of refusing outright. It matches each stale `@face:*` reference to the

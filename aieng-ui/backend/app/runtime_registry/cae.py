@@ -448,6 +448,15 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         refreshed_artifacts: list[dict[str, Any]] = []
         refresh_warnings: list[str] = []
 
+        # Record each bound face's character while the binding is known-good, so
+        # a later topology change can be RE-VERIFIED instead of blanket-refused.
+        try:
+            from ..project_io import annotate_cae_mapping_face_character
+
+            annotate_cae_mapping_face_character(package_path)
+        except Exception as exc:  # noqa: BLE001 - annotation is best-effort
+            refresh_warnings.append(f"cae_mapping_face_character_annotation_failed: {exc}")
+
         do_refresh = bool(inp.get("refresh_preprocessing_summary", True))
         if do_refresh:
             try:

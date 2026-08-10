@@ -2323,3 +2323,102 @@ def test_core_deck_from_mesh_writes_parsed_members_into_runtime_package(monkeypa
     )
 
     assert parsed.keys() <= seen["members"], seen["members"]
+
+
+# ── Face-binding re-verification (evidence beats suspicion) ───────────────────
+
+def test_annotate_records_bound_face_character(tmp_path: Path) -> None:
+    """Binding-time annotation is what makes later re-verification possible."""
+    from app.project_io import annotate_cae_mapping_face_character
+
+    pkg = tmp_path / "annot.aieng"
+    _build_test_package_with_hash(pkg)
+
+    out = annotate_cae_mapping_face_character(pkg)
+    assert out["status"] == "ok"
+    assert out["annotated_face_ids"]
+
+    with zipfile.ZipFile(pkg) as zf:
+        mapping = json.loads(zf.read("simulation/cae_mapping.json"))
+    sigs = [m.get("face_signatures") for m in mapping["mappings"] if m.get("face_signatures")]
+    assert sigs, "no face_signatures were written"
+    # character only — NOT position/area, which a dimensional edit is meant to change
+    for sig in sigs:
+        for face_sig in sig.values():
+            assert set(face_sig) <= {"surface_type", "normal"}
+
+
+def test_stale_flag_is_forgiven_when_every_face_reverifies(tmp_path: Path) -> None:
+    """A dimensional edit marks the mapping stale but breaks nothing.
+
+    Measured on the reference beam: after a thickness edit all six face ids still
+    resolve. The old rule declared the setup invalid anyway, which is what forced
+    adaptive-rebind machinery into every solver path — and mesh convergence,
+    which forgot to pass it, could not complete a single solve.
+    """
+    from app.project_io import (
+        annotate_cae_mapping_face_character,
+        validate_cae_topology_references,
+    )
+
+    pkg = tmp_path / "stale_ok.aieng"
+    _build_test_package_with_hash(pkg)
+    annotate_cae_mapping_face_character(pkg)
+
+    with zipfile.ZipFile(pkg) as zf:
+        mapping = json.loads(zf.read("simulation/cae_mapping.json"))
+    mapping["stale"] = True  # what every CAD write sets
+    _build_test_package_with_hash(pkg, cae_mapping=mapping)
+
+    result = validate_cae_topology_references(pkg)
+    assert result["cae_mapping_stale"] is True
+    assert result["references_reverified"] is True
+    assert result["valid"] is True
+    assert "re-verified" in result["reverification_note"]
+
+
+def test_reverification_refuses_when_a_bound_face_changed_character(tmp_path: Path) -> None:
+    """A face that flipped direction is no longer the face the load was bound to."""
+    from app.project_io import (
+        annotate_cae_mapping_face_character,
+        validate_cae_topology_references,
+    )
+
+    pkg = tmp_path / "flipped.aieng"
+    _build_test_package_with_hash(pkg)
+    annotate_cae_mapping_face_character(pkg)
+
+    with zipfile.ZipFile(pkg) as zf:
+        mapping = json.loads(zf.read("simulation/cae_mapping.json"))
+    # pretend it was bound to a face pointing the other way
+    for entry in mapping["mappings"]:
+        for fid, sig in (entry.get("face_signatures") or {}).items():
+            if isinstance(sig.get("normal"), list) and len(sig["normal"]) == 3:
+                sig["normal"] = [-float(c) for c in sig["normal"]]
+                break
+    mapping["stale"] = True
+    _build_test_package_with_hash(pkg, cae_mapping=mapping)
+
+    result = validate_cae_topology_references(pkg)
+    assert result["face_character_mismatches"], "a flipped normal must be caught"
+    assert result["references_reverified"] is False
+    assert result["valid"] is False
+
+
+def test_legacy_mapping_without_signatures_keeps_the_conservative_refusal(tmp_path: Path) -> None:
+    """No silent loosening for packages we cannot actually check.
+
+    A mapping written before face_signatures existed carries no evidence of what
+    the binding pointed at, so a stale flag still refuses — existence alone is
+    not proof the id still means the same physical face.
+    """
+    from app.project_io import validate_cae_topology_references
+
+    pkg = tmp_path / "legacy.aieng"
+    mapping = json.loads(json.dumps(_CAE_MAPPING))
+    mapping["stale"] = True
+    _build_test_package_with_hash(pkg, cae_mapping=mapping)
+
+    result = validate_cae_topology_references(pkg)
+    assert result["references_reverified"] is False
+    assert result["valid"] is False
