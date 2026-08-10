@@ -36,11 +36,27 @@ def make_default_evaluate_size(
 
     ``solve_package_static`` is read-only on the package (it works in a temp dir),
     so every mesh size solves the same baseline geometry without mutating it.
+
+    ``rebind_faces`` against the package ITSELF is deliberate. A convergence
+    study changes only the mesh density — the geometry is byte-identical — so
+    the face references are still correct even when the recorded
+    ``topology_hash`` is stale (any CAD rebuild after CAE setup marks it so).
+    Without this the whole study failed with "CAE face references do not match
+    current topology" on exactly the normal workflow (build CAD, set up CAE,
+    rebuild CAD once), which made the tool that answers "can I trust this
+    number" unusable. The rebind here is exact, not a guess: source and target
+    topology are the same file.
     """
     from .simulation_runner import solve_package_static
 
     def _evaluate(size: float) -> dict[str, Any]:
-        solve = solve_package_static(baseline_pkg, mesh_size_mm=size, timeout=timeout)
+        solve = solve_package_static(
+            baseline_pkg,
+            mesh_size_mm=size,
+            timeout=timeout,
+            rebind_faces=True,
+            baseline_package_path=baseline_pkg,
+        )
         return {
             "size": size,
             "metrics": dict(solve.get("metrics") or {}),

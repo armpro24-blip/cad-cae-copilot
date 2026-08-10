@@ -97,6 +97,23 @@ VALUE_DEMO_STEPS: tuple[dict[str, Any], ...] = (
         ],
     },
     {
+        "id": "mesh_convergence",
+        "tool": "cae.mesh_convergence",
+        "prompt": (
+            "Discharge the mesh-dependence caveat: run a convergence study at "
+            "mesh_sizes [8.0, 5.0, 3.0]. Report the per-metric GCI and the "
+            "Richardson-extrapolated value, and compare it against the "
+            "closed-form cantilever stress (M*c/I = 15.0 MPa)."
+        ),
+        "expected": [
+            "three successful solves at progressively finer meshes",
+            "gci_fine_percent within the 5% threshold",
+            "extrapolated_value close to beam theory",
+            "analysis/mesh_convergence_report.json",
+            "discretization-uncertainty-only honesty stated",
+        ],
+    },
+    {
         "id": "report",
         "tool": "report.generate",
         "prompt": (
