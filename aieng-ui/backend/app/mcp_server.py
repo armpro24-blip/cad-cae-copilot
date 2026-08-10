@@ -1000,6 +1000,43 @@ def _build_mcp_server(name: str = "aieng-workbench", *, compact_surface: bool | 
     return mcp
 
 
+def _preload_native_runtime() -> None:
+    """Import the heavy C-extension stack BEFORE the stdio event loop starts.
+
+    On Windows, importing a large native extension (numpy, build123d/OCP, gmsh)
+    for the first time INSIDE a running FastMCP stdio server deadlocks in the
+    Windows DLL loader and the tool call never returns. Measured 2026-08-10
+    with a minimal reproduction (bare FastMCP server + a tool whose body is
+    `import numpy`): the call hangs indefinitely, while the same import done at
+    module scope before `mcp.run()` makes the tool return instantly. numpy,
+    build123d (OCP), and gmsh each deadlock independently; PIL and trimesh are
+    safe to import lazily once numpy is in.
+
+    This bites exactly the zero-config headless path we advertise — Windows +
+    no live backend (in-process fallback) + real CAD — so the imports happen
+    here, single-threaded, before anyio spawns the loop. Each import is
+    best-effort: a missing optional dependency (base package without the [cad]
+    extra) just means the corresponding tools degrade as they already do.
+
+    Set AIENG_MCP_PRELOAD_NATIVE=0 to skip (faster startup when the server is
+    only ever used against a live backend that does the real work).
+    """
+    raw = os.environ.get("AIENG_MCP_PRELOAD_NATIVE", "1").strip()
+    if raw.lower() in {"0", "false", "no"}:
+        logger.info("native-stack preload skipped (AIENG_MCP_PRELOAD_NATIVE=0)")
+        return
+    default_modules = ("numpy", "build123d", "gmsh")
+    modules = default_modules if raw.lower() in {"1", "true", "yes", ""} else tuple(
+        m.strip() for m in raw.split(",") if m.strip()
+    )
+    for module_name in modules:
+        try:
+            __import__(module_name)
+            logger.info("preloaded %s", module_name)
+        except Exception as exc:  # noqa: BLE001 - optional deps degrade honestly
+            logger.info("preload of %s skipped: %s", module_name, exc)
+
+
 def _run_doctor_cli(mcp: FastMCP) -> int:
     """Print setup diagnostics to stdout and return an exit code (#229).
 
@@ -1114,6 +1151,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.doctor:
         return _run_doctor_cli(mcp)
+
+    _preload_native_runtime()
 
     if args.http:
         # FastMCP's SSE app provides /sse + /messages.
