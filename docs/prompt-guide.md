@@ -138,6 +138,9 @@ way rather than pretending otherwise.
   say "not found" or "no solver was executed" instead.
 - **Tell you the evidence level** of any number it reports, so a mesh proxy or
   an unverified estimate is never presented as a solved result.
+- **Measure mesh accuracy instead of hoping** — every mesh carries a measured
+  accuracy verdict, and a solve on an unreliable mesh is downgraded
+  (`unreliable_mesh`), not reported as a result.
 
 ## What it is not
 

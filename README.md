@@ -154,6 +154,18 @@ The alpha image is published to GHCR from `main` after the Docker smoke passes
 (`latest` + an immutable `sha-<commit>` tag). Alpha-scoped, not
 production-certified.
 
+**Releases:** the current pre-release is
+[`v0.1.0-alpha.3`](https://github.com/armpro24-blip/cad-cae-copilot/releases/tag/v0.1.0-alpha.3).
+To run just the MCP server without cloning (Python 3.11+, pinned to the release
+tag; PyPI publication is planned but not yet live):
+
+```bash
+uvx \
+  --from "aieng-workbench-mcp[full] @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.3#subdirectory=aieng-ui/backend" \
+  --with "aieng-format @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.3#subdirectory=aieng" \
+  aieng-workbench-mcp --approval-mode client --data-dir ~/.aieng-workbench
+```
+
 ### What a successful first run looks like
 
 After the first successful CAD smoke, you should be able to verify:
@@ -417,7 +429,14 @@ AI-suggested change here is checked and explainable, not just rendered:
 - **V&V-40 credibility tiering** — every result-bearing output carries one ordered
   tier (`critique_finding` < `surrogate_prediction` < `proxy_assembly_result` <
   `executed_solver_result`); a claim is never presented as more credible than its
-  evidence, and `production_ready` is never assumed.
+  evidence, and `production_ready` is never assumed. Running the solver is not
+  enough: a completed run on a mesh whose measured accuracy band is `unreliable`
+  is stamped `unreliable_mesh`, not `executed_solver_result`.
+- **Mesh accuracy by measurement, not hope** — FE meshes default to quadratic
+  tetrahedra (C3D10; linear tets under-predicted bending stress ~2× in
+  calibration), and every mesh carries a measured `accuracy` verdict
+  (reliable / marginal / unreliable) plus an optional GCI/Richardson
+  convergence study (`cae.mesh_convergence`).
 - **Surrogate error-band discipline** — a surrogate-predicted number is never shown
   without its uncertainty band + a leave-one-out validation error.
 - **Consistency-gated agency** — low cross-sample agreement on an LLM-judged step
@@ -598,17 +617,19 @@ overwrite; ranking is advisory.
 ### 5. Real CAD->CAE Value Demo
 
 Runs one canonical single-solid cantilever through CAD creation, face-pointer
-selection, approval-gated CalculiX execution, FRD-derived viewer fields, and a
-shareable engineering report.
+selection, approval-gated CalculiX execution, a GCI/Richardson mesh-convergence
+study, FRD-derived viewer fields, and a shareable engineering report.
 
 ```bash
 python aieng-ui/backend/scripts/value_demo_packet.py --format markdown
 ```
 
 **Key artifacts:** `simulation/runs/value_demo_run_001/outputs/result.frd`,
-`results/computed_metrics.json`, engineering report HTML.
-**Boundary:** Requires real Gmsh/CalculiX; linear static and mesh-dependent; no
-synthetic fallback counts as a successful demo.
+`results/computed_metrics.json`, `analysis/mesh_convergence_report.json`,
+engineering report HTML.
+**Boundary:** Requires real Gmsh/CalculiX; linear static — discretization
+uncertainty is bounded by the GCI study (measured 1.31% on the reference
+cantilever), not assumed away; no synthetic fallback counts as a successful demo.
 [Runbook ->](docs/cad-cae-value-demo.md)
 
 ## Current limitations
@@ -638,6 +659,7 @@ Honesty boundaries — outputs are review material, not production sign-off:
 | Doc | Purpose |
 |-----|---------|
 | [AGENTS.md](AGENTS.md) | Canonical agent guide — tools, workflows, and conventions |
+| [docs/prompt-guide.md](docs/prompt-guide.md) | Plain sentences to type at your connected agent — the user-facing phrasing guide |
 | [aieng-ui/backend/MCP_SETUP.md](aieng-ui/backend/MCP_SETUP.md) | Per-agent MCP wiring for Claude Code, Copilot, Cursor, and Codex |
 | [docs/cad_execution_boundary.md](docs/cad_execution_boundary.md) | Local-first execution boundary, privacy posture, approval gates, and sandbox limits |
 | [docs/parametric-edit-governance.md](docs/parametric-edit-governance.md) | Reviewable, reversible CAD parameter edit workflow and honesty boundaries |

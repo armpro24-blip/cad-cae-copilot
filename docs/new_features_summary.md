@@ -1,6 +1,10 @@
-# New Features Summary
+# New Features Summary (snapshot: 2026-06)
 
-This document summarizes the new capabilities added to CAD/CAE Copilot during the recent development cycle.
+This document is a **dated snapshot** of capabilities added in the June-2026
+development cycle (materials library, standard parts, BOM). It predates the
+quadratic-mesh accuracy work, GCI mesh convergence, real-solver sizing sweeps,
+face-id stability, and the v0.1.0-alpha.3 release — see `AGENTS.md` and the
+release notes for the current state.
 
 ---
 

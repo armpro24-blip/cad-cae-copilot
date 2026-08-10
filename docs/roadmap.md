@@ -7,6 +7,12 @@ level.
 
 ---
 
+> **Freshness note (2026-08-10).** Phases below are historical records; the
+> newest work (quadratic-mesh accuracy bands, GCI mesh convergence, real-solver
+> sizing sweeps/DOE, stable face ids + binding re-verification, and the
+> v0.1.0-alpha.3 release) is documented in `AGENTS.md`, the release notes, and
+> `aieng/docs/backend_capability_matrix.md` rather than as new phases here.
+
 ## Phase 0 — Current State (as of May 2026)
 
 ### aieng (semantic package engine)
@@ -1201,7 +1207,13 @@ real per-node Von Mises stress coloring from the CalculiX FRD file.
 
 ---
 
-## Phase 45 — Contextual Engineering Chat ✅ Implemented
+## Phase 45 — Contextual Engineering Chat ⚰️ Retired (superseded by MCP-first)
+
+> **Retirement note (2026-08-10).** The in-app chat/composer and the backend
+> intent-routing layer described below were deleted in the MCP-first cutover
+> (#17/#8). Prompt-driving now happens in the connected agent (Claude Code,
+> Codex, Cursor, …); the user-facing phrasing guide is
+> [`docs/prompt-guide.md`](prompt-guide.md). The section is kept for history.
 
 **Scope:** `aieng-ui`
 
@@ -1256,8 +1268,10 @@ workflows so the frontend can stop relying on brittle ad-hoc keyword ordering.
     (has_generated_cad, has_setup, has_results) to contextualize intent ranking.
 - Endpoint: `POST /api/projects/{id}/engineering-action-plan` — body:
   `{ message }`; returns read-only action candidate with confidence and reason.
-- Frontend `ChatPanel.tsx` now delegates intent detection to the backend endpoint
-  instead of local keyword heuristics.
+- Frontend `ChatPanel.tsx` delegated intent detection to the backend endpoint
+  instead of local keyword heuristics. *(Retired 2026-08-10: `ChatPanel.tsx`
+  and the backend intent routing were deleted in the MCP-first cutover; see the
+  Phase 45 retirement note.)*
 - Tests: 6 tests covering priority ordering, material/mesh extraction, and
   endpoint package-state awareness.
 
@@ -1274,22 +1288,20 @@ workflows so the frontend can stop relying on brittle ad-hoc keyword ordering.
 
 ## Future — Real Field Serving + Multi-CAD Adapter
 
-The two largest remaining gaps in the vertical pipeline:
+**Real per-node field serving — ✅ done (#461, 2026-08).**
+`GET /api/projects/{id}/fields/{field_name}` now serves real per-node data
+extracted from the FRD (stress tensor components, principals, Tresca,
+displacement components, safety factor) as the primary path; the synthetic
+`y_normalized` descriptor survives only as an honest fallback that is
+downgraded to `unverified` when no solver result exists.
 
-**Real per-node field serving.** `aieng-ui` backend `GET /api/projects/{id}/fields/{field_name}`
-currently returns a synthetic descriptor; the frontend Three.js colormap uses
-`y_normalized`. Real per-node scalar data (JSON array or VTK reference) sourced
-from the FRD would replace the synthetic visualization and let
-`cae.results_available` reflect actual solver output instead of evidence
-metadata presence. Mesh generation and CalculiX execution adapters already
-exist (`cae.generate_mesh`, `cae.run_solver`) so this is now a viewer/transport
-concern, not a missing adapter.
-
-**Multi-CAD adapter strategy.** `aieng-ui` ships a pluggable `CadProvider`
-interface; FreeCAD is the first implementation. Adding a second provider
-(e.g. pythonOCC, CadQuery) would validate that the interface isolates
-CAD-specific code. Vendor-specific SDKs (SolidWorks, Fusion 360, Onshape) are
-deferred until the interface is exercised by at least one non-FreeCAD provider.
+**Multi-CAD adapter strategy — direction changed.** The active CAD kernel is
+build123d / OpenCASCADE (`cad.execute_build123d`); the FreeCAD adapter lives in
+`legacy/aieng-freecad-mcp/` and is not part of the active path. The decision
+(recorded 2026-08) is NOT to integrate an external CAD application as the
+runtime — the real gap is parametric history / constraint solving, not the
+kernel vendor. Vendor-specific SDKs (SolidWorks, Fusion 360, Onshape) remain
+deferred.
 
 ---
 
@@ -1303,5 +1315,12 @@ These are not on the roadmap because they would violate the design invariants:
 | Autonomous agent driving the browser DOM | Agents call the runtime layer, not the UI |
 | Automatic claim advancement from solver output | Claims are explicit and evidence-backed only |
 | LLM inference inside the service layer | The service layer calls LLM-capable tools; it does not host a model |
-| Topology-changing CAD edits | Marked as unsupported; face-ID stability not guaranteed |
-| Automatic BC/load remapping after geometry change | `needs_review` flag is the correct response |
+
+> **Two former entries were removed from this table (2026-08-10) because the
+> product now does them:** stable face ids survive topology-CHANGING rebuilds
+> (#476, `topology_identity.py` — a hole cut no longer shuffles `@face:` ids),
+> and CAE bindings are re-verified from recorded face character instead of
+> blanket-refused after a geometry change (#475) — bindings survive dimensional
+> edits, hole cuts, and unrelated part replacement. Only genuinely ambiguous
+> changes (e.g. a bound face split in two) still refuse honestly, which is
+> correct physics, not a limitation to fix.

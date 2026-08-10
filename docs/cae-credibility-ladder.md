@@ -27,6 +27,15 @@ Mesh quality or convergence evidence changes the language. Unknown mesh quality
 keeps a limitation on the result. Failed or not-converged mesh evidence caps the
 result before benchmark-calibrated credit, even if a numerical metric exists.
 
+The enforcement is stronger than a caveat: meshes default to quadratic tets
+(C3D10 — linear tets measured ~2× non-conservative in bending during
+calibration), every mesh carries a measured `accuracy` band
+(reliable / marginal / unreliable), and a completed solver run on an
+`unreliable` mesh is knocked out of `executed_solver_result` entirely into a
+dedicated `unreliable_mesh` claim tier (`cae_result_summary.py` /
+`classify_credibility`). A `cae.mesh_convergence` GCI study is the real answer
+to discretization uncertainty; the accuracy band is only a screen.
+
 Analytical FEA benchmark scorecards can raise a result to
 `benchmark_calibrated` only when the comparison passes within documented
 tolerance. The analytical corpus is NAFEMS-style and ASME V&V-10 inspired, but

@@ -1,5 +1,8 @@
 # Backend Capability Matrix
 
+**Snapshot date: 2026-08-10** (update this stamp when the matrix changes — an
+undated "authoritative snapshot" is worse than none).
+
 This document is the current capability snapshot for the reference backend/runtime
 used in this workspace. It covers the implemented CAD/CAE/topology-optimization/
 mesh-reconstruction/assembly pipeline spread across `aieng/src/aieng/converters/`
@@ -37,6 +40,16 @@ the reference workbench. When in doubt, treat this file as the authoritative
 | Solver-neutral CAE normalization | `stable` | `analysis/computed_metrics.json`, `analysis/field_regions.json` | Not applicable | Not applicable | Normalizes solver output into a neutral contract; does not prove solver correctness by itself |
 | CAE result mapping back to geometry/source nodes | `stable` | `analysis/cae_result_map.json` plus topology/object-registry inputs | Not applicable | Not applicable | Unmapped or weakly mapped regions stay explicit; no silent geometric certainty is invented |
 | CalculiX-backed reference runtime loop | `stable` | generated deck/result artifacts plus normalized `analysis/*` outputs in the workbench runtime | Not applicable | Not applicable | Real solver execution exists in the reference runtime, but post-processing remains evidence-oriented rather than certification-oriented |
+| FE mesh generation (Gmsh), quadratic default | `stable` | `simulation/mesh.inp`, `simulation/mesh_metadata.json` | Not applicable | Not applicable | Defaults to second-order tets (C3D10; linear tets measured ~2× non-conservative in bending); every mesh carries a measured `accuracy` band (reliable/marginal/unreliable) — a heuristic elements-through-thickness check, not a convergence proof |
+| Mesh accuracy verdict → claim-tier downgrade | `stable` | `accuracy` block in mesh metadata; `claim_tier` in the result summary | Not applicable | Not applicable | A completed solver run on an `unreliable` mesh is stamped `unreliable_mesh`, NOT `executed_solver_result` — enforced in `classify_credibility` and the result contract |
+| GCI mesh-convergence study (`cae.mesh_convergence`) | `stable` | `analysis/mesh_convergence_report.json` | Not applicable | Not applicable | Richardson extrapolation + apparent order + per-metric verdict; the real answer to mesh dependence (the accuracy band is only a screen) |
+
+## Sizing Optimization (real solver in the loop)
+
+| Capability | Status | Primary artifacts | STEP output | CAD editability | Current boundary |
+| --- | --- | --- | --- | --- | --- |
+| Single-parameter sizing sweep (`opt.sizing_sweep`) | `stable` | `analysis/sizing_sweep_report.json` | No | winner applied via audited `cad.edit_parameter` (opt-in) | Each variant solved with REAL static FEA; failed variants reported honestly, never recommended; approval-gated |
+| Multi-parameter DOE study (`opt.doe_sizing_study`) | `stable` | DOE report artifacts | No | recommend-only by default | Full-factorial/LHS within a 64-point budget; every point solved with real static FEA; baseline never modified |
 
 ## Topology Optimization
 
@@ -83,6 +96,11 @@ the reference workbench. When in doubt, treat this file as the authoritative
 | Recommendation and next-action postprocess | `diagnostic-only` | `analysis/assembly_design_recommendations.json`, `diagnostics/assembly_postprocess_report.json`, `analysis/assembly_next_actions.json` | No | Not applicable | Advisory only; never reruns optimization or mutates geometry automatically |
 
 ## Agent-Guided Design Studies
+
+> The "no solver run" boundaries below apply to the **design-study contract
+> layer** (validation/hints/ranking are deliberately solver-free). They do NOT
+> mean variants are never solved — `opt.sizing_sweep` / `opt.doe_sizing_study`
+> (see *Sizing Optimization* above) run real static FEA per variant.
 
 | Capability | Status | Primary artifacts | STEP output | CAD editability | Current boundary |
 | --- | --- | --- | --- | --- | --- |

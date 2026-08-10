@@ -139,6 +139,18 @@ alpha 镜像会在 Docker smoke 通过后从 `main` 发布到 GHCR
 (`latest` + 不可变的 `sha-<commit>` 标签)。这是 alpha 范围能力,
 不是生产认证。
 
+**发布版本:** 当前预发布为
+[`v0.1.0-alpha.3`](https://github.com/armpro24-blip/cad-cae-copilot/releases/tag/v0.1.0-alpha.3)。
+只想运行 MCP 服务器、不克隆仓库(Python 3.11+,固定到发布 tag;PyPI 发布
+在计划中、尚未上线):
+
+```bash
+uvx \
+  --from "aieng-workbench-mcp[full] @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.3#subdirectory=aieng-ui/backend" \
+  --with "aieng-format @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.3#subdirectory=aieng" \
+  aieng-workbench-mcp --approval-mode client --data-dir ~/.aieng-workbench
+```
+
 ### 首次成功运行后应该看到什么
 
 第一次 CAD smoke 成功后,你应该能验证:
@@ -374,7 +386,12 @@ VS Code 扩展或 build123d / OpenCASCADE 感兴趣的创客、研究人员和�
 - **V&V-40 可信度分级** —— 每个产出结果都带一个有序等级
   (`critique_finding` < `surrogate_prediction` < `proxy_assembly_result` <
   `executed_solver_result`);声明的可信度永远不超过其证据,且从不假定
-  `production_ready`。
+  `production_ready`。跑完求解器还不够:在实测精度带为 `unreliable` 的网格上
+  完成的求解会被标为 `unreliable_mesh`,而不是 `executed_solver_result`。
+- **网格精度靠测量,不靠期望** —— FE 网格默认二阶四面体(C3D10;标定中
+  线性四面体把弯曲应力低估约 2 倍),每个网格都带实测 `accuracy` 判定
+  (reliable / marginal / unreliable),并可选 GCI/Richardson 收敛性研究
+  (`cae.mesh_convergence`)。
 - **代理模型误差带纪律** —— 代理模型预测的数值从不脱离其不确定度带 + 留一法验证误差
   单独呈现。
 - **一致性门控的自主性** —— 当 LLM 判断步骤的多次采样一致性低时,转为*询问用户*
@@ -538,15 +555,18 @@ pytest aieng-ui/backend/tests/test_design_study_demo.py -q
 ### 5. 真实 CAD->CAE 价值演示
 
 将一个规范的单体悬臂梁依次经过 CAD 创建、面指针选择、审批门控的 CalculiX
-执行、FRD 派生的查看器场结果,以及可分享的工程报告。
+执行、GCI/Richardson 网格收敛性研究、FRD 派生的查看器场结果,以及可分享的
+工程报告。
 
 ```bash
 python aieng-ui/backend/scripts/value_demo_packet.py --format markdown
 ```
 
 **关键产物:** `simulation/runs/value_demo_run_001/outputs/result.frd`,
-`results/computed_metrics.json`, 工程报告 HTML。
-**边界:** 需要真实 Gmsh/CalculiX;线性静力、网格相关;合成 fallback 不算成功演示。
+`results/computed_metrics.json`, `analysis/mesh_convergence_report.json`,
+工程报告 HTML。
+**边界:** 需要真实 Gmsh/CalculiX;线性静力 —— 离散化不确定度由 GCI 研究给出界
+(参考悬臂梁上实测 1.31%),而非假装不存在;合成 fallback 不算成功演示。
 [运行手册 ->](docs/cad-cae-value-demo.md)
 
 ## 当前限制
@@ -575,7 +595,12 @@ python aieng-ui/backend/scripts/value_demo_packet.py --format markdown
 | 文档 | 用途 |
 |-----|------|
 | [AGENTS.md](AGENTS.md) | 规范 Agent 指南 —— 工具、工作流和约定 |
+| [docs/prompt-guide.md](docs/prompt-guide.md) | 直接对连接的 Agent 说的自然语言句式 —— 面向用户的提示词指南 |
 | [aieng-ui/backend/MCP_SETUP.md](aieng-ui/backend/MCP_SETUP.md) | Claude Code、Copilot、Cursor 和 Codex 的每个 Agent MCP 连接配置 |
+| [docs/cad_execution_boundary.md](docs/cad_execution_boundary.md) | 本地优先执行边界、隐私姿态、审批门与沙箱限制 |
+| [docs/parametric-edit-governance.md](docs/parametric-edit-governance.md) | 可审查、可回退的 CAD 参数编辑工作流与诚实边界 |
+| [docs/cae-credibility-ladder.md](docs/cae-credibility-ladder.md) | CAE 证据分级 —— 从产物存在到基准标定与评审支持 |
+| [docs/canonical_engineering_scenarios.md](docs/canonical_engineering_scenarios.md) | 规范工程场景 —— 可复现包、验证命令、产物与诚实边界 |
 | [aieng-vscode-extension/README.md](aieng-vscode-extension/README.md) | VS Code 扩展使用和开发说明 |
 | [aieng/docs/showcase_gallery.md](aieng/docs/showcase_gallery.md) | 展示画廊 —— 演示要点、视觉指导和诚实边界 |
 | [aieng/docs/demo_catalog.md](aieng/docs/demo_catalog.md) | 后端演示目录 —— 运行命令、预期产物和成熟度级别 |
