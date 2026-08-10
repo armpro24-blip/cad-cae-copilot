@@ -998,6 +998,92 @@ def load_topology_face_ids(package_path: str | Path) -> set[str]:
 _FACE_POINTER_RE = re.compile(r"@face:([A-Za-z0-9_]+)")
 
 
+def annotate_cae_mapping_face_character(package_path: str | Path) -> dict[str, Any]:
+    """Record what each bound face looks like NOW, into ``simulation/cae_mapping.json``.
+
+    This is the half of re-verification that has to happen at BIND time. Without
+    it, a later topology change leaves only two options — trust that ``face_002``
+    still means the same physical face, or refuse outright — and the codebase
+    chose refuse, which is why every solver path had to carry adaptive-rebind
+    machinery.
+
+    Stores per-mapping ``face_signatures: {face_id: {surface_type, normal}}``.
+    Deliberately NOT position or area: a dimensional edit is meant to move and
+    resize faces. Idempotent, best-effort, and never fatal — a package that
+    cannot be annotated simply keeps the old conservative behaviour.
+    """
+    pkg = Path(package_path)
+    out: dict[str, Any] = {"status": "skipped", "annotated_face_ids": []}
+    try:
+        with zipfile.ZipFile(pkg, "r") as zf:
+            names = set(zf.namelist())
+            if "simulation/cae_mapping.json" not in names or "geometry/topology_map.json" not in names:
+                out["reason"] = "no cae_mapping.json or topology_map.json"
+                return out
+            mapping = json.loads(zf.read("simulation/cae_mapping.json").decode("utf-8"))
+            topology = json.loads(zf.read("geometry/topology_map.json").decode("utf-8"))
+    except (KeyError, OSError, zipfile.BadZipFile, json.JSONDecodeError) as exc:
+        out["reason"] = f"unreadable package: {exc}"
+        return out
+
+    faces = {
+        e["id"]: e
+        for e in (topology.get("entities") or [])
+        if isinstance(e, dict) and e.get("type") == "face" and "id" in e
+    }
+    if not isinstance(mapping, dict) or not faces:
+        out["reason"] = "no mappings or no faces"
+        return out
+
+    annotated: list[str] = []
+    for entry in mapping.get("mappings") or []:
+        if not isinstance(entry, dict):
+            continue
+        signatures: dict[str, Any] = {}
+        for fid in entry.get("face_ids") or []:
+            face = faces.get(str(fid))
+            if face is None:
+                continue
+            signatures[str(fid)] = {
+                "surface_type": face.get("surface_type"),
+                "normal": face.get("normal"),
+            }
+            annotated.append(str(fid))
+        if signatures:
+            entry["face_signatures"] = signatures
+
+    if not annotated:
+        out["reason"] = "no resolvable face refs to annotate"
+        return out
+
+    payload = json.dumps(mapping, indent=2, ensure_ascii=False).encode("utf-8")
+    try:
+        with tempfile.NamedTemporaryFile(
+            delete=False, suffix=".aieng", dir=pkg.parent
+        ) as tmp:
+            tmp_path = Path(tmp.name)
+        try:
+            with zipfile.ZipFile(pkg, "r") as src, zipfile.ZipFile(
+                tmp_path, "w", compression=zipfile.ZIP_DEFLATED
+            ) as dst:
+                for item in src.infolist():
+                    if item.filename == "simulation/cae_mapping.json":
+                        continue
+                    dst.writestr(item, src.read(item.filename))
+                dst.writestr("simulation/cae_mapping.json", payload)
+            shutil.move(str(tmp_path), pkg)
+        finally:
+            if tmp_path.exists():
+                tmp_path.unlink()
+    except Exception as exc:  # noqa: BLE001 - annotation is best-effort
+        out["reason"] = f"write failed: {exc}"
+        return out
+
+    out["status"] = "ok"
+    out["annotated_face_ids"] = sorted(set(annotated))
+    return out
+
+
 def validate_cae_topology_references(package_path: str | Path) -> dict[str, Any]:
     """Validate that face-scoped CAE references still match the current topology.
 
@@ -1109,11 +1195,23 @@ def validate_cae_topology_references(package_path: str | Path) -> dict[str, Any]
     missing_face_ids: set[str] = set()
     referenced_face_ids: set[str] = set()
 
+    resolved_refs: dict[str, dict[str, Any]] = {}
+
     def _add_reference(face_id: str, context: dict[str, Any]) -> None:
         referenced_face_ids.add(face_id)
-        if face_id not in face_index:
+        face = face_index.get(face_id)
+        if face is None:
             missing_face_ids.add(face_id)
             stale_refs.append(context)
+            return
+        # Record what the reference resolves to NOW. A hash mismatch only says
+        # "the geometry changed"; this says whether the binding still points at
+        # a real face of the same character — which is the actual evidence.
+        resolved_refs.setdefault(face_id, {
+            "face_id": face_id,
+            "surface_type": face.get("surface_type"),
+            "normal": face.get("normal"),
+        })
 
     if isinstance(cae_mapping, dict):
         for i, mapping in enumerate(cae_mapping.get("mappings") or []):
@@ -1223,13 +1321,108 @@ def validate_cae_topology_references(package_path: str | Path) -> dict[str, Any]
             f"Referenced face IDs missing from current topology: {sorted(missing_face_ids)}."
         )
 
-    result["valid"] = (
-        result["hash_status"]
-        in {"ok", "missing_hash", "no_face_refs", "no_topology"}
-        and not result["cae_mapping_stale"]
-        and not missing_face_ids
+    # ── Evidence-based re-verification ───────────────────────────────────────
+    # A topology hash mismatch (or the stale flag that EVERY CAD write sets)
+    # only means "the geometry changed" — which is what a parametric edit is
+    # SUPPOSED to do. Measured on the reference beam: after a thickness edit all
+    # six face ids still resolve, yet the old rule declared the setup invalid.
+    # That blanket refusal is what forced adaptive-rebind machinery into the
+    # sizing sweep, the candidate solver and mesh convergence — and mesh
+    # convergence, which forgot to pass it, could not complete a single solve.
+    #
+    # Existence alone is NOT enough evidence to lift the refusal: an edit that
+    # adds or removes geometry can leave `face_002` resolvable while it now
+    # denotes a DIFFERENT physical face, and solving against that would bind the
+    # load to the wrong place silently. So the mismatch is only forgiven when
+    # the mapping recorded what each face looked like at bind time
+    # (`face_signatures`) and every reference still matches that character.
+    # Packages written before that field existed keep the old conservative
+    # refusal — no silent loosening for data we cannot check.
+    result["referenced_face_ids"] = sorted(referenced_face_ids)
+    result["resolved_face_refs"] = [resolved_refs[k] for k in sorted(resolved_refs)]
+
+    expected_character: dict[str, dict[str, Any]] = {}
+    if isinstance(cae_mapping, dict):
+        for mapping in cae_mapping.get("mappings") or []:
+            if not isinstance(mapping, dict):
+                continue
+            recorded = mapping.get("face_signatures")
+            if isinstance(recorded, dict):
+                for fid, sig in recorded.items():
+                    if isinstance(sig, dict):
+                        expected_character[str(fid)] = sig
+
+    mismatched_character: list[dict[str, Any]] = []
+    if expected_character:
+        for fid, expected in expected_character.items():
+            current = resolved_refs.get(fid)
+            if current is None:
+                continue  # already counted as missing
+            if not _face_character_matches(expected, current):
+                mismatched_character.append(
+                    {"face_id": fid, "expected": expected, "current": current}
+                )
+    result["face_character_mismatches"] = mismatched_character
+
+    have_character_for_all = bool(referenced_face_ids) and all(
+        fid in expected_character for fid in referenced_face_ids
     )
+    references_reverified = (
+        have_character_for_all and not missing_face_ids and not mismatched_character
+    )
+    result["references_reverified"] = references_reverified
+
+    if mismatched_character:
+        result["warnings"].append(
+            "Referenced faces changed character since binding "
+            f"({[m['face_id'] for m in mismatched_character]}) — the CAE binding "
+            "may now point at a different face."
+        )
+
+    suspicion_only = result["hash_status"] == "mismatch" or result["cae_mapping_stale"]
+    if suspicion_only and references_reverified:
+        result["valid"] = True
+        result["reverification_note"] = (
+            "Topology changed, but every referenced face still resolves AND still "
+            "matches the character recorded when it was bound, so the CAE bindings "
+            "were re-verified instead of refused."
+        )
+        result["warnings"].append(result["reverification_note"])
+    else:
+        result["valid"] = (
+            result["hash_status"]
+            in {"ok", "missing_hash", "no_face_refs", "no_topology"}
+            and not result["cae_mapping_stale"]
+            and not missing_face_ids
+            and not mismatched_character
+        )
     return result
+
+
+def _face_character_matches(expected: dict[str, Any], current: dict[str, Any]) -> bool:
+    """Is this still 'the same kind of face', bound to the same thing?
+
+    Deliberately NOT an equality check on geometry: a dimensional edit is meant
+    to move and resize faces, so position and area must be allowed to change.
+    What must hold is the character a binding depends on — the surface type and,
+    for a planar face, the direction it points. A planar +X end face that became
+    a cylinder, or flipped to -X, is no longer the face the load was bound to.
+    """
+    exp_type = str(expected.get("surface_type") or "").lower()
+    cur_type = str(current.get("surface_type") or "").lower()
+    if exp_type and cur_type and exp_type != cur_type:
+        return False
+
+    exp_n, cur_n = expected.get("normal"), current.get("normal")
+    if isinstance(exp_n, list) and isinstance(cur_n, list) and len(exp_n) == len(cur_n) == 3:
+        try:
+            dot = sum(float(a) * float(b) for a, b in zip(exp_n, cur_n))
+        except (TypeError, ValueError):
+            return True  # unreadable normals: do not manufacture a failure
+        # Same hemisphere. A flipped normal means the binding now faces the
+        # other way, which changes what a pressure/support means.
+        return dot > 0.5
+    return True
 
 
 # ── Adaptive CAE face rebind helpers ──────────────────────────────────────────

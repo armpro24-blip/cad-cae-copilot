@@ -629,6 +629,15 @@ def run_ai_preprocessing(
         _write_both_to_package(package_path, files_to_write)
         written.extend(files_to_write.keys())
 
+        # Record each bound face's character while the binding is known-good, so
+        # a later topology change can be RE-VERIFIED instead of blanket-refused.
+        try:
+            from .project_io import annotate_cae_mapping_face_character
+
+            annotate_cae_mapping_face_character(package_path)
+        except Exception:  # noqa: BLE001 - annotation is best-effort, never fatal
+            pass
+
     all_warnings = validation_warnings + (geo_ctx.warnings or [])
 
     return {
