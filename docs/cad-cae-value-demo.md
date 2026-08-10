@@ -288,6 +288,29 @@ persisted to `analysis/mesh_convergence_report.json`.
 - If any stage degrades to mocked, fixture-only, or synthetic data, mark the
   demo as incomplete rather than successful.
 
+## STEP hand-off — what is and is not verified
+
+What leaves this product for another CAD seat is the STEP file, so the file
+itself is guarded by `aieng-ui/backend/tests/test_step_interop.py`. Three checks
+with deliberately different evidence strength:
+
+| check | what it proves | strength |
+|---|---|---|
+| ISO 10303-21 structure, read as **plain text** — header/footer, `FILE_SCHEMA` declares AP214/AP203, real `MANIFOLD_SOLID_BREP` + `CLOSED_SHELL` | the file is well-formed and correctly declared | **independent** — no CAD kernel in the loop, so a kernel bug cannot mask a malformed file |
+| export → re-import: solids, faces, volume, bounding box | we do not lose geometry | **same-kernel** — runs through the OCCT we exported with |
+| part labels present as STEP `PRODUCT` entities, colours as `COLOUR_RGB` + `STYLED_ITEM`, labels restored on import | the engineering meaning survives the hand-off, instead of degrading to anonymous solids | file-level + same-kernel |
+
+Measured on a labelled two-part model: names `base_plate` / `bearing_boss`
+appear as `PRODUCT` entities, one `COLOUR_RGB` per part, volume round-trips to
+1e-9 relative.
+
+**What this does NOT prove: that SolidWorks / NX / Creo will read the file.**
+Only a third-party reader can establish that, and none is in CI. Note that
+adding FreeCAD would *not* close this gap — FreeCAD uses the same OpenCASCADE
+kernel we do, so it would re-test the same code path. Independent confirmation
+needs a genuinely different implementation, done once by hand and recorded as
+such.
+
 ## Related Validation
 
 The backend real-solver guard is:
