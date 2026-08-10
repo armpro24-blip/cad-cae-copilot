@@ -5597,6 +5597,34 @@ def _write_cad_artifacts(
     generated_code: str,
     glb_bytes: bytes | None = None,
 ) -> None:
+    # Stable face identity across rebuilds. Face ids come from enumeration
+    # order, and a topology-CHANGING edit (e.g. cutting a hole) re-enumerates:
+    # measured on the reference beam, face_002 (the +X load face) came back
+    # denoting the -Y side face. Every downstream binding — CAE mappings,
+    # @face: pointers, assembly interfaces — depends on these ids, so
+    # previously-known faces are re-identified against the package's prior
+    # topology and keep their ids; only genuinely new faces get new ids.
+    # MUTATES topology_map/feature_graph in place ON PURPOSE: the caller's
+    # response and the persisted package must never disagree about face_002.
+    id_stability: dict[str, Any] | None = None
+    if pkg_path.exists():
+        try:
+            from .topology_identity import stabilize_topology_face_ids
+
+            with zipfile.ZipFile(pkg_path, "r") as _prev_zf:
+                _names = set(_prev_zf.namelist())
+                previous_topology = (
+                    json.loads(_prev_zf.read("geometry/topology_map.json"))
+                    if "geometry/topology_map.json" in _names
+                    else None
+                )
+            id_stability = stabilize_topology_face_ids(
+                previous_topology, topology_map, feature_graph
+            )
+        except Exception as _stab_exc:  # noqa: BLE001 - never block a CAD write
+            id_stability = {"applied": False, "error": f"{type(_stab_exc).__name__}: {_stab_exc}"}
+            LOGGER.warning("face-id stabilization failed for %s: %s", pkg_path, _stab_exc)
+
     artifacts: dict[str, bytes] = {
         "geometry/generated.step": step_bytes,
         "geometry/preview.stl": stl_bytes,
@@ -5606,6 +5634,10 @@ def _write_cad_artifacts(
     }
     if glb_bytes:
         artifacts["geometry/preview.glb"] = glb_bytes
+    if id_stability is not None:
+        artifacts["diagnostics/topology_id_stability.json"] = json.dumps(
+            id_stability, indent=2, sort_keys=True
+        ).encode()
 
     # Regenerate the symbolic B-Rep graph from the FRESH topology. Without this,
     # the zip-rewrite below copies a previously-persisted graph/brep_graph.json

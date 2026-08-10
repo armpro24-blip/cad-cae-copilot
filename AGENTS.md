@@ -953,6 +953,24 @@ check the recorded hash and the existence of every referenced face. If they do n
 match the current topology, the run is refused with code
 `stale_topology_references` and a list of the stale or missing face IDs.
 
+**Stable face ids across rebuilds.** Face ids are assigned by enumeration
+order, and a topology-CHANGING edit (e.g. cutting a hole in an existing body)
+makes OCCT re-enumerate — measured on the reference beam, `face_002` (the +X
+load face) came back denoting the −Y side face. Since every binding (CAE
+mappings, `@face:` pointers, assembly interfaces) rides on these ids, the CAD
+write path (`topology_identity.stabilize_topology_face_ids`, called from
+`_write_cad_artifacts` on every execute/edit/replace/remove) re-identifies
+previously-known faces against the package's prior topology and keeps their
+ids. Matching is conservative and two-tier: exact geometric identity first,
+then unique surface-type + orientation among the leftovers; anything ambiguous
+gets a **fresh id, and retired ids are never reused** — a stale binding to a
+removed face must fail honestly, not silently hit whatever new face inherited
+the number. Each write records the outcome in
+`diagnostics/topology_id_stability.json` (`preserved` / `renamed` /
+`fresh_ids` / `retired_ids`). Net effect: a CAE setup bound before a hole-cut
+now **re-verifies as valid after it** instead of being refused or, worse,
+silently mis-applied.
+
 **Binding re-verification — evidence beats suspicion.** A hash mismatch (or the
 `stale` flag that *every* CAD write sets) only means the geometry changed, which
 is exactly what a parametric edit is supposed to do. Measured on the reference
