@@ -53,6 +53,16 @@ and package-lifecycle tools require `package`. A skipped read returns
 all categories. Operators may explicitly disable this guard with
 `AIENG_MCP_REQUIRE_GUIDES=0`.
 
+**The server answers during long calls.** Tool bodies run in worker threads, so
+a read-only call (`aieng.list_projects`, `aieng.agent_context`, …) is answered
+while a CAD build or a solver run is still going — measured, a liveness ping
+sent 2 s into a 16 s build returns in 0.01 s. Two guarantees come with that:
+mutations targeting the **same project** are serialized, so concurrent writes
+cannot interleave inside one `.aieng` package; and at most
+`AIENG_MCP_MAX_CONCURRENT_TOOLS` (default 8) tool bodies run at once. Do not
+read a slow tool as a dead server, and do not fire the same mutation twice
+because the first has not returned — it is running.
+
 ---
 
 ## Workflow priority matrix
@@ -1902,6 +1912,7 @@ curl -X POST http://localhost:8000/api/agent/invoke-tool \
 | `AIENG_BACKEND_URL` | When set, forward tool calls to the running backend for live UI |
 | `AIENG_MCP_MANAGED_APPROVAL` | Set to `1` to route approval-gated external MCP calls through the workbench backend approval card; unavailable approval fails safe. When no approval surface (viewer) is connected, gated calls **fail fast** with `code: approval_surface_unavailable` instead of blocking to the approval timeout |
 | `AIENG_MCP_APPROVAL_MODE` | Set to `elicit` (or run with `--approval-mode elicit`) for **headless approval**: gated mutations are approved via **MCP client elicitation** — the server asks the connecting CLI/IDE agent to prompt the human, so **no workbench viewer is required**. If the client does not support elicitation there is no surface, and the gated tool **fails safe** (`behavior: deny`, `code: approval_surface_unavailable`) — it never runs silently. Broker modes (`AIENG_MCP_MANAGED_APPROVAL` / agentic) take precedence when both are set |
+| `AIENG_MCP_MAX_CONCURRENT_TOOLS` | How many tool bodies may run at once (default `8`). Tool bodies run in worker threads so the server stays answerable during a long CAD or solver call; this caps how many heavy subprocesses a client can start in parallel. Mutations on the SAME project are serialized regardless |
 | `AIENG_MCP_BLOCK_APPROVAL_TOOLS` | Set to `1` for inspection-only mode: hard-block **all mutating tools** at the server level — not just approval-gated ones, but also the plan-boundary CAD authoring/edit tools (`cad.execute_build123d`/`edit_parameter`/`replace_part`/`remove_part`/`refine`/`set_reference_image`). Read-only inspection tools still run |
 | `AIENG_MCP_REQUIRE_GUIDES` | Require the relevant `aieng.guide` topic before CAD, CAE, or package-lifecycle tools (default `1`; set `0` to disable) |
 | `AIENG_AGENTIC_PERMISSION_TOOL` | Set to `1` only for an agentic session driver that uses the backend approval broker |
