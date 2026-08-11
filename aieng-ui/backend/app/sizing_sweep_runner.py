@@ -153,6 +153,20 @@ def _total_solid_volume(topology_map: dict[str, Any]) -> float | None:
     return total if seen else None
 
 
+def _is_solver_abort(solve: dict[str, Any]) -> bool:
+    """True when the solver ran but died without results (as opposed to never running).
+
+    Distinguishes "CalculiX rejected this mesh" from setup gaps like a missing
+    material or stale face references, which have their own explanations and
+    must not be blamed on the mesh.
+    """
+    status = str(solve.get("status") or "")
+    error = str(solve.get("error") or "")
+    if status in {"no_setup", "tools_unavailable", "stale_topology_references"}:
+        return False
+    return "no FRD" in error or "returned code" in error or status == "solver_failed"
+
+
 def make_default_evaluate_value(
     settings: Any,
     baseline_pkg: Path,
@@ -245,13 +259,30 @@ def make_default_evaluate_value(
                 metrics["volume"] = volume
                 metrics["mass"] = volume * density if density else volume
 
-            return {
+            record = {
                 "value": value,
                 "metrics": metrics,
                 "solver_executed": bool(solve.get("solver_executed")),
                 "error": solve.get("error") if not solve.get("solver_executed") else None,
                 "solve_status": solve.get("status"),
             }
+            # A variant can fail purely because the swept dimension changed the
+            # mesh: measured on the reference bracket, 8 mm aborted CalculiX
+            # (code 201, no FRD) at mesh_size 4 mm and solved cleanly at 3 mm,
+            # with identical geometry, BCs and load. Saying only "not solved"
+            # sends the caller looking at their design instead of their mesh.
+            if not record["solver_executed"] and _is_solver_abort(solve):
+                record["likely_cause"] = "mesh"
+                record["suggested_retry"] = {
+                    "mesh_size_mm": round(float(mesh_size_mm) * 0.75, 3) if mesh_size_mm else None,
+                    "reason": (
+                        "The solver aborted without producing results while the geometry "
+                        "built successfully — at this mesh size this variant's shape meshes "
+                        "into elements CalculiX rejects. Re-run the sweep with a smaller "
+                        "mesh_size_mm; the geometry itself is not necessarily the problem."
+                    ),
+                }
+            return record
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -324,6 +355,21 @@ def run_sizing_sweep(
         displacement_limit=displacement_limit,
         parameter_name=parameter_name,
     )
+
+    # The ranker rebuilds each variant from the metrics it scores, so the
+    # "why did this one die" fields the evaluator attached do not survive it.
+    # Carry them across by value — without them a mesh-killed variant reads as a
+    # bad design (measured: 8 mm aborted ccx at mesh 4 mm, solved at 3 mm).
+    hints = {
+        v.get("value"): v for v in variants
+        if isinstance(v, dict) and v.get("likely_cause")
+    }
+    if hints:
+        for ranked in report.get("variants") or []:
+            source = hints.get(ranked.get("value")) if isinstance(ranked, dict) else None
+            if source:
+                ranked["likely_cause"] = source["likely_cause"]
+                ranked["suggested_retry"] = source.get("suggested_retry")
     report.update({
         "status": "ok",
         "tool": "opt.sizing_sweep",

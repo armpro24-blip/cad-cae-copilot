@@ -1990,6 +1990,10 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "required": ["project_id"],
         "description": (
             "Parse a CalculiX FRD result file and write computed_metrics.json into a .aieng package. "
+            "frd_path is OPTIONAL: omit it and the package's own newest solver output "
+            "(simulation/runs/*/outputs/*.frd, narrowed by run_id when given) is used and "
+            "reported back as frd_source=package. Pass frd_path only for an externally "
+            "produced .frd. "
             "Pass package_path/project_id and frd_path."
         ),
         "properties": {

@@ -941,6 +941,30 @@ reports stale face references, the first recommendation will be to rebind via
 `ai_preprocessing.run_ai_preprocessing` (or `cae.apply_setup_patch`) before the
 solver is offered.
 
+**It also reads the setup back in engineering language (`setup_description`).**
+The same response states what is actually bound — material, which face is held,
+where the load acts with its magnitude and direction, and whether a mesh
+exists — naming each face by surface type, area, normal and owning part rather
+than by NSET id:
+
+```
+analysis: static
+material: Al6061-T6 (E=69 GPa)
+held (fixed, DOF 1-3): @face:face_005  plane  9600.0 mm²  normal=[0,0,-1]  on base_plate
+load: 500 N along [0.00, 0.00, -1.00] on @face:face_008  plane  235.8 mm²  on rib_main
+mesh: not generated yet
+```
+
+Use it to answer "what is set up in this project?" without running anything —
+`cae.setup_static` echoes what *it* just bound, this reports what *is* bound.
+
+**A load/BC targeting an `@face:` pointer is not a missing mapping.** Those
+targets are bound automatically at deck generation (`normalize_cae_bindings`),
+so the preflight reports them under `pointer_targets_pending_binding` and keeps
+`nset_binding_valid` true instead of demanding a hand-written
+`cae_mapping.json`. Only a pointer that resolves to **no face in the current
+topology** — or a named NSET with no mapping — is still refused.
+
 **Topology revision validation.** CAE loads and boundary conditions are bound to
 `@face:*` pointers that live in `geometry/topology_map.json`. Every time AI
 preprocessing writes `simulation/setup.yaml` and `simulation/cae_mapping.json`, it
