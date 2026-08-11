@@ -318,6 +318,273 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             normalized.append(op)
         return normalized, None
 
+    def _tool_cae_setup_static(inp: dict[str, Any], _ctx: dict[str, Any]) -> dict[str, Any]:
+        """Author a complete static CAE setup from one engineering-language call."""
+        import json as _json
+        import zipfile as _zipfile
+        from pathlib import Path as _Path
+
+        from .. import cae_setup_intent as _intent
+        from .. import materials_bridge as _mb
+
+        package_path: str | None = inp.get("packagePath") or inp.get("package_path")
+        project_id: str | None = inp.get("project_id")
+        if not package_path and project_id:
+            proj = get_project(active_settings, project_id)
+            pkg = resolve_project_path(active_settings, project_id, proj.get("aieng_file"))
+            if pkg is not None and pkg.exists():
+                package_path = str(pkg)
+        if not package_path or not _Path(package_path).exists():
+            return {
+                "status": "error",
+                "code": "package_not_found",
+                "message": "No .aieng package for this project — build geometry first.",
+            }
+
+        try:
+            with _zipfile.ZipFile(package_path, "r") as zf:
+                names = set(zf.namelist())
+                topo_raw = (
+                    zf.read("geometry/topology_map.json")
+                    if "geometry/topology_map.json" in names else None
+                )
+        except Exception as exc:  # noqa: BLE001
+            return {"status": "error", "code": "package_unreadable", "message": str(exc)}
+        if not topo_raw:
+            return {
+                "status": "error",
+                "code": "no_topology",
+                "message": "Package has no geometry/topology_map.json — build geometry first.",
+            }
+        try:
+            topology = _json.loads(topo_raw)
+        except _json.JSONDecodeError as exc:
+            return {"status": "error", "code": "bad_topology", "message": str(exc)}
+
+        # ── Material ────────────────────────────────────────────────────────
+        material = inp.get("material")
+        if isinstance(material, str) and material.strip():
+            details = _mb.get_material_details(material.strip())
+            if details.get("status") != "ok":
+                return {
+                    "status": "error",
+                    "code": "material_not_found",
+                    "message": (
+                        f"Material {material!r} is not in the library. "
+                        "Call aieng.list_materials, or pass explicit properties."
+                    ),
+                    "detail": details,
+                }
+            props = details.get("properties") or {}
+            material_record = {
+                "name": details.get("name") or material.strip(),
+                "density_kg_m3": props.get("density_kg_m3"),
+                "youngs_modulus_pa": (
+                    float(props["youngs_modulus_mpa"]) * 1e6
+                    if props.get("youngs_modulus_mpa") is not None else None
+                ),
+                "poisson_ratio": props.get("poisson_ratio"),
+                "yield_strength_pa": (
+                    float(props["yield_strength_mpa"]) * 1e6
+                    if props.get("yield_strength_mpa") is not None else None
+                ),
+            }
+            material_record = {k: v for k, v in material_record.items() if v is not None}
+        elif isinstance(material, dict) and material:
+            material_record = dict(material)
+        else:
+            return {
+                "status": "error",
+                "code": "missing_material",
+                "message": "Pass `material` as a library name (e.g. \"Al6061-T6\") or a property dict.",
+            }
+
+        # ── Faces ───────────────────────────────────────────────────────────
+        fix_intent = inp.get("fix")
+        if fix_intent in (None, "", []):
+            return {
+                "status": "error",
+                "code": "missing_fix",
+                "message": (
+                    "Pass `fix` — where the part is held. Engineering words work: "
+                    "\"bottom\", \"bolt holes\", \"base_plate bottom\", or an @face: pointer."
+                ),
+            }
+        fix_hit = _intent.resolve_face_intent(topology, fix_intent)
+        if fix_hit["status"] != "ok":
+            return {
+                "status": "needs_user_input",
+                "code": f"fix_{fix_hit['status']}",
+                "message": f"Could not pin down where the part is fixed: {fix_hit['reason']}",
+                "candidates": fix_hit.get("candidates") or [],
+                "resolved": {"fix": fix_hit},
+            }
+
+        load_spec = inp.get("load")
+        load_hit: dict[str, Any] | None = None
+        force_n = 0.0
+        direction: list[float] = [0.0, 0.0, -1.0]
+        if isinstance(load_spec, dict) and load_spec:
+            load_hit = _intent.resolve_face_intent(topology, load_spec.get("at"))
+            if load_hit["status"] != "ok":
+                return {
+                    "status": "needs_user_input",
+                    "code": f"load_{load_hit['status']}",
+                    "message": f"Could not pin down where the load acts: {load_hit['reason']}",
+                    "candidates": load_hit.get("candidates") or [],
+                    "resolved": {"fix": fix_hit, "load": load_hit},
+                }
+            try:
+                force_n = float(load_spec.get("force_n"))
+            except (TypeError, ValueError):
+                return {
+                    "status": "error",
+                    "code": "missing_force",
+                    "message": "load.force_n must be the TOTAL force in newtons (e.g. 500).",
+                }
+            if force_n == 0.0:
+                return {
+                    "status": "error",
+                    "code": "zero_force",
+                    "message": (
+                        "load.force_n is 0 N — that would solve an unloaded model and "
+                        "report zero stress. Give the real total force."
+                    ),
+                }
+            resolved_direction = _intent.normalize_direction(
+                load_spec.get("direction", [0, 0, -1])
+            )
+            if resolved_direction is None:
+                return {
+                    "status": "error",
+                    "code": "bad_direction",
+                    "message": (
+                        "load.direction must be a vector like [0, 0, -1] or a word like "
+                        "\"-Z\" / \"down\" / \"向下\"."
+                    ),
+                }
+            direction = resolved_direction
+        elif load_spec not in (None, {}):
+            return {
+                "status": "error",
+                "code": "bad_load",
+                "message": "load must be an object: {at, force_n, direction}.",
+            }
+
+        # ── Write the setup artifacts in the shapes the deck generator reads ──
+        analysis_type = str(inp.get("analysis_type") or "static")
+        solver_settings: dict[str, Any] = {"solver": "CalculiX", "analysis_type": analysis_type}
+        if inp.get("mesh_size_mm"):
+            solver_settings["mesh_size_mm"] = inp["mesh_size_mm"]
+
+        boundary_conditions = [
+            {"id": f"bc_{i + 1:03d}", "type": "fixed", "target": f"@face:{fid}",
+             "dof_start": 1, "dof_end": 3, "value": 0}
+            for i, fid in enumerate(fix_hit["face_ids"])
+        ]
+        patches: list[dict[str, Any]] = [
+            {"action_type": "create_file", "path": "simulation/solver_settings.json",
+             "content": solver_settings},
+            {"action_type": "create_file", "path": "simulation/cae_imports/parsed_materials.json",
+             "content": {"materials": [material_record]}},
+            {"action_type": "create_file",
+             "path": "simulation/cae_imports/parsed_boundary_conditions.json",
+             "content": {"boundary_conditions": boundary_conditions}},
+        ]
+        loads: list[dict[str, Any]] = []
+        if load_hit is not None:
+            share = force_n / len(load_hit["face_ids"])
+            loads = [
+                {"id": f"load_{i + 1:03d}", "type": "force", "target": f"@face:{fid}",
+                 "value_n": share, "direction": direction}
+                for i, fid in enumerate(load_hit["face_ids"])
+            ]
+            patches.append({
+                "action_type": "create_file",
+                "path": "simulation/cae_imports/parsed_loads.json",
+                "content": {"loads": loads},
+            })
+
+        patch_result = _tool_cae_apply_setup_patch(
+            {"package_path": package_path, "project_id": project_id, "patches": patches}, _ctx
+        )
+        if patch_result.get("status") != "ok":
+            return {
+                "status": "error",
+                "code": "setup_write_failed",
+                "message": "Failed to write the CAE setup artifacts.",
+                "detail": patch_result,
+            }
+
+        # ── Echo what was actually bound, in the same language ──────────────
+        body_names = {
+            str(e.get("id")): str(e.get("name"))
+            for e in (topology.get("entities") or [])
+            if isinstance(e, dict) and e.get("type") == "solid" and e.get("name")
+        }
+        faces_by_id = {
+            str(e.get("id")): e for e in (topology.get("entities") or [])
+            if isinstance(e, dict) and e.get("type") == "face"
+        }
+        summary_lines = [
+            "material: {} (E={} Pa, nu={})".format(
+                material_record.get("name"),
+                material_record.get("youngs_modulus_pa"),
+                material_record.get("poisson_ratio"),
+            ),
+            "fixed (all DOF 1-3): " + "; ".join(
+                _intent.describe_face(faces_by_id[fid], body_names)
+                for fid in fix_hit["face_ids"] if fid in faces_by_id
+            ),
+        ]
+        if load_hit is not None:
+            summary_lines.append(
+                "load: {:.6g} N along [{:.2f}, {:.2f}, {:.2f}] on ".format(force_n, *direction)
+                + "; ".join(
+                    _intent.describe_face(faces_by_id[fid], body_names)
+                    for fid in load_hit["face_ids"] if fid in faces_by_id
+                )
+            )
+        elif analysis_type in ("static", "buckling", "buckle"):
+            summary_lines.append(
+                "load: NONE — a static analysis needs one; nothing will move."
+            )
+
+        has_mesh = False
+        try:
+            with _zipfile.ZipFile(package_path, "r") as zf:
+                has_mesh = "simulation/mesh/mesh.inp" in set(zf.namelist())
+        except Exception:  # noqa: BLE001
+            has_mesh = False
+
+        return {
+            "status": "ok",
+            "tool": "cae.setup_static",
+            "analysis_type": analysis_type,
+            "summary": summary_lines,
+            "resolved": {
+                "fix": {"face_pointers": [f"@face:{f}" for f in fix_hit["face_ids"]],
+                        "why": fix_hit["reason"], "confidence": fix_hit["confidence"]},
+                "load": ({"face_pointers": [f"@face:{f}" for f in load_hit["face_ids"]],
+                          "why": load_hit["reason"], "confidence": load_hit["confidence"],
+                          "total_force_n": force_n, "direction": direction}
+                         if load_hit is not None else None),
+                "material": material_record,
+            },
+            "written_artifacts": [p["path"] for p in patches],
+            "next_actions": [
+                {"tool": "cae.generate_mesh", "input": {"project_id": project_id},
+                 "reason": "Mesh the geometry before generating the solver deck."}
+                if not has_mesh else
+                {"tool": "cae.prepare_solver_run", "input": {"project_id": project_id},
+                 "reason": "Preflight the run; the mesh is already present."}
+            ],
+            "claim_boundary": (
+                "Setup authoring only. No mesh was generated, no solver was run, and no "
+                "engineering claim is advanced by writing boundary conditions."
+            ),
+        }
+
     def _tool_cae_apply_setup_patch(inp: dict[str, Any], _ctx: dict[str, Any]) -> dict[str, Any]:
         from .. import aieng_bridge
         from pathlib import Path as _Path
@@ -2189,6 +2456,28 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             "honestly. Read-only analysis (no solver/mesher)."
         ),
         input_schema=_schema("cae.map_results"),
+    )
+
+    rt.register_tool(
+        "cae.setup_static",
+        _tool_cae_setup_static,
+        description=(
+            "Author a COMPLETE static CAE setup from one engineering-language call — the "
+            "fast path that replaces hand-writing four JSON patches with cae.apply_setup_patch. "
+            "Say where the part is held and where the load acts in the words an engineer "
+            "already uses: fix: \"bottom\" / \"bolt holes\" / \"base_plate bottom\" / an @face: "
+            "pointer, and load: {at: \"rib_main top\", force_n: 500, direction: \"-Z\"}. "
+            "It looks the material up in the library (or takes explicit properties), resolves "
+            "each phrase to real topology faces, writes solver settings + material + "
+            "constraints + loads in the exact shapes the deck generator reads, and echoes back "
+            "what it actually bound (face, surface type, area, normal, owning part) so a "
+            "mis-pick is visible immediately. Ambiguous wording is REFUSED with the candidate "
+            "faces listed — never guessed. A zero force is refused too, because it would solve "
+            "an unloaded model and report zero stress. Authoring only: no mesh, no solver, no "
+            "claim advanced. Use cae.apply_setup_patch directly for anything this does not cover "
+            "(multi-load cases, thermal BCs, custom DOF ranges)."
+        ),
+        input_schema=_schema("cae.setup_static"),
     )
 
     rt.register_tool(

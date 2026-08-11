@@ -1758,6 +1758,78 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         },
         "additionalProperties": True,
     },
+    "cae.setup_static": {
+        "type": "object",
+        "required": ["project_id", "material", "fix"],
+        "description": (
+            "Author a complete static CAE setup in one engineering-language call. Replaces "
+            "hand-writing four JSON patches: it resolves the material from the library, "
+            "resolves 'where it is held' and 'where the load acts' from ordinary engineering "
+            "words to real topology faces, writes every setup artifact in the shape the deck "
+            "generator reads, and echoes back what it bound. Ambiguous wording and a zero "
+            "force are refused, never guessed. Example: "
+            "{project_id, material: \"Al6061-T6\", fix: \"bottom\", "
+            "load: {at: \"rib_main top\", force_n: 500, direction: \"-Z\"}}."
+        ),
+        "properties": {
+            "project_id": {"type": "string"},
+            "material": {
+                "description": (
+                    "Library material name (e.g. \"Al6061-T6\" — see aieng.list_materials), or "
+                    "an explicit property object {name, youngs_modulus_pa, poisson_ratio, "
+                    "density_kg_m3, yield_strength_pa}."
+                ),
+                "type": ["string", "object"],
+            },
+            "fix": {
+                "description": (
+                    "Where the part is held. Engineering words: \"bottom\", \"top\", \"left\", "
+                    "\"+X\", \"largest flat face\", \"bolt holes\" (Chinese aliases work too: "
+                    "\"底面\", \"螺栓孔\"), optionally scoped to a part name (\"base_plate bottom\"), "
+                    "or an explicit \"@face:face_005\" pointer. A list binds several faces."
+                ),
+                "type": ["string", "array"],
+                "items": {"type": "string"},
+            },
+            "load": {
+                "type": "object",
+                "description": (
+                    "Where the load acts and how big it is. Omit for an unloaded analysis type."
+                ),
+                "properties": {
+                    "at": {
+                        "type": ["string", "array"],
+                        "items": {"type": "string"},
+                        "description": "Same vocabulary as `fix`.",
+                    },
+                    "force_n": {
+                        "type": "number",
+                        "description": (
+                            "TOTAL force in newtons across the named face(s) — not per node. "
+                            "0 is refused: it would solve an unloaded model."
+                        ),
+                    },
+                    "direction": {
+                        "description": (
+                            "Vector like [0, 0, -1], or a word: \"-Z\" / \"down\" / \"向下\". "
+                            "Defaults to -Z."
+                        ),
+                    },
+                },
+                "required": ["at", "force_n"],
+            },
+            "analysis_type": {
+                "type": "string",
+                "description": "Default \"static\". Use cae.apply_setup_patch for thermal/modal setups.",
+            },
+            "mesh_size_mm": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "description": "Optional target element size recorded for the later cae.generate_mesh.",
+            },
+        },
+        "additionalProperties": True,
+    },
     "cae.generate_mesh": {
         "type": "object",
         "required": ["project_id"],

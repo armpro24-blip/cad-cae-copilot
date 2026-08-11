@@ -1159,7 +1159,8 @@ is possible).
 
 | Tool | Purpose |
 |------|---------|
-| `cae.apply_setup_patch` | Patch CAE setup artifacts (materials, BCs, mesh params) |
+| `cae.setup_static` | **Start here.** Author a complete static setup from ONE engineering-language call — material + where it is held + where the load acts. Resolves ordinary words to real faces, writes every artifact in the right shape, echoes back what it bound |
+| `cae.apply_setup_patch` | Patch CAE setup artifacts (materials, BCs, mesh params) — the low-level path for what `setup_static` does not cover |
 | `cae.generate_solver_input` | Generate CalculiX `.inp` deck from setup artifacts |
 | `cae.write_mesh_handoff` | Write mesh handoff contract for external Gmsh |
 | `cae.import_solver_evidence` | Import an external solver result file as evidence |
@@ -1263,19 +1264,57 @@ whole script each time.
 ### C — CAD → CAE simulation pipeline
 ```
 1. aieng.agent_context        { project_id }
-2. cae.apply_setup_patch      { project_id, patch }      (material, BCs, mesh)
-3. cae.prepare_solver_run     { project_id }             (preflight, no execution)
-4. cae.generate_solver_input  { project_id }             (write CalculiX .inp deck)
-5. cae.run_solver             { project_id }             [APPROVAL REQUIRED]
-6. cae.extract_solver_results { project_id }
-7. cae.extract_field_regions  { project_id }
-8. postprocess.refresh_cae_summary { project_id }
+2. cae.setup_static           { project_id, material, fix, load }   (one call, see below)
+3. cae.generate_mesh          { project_id, mesh_size_mm }
+4. cae.prepare_solver_run     { project_id }             (preflight, no execution)
+5. cae.generate_solver_input  { project_id }             (write CalculiX .inp deck)
+6. cae.run_solver             { project_id }             [APPROVAL REQUIRED]
+7. cae.extract_solver_results { project_id }
+8. cae.extract_field_regions  { project_id }
+9. postprocess.refresh_cae_summary { project_id }
 ```
 
-If step 3 reports missing artifacts or stale topology references, follow the
-`recommended_next_calls` list before proceeding to step 4. The solver
-(`cae.run_solver`) is only recommended once the preflight is fully ready and
-remains subject to the normal approval gate.
+If step 4 reports missing artifacts or stale topology references, follow the
+`recommended_next_calls` list before proceeding. The solver (`cae.run_solver`)
+is only recommended once the preflight is fully ready and remains subject to the
+normal approval gate.
+
+**Say the physics, don't hand-translate it (`cae.setup_static`).** The
+pre-processing step is where engineering intent used to have no expression: you
+had to read a digest of every face's normal and area, pick ids by eye, and
+hand-write four JSON patches with NSET names, DOF ranges, and direction vectors.
+`cae.setup_static` takes the sentence instead:
+
+```
+cae.setup_static {
+  project_id,
+  material: "Al6061-T6",                                  # library name, or explicit properties
+  fix:  "bottom",                                         # or "bolt holes" / "base_plate bottom" / "@face:face_005"
+  load: { at: "rib_main top", force_n: 500, direction: "-Z" }
+}
+```
+
+Understood vocabulary: the six directions (`bottom`/`top`/`left`/`right`/
+`front`/`back`, `±X`/`±Y`/`±Z`), `largest flat face`, `bolt holes` (returns the
+whole pattern), any of those **scoped to a part name** (`"rib_main top"`), and
+explicit `@face:` pointers. Chinese aliases work (`底面`, `顶面`, `螺栓孔`,
+`向下`) because that is what engineers here type.
+
+What makes it safe rather than merely convenient:
+- It **echoes what it actually bound** — face pointer, surface type, area,
+  normal, owning part — so a mis-pick is visible in the response instead of
+  three steps later (or never).
+- Ambiguous wording is **refused** with the real candidate faces listed, never
+  guessed: two same-size faces pointing the same way, or a phrase it cannot
+  parse, both return `needs_user_input` + `candidates`.
+- A sloped face still resolves when it is genuinely the most `top`-facing
+  surface (a triangular gusset's hypotenuse), but is reported as
+  `inclined 32° from top` at medium confidence — never as if it were flat-on.
+- `force_n: 0` is **refused**: it would converge on an unloaded model and report
+  zero stress as a result.
+
+Use `cae.apply_setup_patch` directly for what this does not cover — multiple
+load cases, thermal BCs, custom DOF ranges, or hand-tuned NSET mappings.
 
 ### D — Inspect results and explain findings
 ```
