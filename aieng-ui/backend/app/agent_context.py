@@ -343,8 +343,24 @@ def _target_comparison_block(response: Any) -> dict[str, Any]:
             "unknown_targets": [],
             "warnings": ["Target comparison unavailable."],
         }
-    comparisons = response.get("comparisons") if isinstance(response.get("comparisons"), dict) else {}
+    # `target_comparison._response` emits the block under "comparison" (singular)
+    # AND flattens summary/items to the top level. Reading only "comparisons"
+    # (plural) silently matched nothing, so this block reported
+    # `available: false` with no warning for EVERY project — the design-target
+    # verdict never reached the surface agents actually read (measured
+    # 2026-08-11: the core comparator returned pass/unknown correctly while
+    # agent_context showed nothing). Accept every shape it can arrive in.
+    comparisons: dict[str, Any] = {}
+    for key in ("comparison", "comparisons"):
+        value = response.get(key)
+        if isinstance(value, dict) and (value.get("items") or value.get("summary")):
+            comparisons = value
+            break
     items = [i for i in comparisons.get("items") or [] if isinstance(i, dict)]
+    if not items:
+        items = [i for i in response.get("items") or [] if isinstance(i, dict)]
+        if items and not comparisons:
+            comparisons = {"summary": response.get("summary") or {}, "items": items}
     failed = [i for i in items if i.get("status") == "fail"]
     unknown = [i for i in items if i.get("status") not in {"pass", "fail"}]
     return {
