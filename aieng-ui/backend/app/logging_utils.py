@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import sys
 import threading
 from collections import Counter
 from logging.handlers import RotatingFileHandler
@@ -26,6 +28,16 @@ _SECRET_VALUE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 
+def _under_pytest() -> bool:
+    """True when this process is a test run.
+
+    `PYTEST_CURRENT_TEST` only exists while a test is executing, so import-time
+    and fixture-time configuration would slip past it; the imported module is
+    the reliable marker.
+    """
+    return "pytest" in sys.modules or bool(os.environ.get("PYTEST_CURRENT_TEST"))
+
+
 def configure_backend_logging(
     data_root: Path,
     *,
@@ -34,7 +46,23 @@ def configure_backend_logging(
     max_bytes: int = _DEFAULT_MAX_BYTES,
     backup_count: int = _DEFAULT_BACKUP_COUNT,
 ) -> Path:
-    """Configure a single managed rotating backend log file for the app logger."""
+    """Configure a single managed rotating backend log file for the app logger.
+
+    Under pytest the file handler is NOT attached: a test that builds an app
+    against the real data root would otherwise write into the operator's
+    `aieng-ui/data/logs/backend.log`. That log is what a human reads to find out
+    what the backend did, and it had filled with tracebacks from deliberately
+    failing fixtures ("RuntimeError: segmentation exploded") interleaved with
+    pytest tmp paths — noise that makes a real incident harder to see, and
+    changes to a shared file that tests should not be making at all.
+
+    Set ``AIENG_LOG_TO_FILE=1`` to force the handler on anyway (e.g. a test that
+    asserts on the log file itself); records still reach stderr regardless, so
+    pytest's own capture keeps showing them.
+    """
+    if _under_pytest() and os.environ.get("AIENG_LOG_TO_FILE", "").strip() not in {"1", "true", "yes"}:
+        return (Path(data_root) / "logs" / log_filename).resolve()
+
     logs_root = Path(data_root) / "logs"
     logs_root.mkdir(parents=True, exist_ok=True)
     log_path = (logs_root / log_filename).resolve()

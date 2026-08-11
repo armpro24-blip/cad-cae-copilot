@@ -77,6 +77,12 @@ Call `aieng.guide {topic}` only when the task needs more detail. Available
 topics: `cad`, `cae`, `pointers`, `tools`, `workflows`, `package`, `fallback`,
 `frontend`, `approvals`, `operators`, and `full`.
 
+`cad` and `cae` carry the CONTRACT and are what the gate requires. Reference
+material is one call away when the task calls for it: `cad-helpers` (the
+pre-injected helper catalogue + curve patterns), `cad-modes` (industrial-design
+and engineering modes), `cae-assembly` (multi-part assemblies). Each core topic
+lists these under `see_also` with a plain "read this when…".
+
 Before the first CAD modeling or geometry-edit action in a session, read
 `aieng.guide {topic:"cad"}` once. Before the first simulation-planning or solver
 action, read `aieng.guide {topic:"cae"}` once. Re-read a guide only if the session
@@ -90,13 +96,17 @@ execute or request approval. Reading the `full` guide unlocks all categories.
 """
 
 
+# The mandatory pre-action reads (`cad`, `cae`) carry the CONTRACT — the rules an
+# agent must not violate. Reference material an agent needs only when the task
+# calls for it lives in sub-topics, fetched on demand. Measured before the split:
+# `cad` was ~5.5k tokens, of which the four design/reference sections were 53%;
+# `cae` was ~10.2k, of which Assembly IR v0 (irrelevant to every single-part
+# session) was 24%. Paid once per session per agent, that is a real tax on every
+# connected client. Only the core topics satisfy the guide gate — reading the
+# helper catalogue is not the same as reading the approval rules.
 TOPIC_SECTIONS: dict[str, tuple[str, ...]] = {
     "cad": (
         "Real 3D CAD modeling (no API key needed)",
-        "Industrial Design Mode — escape primitive stacking",
-        "High-level helpers — prefer these over hand-rolled boilerplate",
-        "Curve patterns — copy + adapt (when a helper doesn't fit)",
-        "Engineering Mode — well-formed mechanical parts",
         "Pointer syntax — `@kind:id`",
         "B — CAD generation from scratch",
         "B2 — Incremental modeling (the sustainable loop)",
@@ -104,6 +114,14 @@ TOPIC_SECTIONS: dict[str, tuple[str, ...]] = {
         "Approval-gated tools",
         "Stale-artifact warnings",
         "Common mistakes to avoid",
+    ),
+    "cad-helpers": (
+        "High-level helpers — prefer these over hand-rolled boilerplate",
+        "Curve patterns — copy + adapt (when a helper doesn't fit)",
+    ),
+    "cad-modes": (
+        "Industrial Design Mode — escape primitive stacking",
+        "Engineering Mode — well-formed mechanical parts",
     ),
     "cae": (
         "Structural FEA (CalculiX)",
@@ -115,8 +133,12 @@ TOPIC_SECTIONS: dict[str, tuple[str, ...]] = {
         "D — Inspect results and explain findings",
         "Approval-gated tools",
         "Stale-artifact warnings",
+    ),
+    "cae-assembly": (
         "Assembly IR v0 (optional, multi-part)",
     ),
+    # (see_also below tells an agent these sub-topics exist — a lean core is only
+    # an improvement if the material it left out is still findable.)
     "pointers": ("Pointer syntax — `@kind:id`",),
     "tools": (
         "STOP — read this first",
@@ -158,6 +180,28 @@ TOPIC_SECTIONS: dict[str, tuple[str, ...]] = {
         "If the backend (port 8000) is unreachable",
         "Environment variables (for MCP server operators)",
     ),
+}
+
+# What a core topic deliberately leaves out, and when to go get it. A lean core
+# is only an improvement if the material it dropped stays findable.
+TOPIC_SEE_ALSO: dict[str, tuple[tuple[str, str], ...]] = {
+    "cad": (
+        ("cad-helpers",
+         "before writing lofts/sweeps/fillets by hand — the pre-injected helper "
+         "catalogue (housing/rib/boss/capsule/…) and the curve patterns"),
+        ("cad-modes",
+         "when the target is a named product, character or vehicle (industrial "
+         "design mode) or a bracket/housing destined for CNC or FEA "
+         "(engineering mode, canonical feature labels + DfM rules)"),
+    ),
+    "cad-helpers": (("cad", "the code contract, approval boundary and response fields"),),
+    "cad-modes": (("cad", "the code contract, approval boundary and response fields"),),
+    "cae": (
+        ("cae-assembly",
+         "only for MULTI-PART packages: Assembly IR, interfaces, proxy "
+         "connections, bolt-preload honesty and assembly topology optimization"),
+    ),
+    "cae-assembly": (("cae", "the analysis contract, solver gate and result honesty rules"),),
 }
 
 # In-memory cache for guide content and topic extractions to avoid repeated
@@ -249,7 +293,7 @@ def guide_result(topic: str) -> dict[str, Any]:
     if extracted is None:
         extracted = _extract_sections(content, sections)
         _topic_extract_cache[normalized] = extracted
-    return {
+    result = {
         "content": extracted,
         "path": str(path),
         "mode": "topic",
@@ -257,6 +301,12 @@ def guide_result(topic: str) -> dict[str, Any]:
         "sections": list(sections),
         "available_topics": available_topics(),
     }
+    related = TOPIC_SEE_ALSO.get(normalized)
+    if related:
+        result["see_also"] = [
+            {"topic": name, "when": reason} for name, reason in related
+        ]
+    return result
 
 
 def _extract_sections(markdown: str, requested: tuple[str, ...]) -> str:
