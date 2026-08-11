@@ -65,6 +65,153 @@ def _ccx_dll_crash_hint(return_code: int | None, stdout: str, frd_exists: bool) 
     )
 
 
+def _describe_cae_setup(package_path: Path) -> list[str]:
+    """State the bound physics in engineering language, for a preflight read-back.
+
+    `cae.setup_static` echoes what IT just bound; this answers the other
+    question — "I opened someone else's project, what is set up here?" — from
+    the package alone, naming the face, its surface type, area, normal and
+    owning part rather than an NSET id. Best-effort and read-only: an
+    unreadable package simply yields no description.
+    """
+    import json as _json
+    import zipfile as _zipfile
+
+    from .. import cae_setup_intent as _intent
+
+    try:
+        with _zipfile.ZipFile(package_path, "r") as zf:
+            names = set(zf.namelist())
+
+            def _read(member: str) -> Any:
+                if member not in names:
+                    return None
+                raw = zf.read(member)
+                if member.endswith(".yaml"):
+                    import yaml as _yaml
+
+                    return _yaml.safe_load(raw)
+                return _json.loads(raw)
+
+            topology = _read("geometry/topology_map.json") or {}
+            materials = _read("simulation/cae_imports/parsed_materials.json") or {}
+            bcs = _read("simulation/cae_imports/parsed_boundary_conditions.json") or {}
+            loads = _read("simulation/cae_imports/parsed_loads.json") or {}
+            settings = _read("simulation/solver_settings.json") or {}
+            mapping = _read("simulation/cae_mapping.json") or {}
+            has_mesh = "simulation/mesh/mesh.inp" in names
+    except Exception:  # noqa: BLE001 - description is a courtesy, never a gate
+        return []
+
+    faces = {
+        str(e.get("id")): e for e in (topology.get("entities") or [])
+        if isinstance(e, dict) and e.get("type") == "face"
+    }
+    body_names = {
+        str(e.get("id")): str(e.get("name"))
+        for e in (topology.get("entities") or [])
+        if isinstance(e, dict) and e.get("type") == "solid" and e.get("name")
+    }
+    entity_faces: dict[str, list[str]] = {
+        str(m.get("cae_entity")): [str(f) for f in (m.get("face_ids") or [])]
+        for m in (mapping.get("mappings") or []) if isinstance(m, dict) and m.get("cae_entity")
+    }
+
+    def _face_ids_for(target: Any) -> list[str]:
+        text = str(target or "")
+        if text.startswith("@face:"):
+            return [text[len("@face:"):]]
+        if text in faces:
+            return [text]
+        return entity_faces.get(text, [])
+
+    def _render(target: Any) -> str:
+        ids = _face_ids_for(target)
+        described = [
+            _intent.describe_face(faces[fid], body_names) for fid in ids if fid in faces
+        ]
+        return "; ".join(described) if described else f"{target} (unresolved)"
+
+    lines: list[str] = []
+    for material in (materials.get("materials") or []):
+        if isinstance(material, dict):
+            modulus = material.get("youngs_modulus_pa")
+            lines.append(
+                "material: {}{}".format(
+                    material.get("name", "?"),
+                    f" (E={float(modulus) / 1e9:.4g} GPa)" if modulus else "",
+                )
+            )
+    for bc in (bcs.get("boundary_conditions") or []):
+        if isinstance(bc, dict):
+            lines.append(
+                "held ({}, DOF {}-{}): {}".format(
+                    bc.get("type", "fixed"), bc.get("dof_start", 1), bc.get("dof_end", 3),
+                    _render(bc.get("target")),
+                )
+            )
+    for load in (loads.get("loads") or []):
+        if isinstance(load, dict):
+            direction = load.get("direction") or [0, 0, -1]
+            try:
+                arrow = "[{:.2f}, {:.2f}, {:.2f}]".format(*[float(c) for c in direction[:3]])
+            except (TypeError, ValueError):
+                arrow = str(direction)
+            lines.append(
+                "load: {:g} N along {} on {}".format(
+                    float(load.get("value_n") or 0.0), arrow, _render(load.get("target"))
+                )
+            )
+    if not lines:
+        return []
+    analysis = str(settings.get("analysis_type") or "static")
+    lines.insert(0, f"analysis: {analysis}")
+    lines.append("mesh: present" if has_mesh else "mesh: not generated yet")
+    return lines
+
+
+def _find_package_frd(package_path: Path, run_id: str = "") -> tuple[str, str] | None:
+    """Extract the package's own newest `.frd` to a temp file → (path, tempdir).
+
+    The result of a solve lives inside the `.aieng` zip, so a tool that wants a
+    filesystem path cannot simply be handed the member name. Callers must remove
+    the returned temp directory when done.
+    """
+    import logging as _logging
+    import shutil as _shutil
+    import tempfile as _tempfile
+    import zipfile as _zipfile
+    from pathlib import Path as _Path
+
+    try:
+        with _zipfile.ZipFile(package_path, "r") as zf:
+            candidates = [
+                info for info in zf.infolist()
+                if info.filename.startswith("simulation/runs/")
+                and info.filename.endswith(".frd")
+                and info.file_size > 0
+            ]
+            if run_id:
+                scoped = [c for c in candidates if f"/runs/{run_id}/" in c.filename]
+                candidates = scoped or candidates
+            if not candidates:
+                return None
+            # Newest by archive timestamp, then by name so ties are deterministic.
+            chosen = max(candidates, key=lambda i: (i.date_time, i.filename))
+            tmpdir = _tempfile.mkdtemp(prefix="aieng_frd_")
+            out = _Path(tmpdir) / _Path(chosen.filename).name
+            with zf.open(chosen) as src, open(out, "wb") as dst:
+                _shutil.copyfileobj(src, dst)
+            return str(out), tmpdir
+    except Exception as exc:  # noqa: BLE001 - caller reports its own error
+        # Swallowing this silently once already hid a NameError behind a
+        # "no result in this package" message; leave a trace.
+        _logging.getLogger("app.runtime_registry.cae").warning(
+            "could not extract an FRD from %s: %s", package_path, exc
+        )
+        return None
+
+
 def _validate_cae_mapping_for_solver(package_path: Path) -> dict[str, Any]:
     """Check that loads/BCs reference NSETs which are defined and non-empty.
 
@@ -216,15 +363,56 @@ def _validate_cae_mapping_for_solver(package_path: Path) -> dict[str, Any]:
         if isinstance(load, dict) and load.get("target"):
             referenced.add(str(load["target"]))
 
+    # A load/BC may target an `@face:<id>` pointer instead of a named NSET —
+    # that is the documented agent path, and `normalize_cae_bindings` (#376)
+    # synthesises the NSET mapping for it at deck generation. Treating those as
+    # "undefined NSETs" made the preflight BLOCK a setup that was already
+    # correct and hand the caller a REPLACE_WITH_REFERENCED_NSET template for a
+    # mapping it did not need (measured 2026-08-11: cae.generate_solver_input on
+    # the very same package derived BC_001/LOAD_001 with no empty sets). Only a
+    # pointer that does not resolve to a real topology face is a real problem.
+    def _pointer_face_id(target: str) -> str | None:
+        candidate = target[len("@face:"):] if target.startswith("@face:") else target
+        if topology_parse_ok and candidate in valid_face_ids:
+            return candidate
+        return candidate if target.startswith("@face:") else None
+
+    pending_pointers: dict[str, str] = {}
+    unresolved_pointers: list[str] = []
+    for target in sorted(referenced):
+        if target in nset_by_entity:
+            continue
+        face_id = _pointer_face_id(target)
+        if face_id is None:
+            continue
+        if topology_parse_ok and face_id not in valid_face_ids:
+            unresolved_pointers.append(target)
+        else:
+            pending_pointers[target] = face_id
+
     result["referenced_nsets"] = sorted(referenced)
     result["defined_nsets"] = sorted(nset_by_entity.keys())
     result["unmapped_features"] = sorted(unmapped_features)
+    if pending_pointers:
+        result["pointer_targets_pending_binding"] = sorted(pending_pointers)
+        result["warnings"].append(
+            f"{len(pending_pointers)} load/BC target(s) are @face: pointers that resolve to "
+            "real faces; cae.generate_solver_input binds them automatically — no cae_mapping "
+            "entry needs to be written by hand."
+        )
 
-    undefined = sorted(referenced - set(nset_by_entity.keys()))
+    undefined = sorted(
+        referenced - set(nset_by_entity.keys()) - set(pending_pointers)
+    )
     if undefined:
         result["undefined_nsets"] = undefined
+        unresolved_note = (
+            " (these look like @face: pointers but no such face exists in the current "
+            "topology — re-pick the face)" if unresolved_pointers else ""
+        )
         result["warnings"].append(
             f"Loads/BCs reference undefined NSETs (no cae_mapping entry): {undefined}"
+            + unresolved_note
         )
 
     if unmapped_features:
@@ -248,8 +436,12 @@ def _validate_cae_mapping_for_solver(package_path: Path) -> dict[str, Any]:
         result["valid"] = True
         return result
 
+    # A package whose loads/BCs target @face: pointers has no cae_mapping.json
+    # yet — it is written for it at deck generation — so requiring the file here
+    # would keep the preflight blocked on a setup that is already complete.
+    mapping_ready = result["cae_mapping_exists"] or bool(pending_pointers)
     result["valid"] = (
-        result["cae_mapping_exists"]
+        mapping_ready
         and topology_parse_ok
         and not result["undefined_nsets"]
         and not result["unmapped_features"]
@@ -988,19 +1180,34 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 ),
             }
 
-        if not frd_path:
-            return {
-                "status": "error",
-                "code": "missing_frd_path",
-                "message": "No frdPath provided. Pass the path to the CalculiX .frd result file.",
-            }
-
         if not _Path(package_path).exists():
             return {
                 "status": "error",
                 "code": "file_not_found",
                 "message": f"Package not found: {package_path}",
             }
+
+        # The FRD normally lives inside the package, at the path this same
+        # toolset PLANS in cae.prepare_solver_run and WRITES in cae.run_solver.
+        # Demanding it back from the caller asked for something the package
+        # already owns — and as a member inside the zip there is no filesystem
+        # path to hand over. Default to the package's own newest run output.
+        frd_source = "caller"
+        frd_tempdir: str | None = None
+        if not frd_path:
+            found = _find_package_frd(_Path(package_path), str(inp.get("run_id") or "").strip())
+            if not found:
+                return {
+                    "status": "error",
+                    "code": "missing_frd_path",
+                    "message": (
+                        "This package contains no solver result (no "
+                        "simulation/runs/*/outputs/*.frd). Run cae.run_solver first, or pass "
+                        "frd_path for an externally produced .frd."
+                    ),
+                }
+            frd_path, frd_tempdir = found
+            frd_source = "package"
 
         if not _Path(frd_path).exists():
             return {
@@ -1024,6 +1231,11 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             )
         except Exception as exc:
             return {"status": "error", "code": "extraction_error", "message": str(exc)}
+        finally:
+            if frd_tempdir:
+                import shutil as _shutil
+
+                _shutil.rmtree(frd_tempdir, ignore_errors=True)
 
         # Optionally refresh the result summary so the UI reflects real numbers
         refresh_warnings: list[str] = []
@@ -1042,6 +1254,9 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
 
         if refresh_warnings:
             result.setdefault("warnings", []).extend(refresh_warnings)
+
+        if isinstance(result, dict):
+            result.setdefault("frd_source", frd_source)
 
         return result
 
@@ -1645,6 +1860,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             "load_case_id": load_case_id,
             "requires_approval": True,
             "solver_execution_performed": False,
+            "setup_description": _describe_cae_setup(package_path),
             "preflight": preflight,
             "planned_artifacts": planned_artifacts,
             "warnings": warnings,
