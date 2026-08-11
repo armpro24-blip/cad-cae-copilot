@@ -79,6 +79,7 @@ def run_probe_command(command_path: str, args: list[str], timeout_seconds: int) 
         text=True,
         timeout=timeout_seconds,
         check=False,
+        stdin=subprocess.DEVNULL,
     )
 
 

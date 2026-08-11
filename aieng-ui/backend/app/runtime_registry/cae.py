@@ -1467,6 +1467,12 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                     # block that children inherit, so a run_simulation_pipeline
                     # that meshed first would otherwise fail to launch ccx.
                     env=_solver_subprocess_env(),
+                    # Never inherit the parent's stdin. Under the MCP stdio
+                    # server that handle IS the JSON-RPC protocol pipe, and a
+                    # child that inherits it blocks before running any code
+                    # (measured: `conda run ... ccx` sat at 0 CPU with no
+                    # children until the client's 1800s idle timeout).
+                    stdin=_subprocess.DEVNULL,
                 )
                 return_code = proc.returncode
                 stdout = proc.stdout or ""

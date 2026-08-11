@@ -4293,7 +4293,67 @@ def _constants_to_part_labels(source_code: str, constant_names: Any) -> dict[str
         for w in word_re.findall(line):
             if w in names:
                 const_to_labels.setdefault(w, set()).add(label)
+    for const, label in _builder_block_constants(source_code, names, var_to_label).items():
+        const_to_labels.setdefault(const, set()).add(label)
     return const_to_labels
+
+
+def _builder_block_constants(
+    source_code: str, names: set[str], var_to_label: dict[str, str]
+) -> dict[str, str]:
+    """Constants used inside a ``with BuildPart() as bp:`` block → that part's label.
+
+    The bare same-line scan above only sees ``<var> = ...CONST...`` assignments,
+    but the dominant build123d idiom puts the primary body's dimensions on
+    *non-assignment* lines inside a builder context::
+
+        with BuildPart() as bp:
+            Box(PLATE_LENGTH, PLATE_WIDTH, PLATE_THICKNESS)   # invisible to the
+        base_plate = bp.part                                  # same-line scan
+        base_plate.label = "base_plate"
+
+    Without this pass those constants have no usage binding at all, so a merely
+    incidental use by ANOTHER part — e.g. positioning a rib with
+    ``rib_main = rib_main.moved(Location((0, 0, PLATE_THICKNESS)))`` — becomes
+    the only usage found and captures the constant outright (measured: editing
+    the rib's "thickness_mm" resized the plate, `regression_diff` verdict
+    `collateral_change`). Reading the builder block binds each constant to the
+    part it actually dimensions.
+
+    Blocks are delimited by indentation, so nested ``with BuildSketch(...)``
+    lines belong to their enclosing part. A block whose ``<builder>.part`` is
+    never assigned to a labelled variable is skipped (nothing to bind to).
+    """
+    builder_to_label: dict[str, str] = {}
+    for m in re.finditer(r'(\w+)\s*=\s*(\w+)\s*\.\s*part\b', source_code):
+        label = var_to_label.get(m.group(1))
+        if label:
+            builder_to_label[m.group(2)] = label
+    if not builder_to_label:
+        return {}
+
+    word_re = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
+    block_re = re.compile(r'^(\s*)with\s+BuildPart\s*\(.*\)\s*as\s+(\w+)\s*:')
+    out: dict[str, str] = {}
+    lines = source_code.splitlines()
+    for index, line in enumerate(lines):
+        header = block_re.match(line)
+        if not header:
+            continue
+        label = builder_to_label.get(header.group(2))
+        if not label:
+            continue
+        header_indent = len(header.group(1).expandtabs())
+        for body_line in lines[index + 1:]:
+            if not body_line.strip():
+                continue
+            indent = len(body_line) - len(body_line.lstrip())
+            if len(body_line[:indent].expandtabs()) <= header_indent:
+                break
+            for word in word_re.findall(body_line):
+                if word in names:
+                    out.setdefault(word, label)
+    return out
 
 
 def _detect_advanced_features(features: list[dict[str, Any]], source_code: str) -> None:

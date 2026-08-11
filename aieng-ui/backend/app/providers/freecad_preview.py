@@ -358,6 +358,7 @@ class FreecadPreviewProvider:
                 encoding="utf-8",
                 errors="replace",
                 timeout=20,
+                stdin=subprocess.DEVNULL,
             )
             if not result_path.exists():
                 detail = (completed.stderr or completed.stdout or f"exit code {completed.returncode}").strip()
@@ -390,6 +391,7 @@ class FreecadPreviewProvider:
                 encoding="utf-8",
                 errors="replace",
                 timeout=180,
+                stdin=subprocess.DEVNULL,
             )
             if not result_path.exists():
                 detail = (completed.stderr or completed.stdout or f"exit code {completed.returncode}").strip()
