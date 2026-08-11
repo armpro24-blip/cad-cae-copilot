@@ -1159,7 +1159,9 @@ is possible).
 
 | Tool | Purpose |
 |------|---------|
-| `cae.setup_static` | **Start here.** Author a complete static setup from ONE engineering-language call — material + where it is held + where the load acts. Resolves ordinary words to real faces, writes every artifact in the right shape, echoes back what it bound |
+| `cae.author_load_case` | Record the load case as a **requirement** — same engineering words plus acceptance criteria. Resolved against the geometry at authoring time; criteria land in `task/design_targets.yaml` |
+| `cae.apply_load_case` | Materialise a recorded load case into the CAE setup — the requirement becomes the analysis |
+| `cae.setup_static` | Author a complete static setup from ONE engineering-language call — material + where it is held + where the load acts. Resolves ordinary words to real faces, writes every artifact in the right shape, echoes back what it bound |
 | `cae.apply_setup_patch` | Patch CAE setup artifacts (materials, BCs, mesh params) — the low-level path for what `setup_static` does not cover |
 | `cae.generate_solver_input` | Generate CalculiX `.inp` deck from setup artifacts |
 | `cae.write_mesh_handoff` | Write mesh handoff contract for external Gmsh |
@@ -1315,6 +1317,47 @@ What makes it safe rather than merely convenient:
 
 Use `cae.apply_setup_patch` directly for what this does not cover — multiple
 load cases, thermal BCs, custom DOF ranges, or hand-tuned NSET mappings.
+
+**The load case as a requirement (`cae.author_load_case` / `cae.apply_load_case`).**
+`cad.author_brief` records geometric intent before building; these record the
+**physics** intent before analysing — in the same engineering words, plus what
+the part must survive:
+
+```
+cae.author_load_case {
+  project_id, name: "motor_thrust",
+  description: "电机推力向下作用在加强筋上，底面用螺栓固定在机架",
+  material: "Al6061-T6",
+  fix: "底面",
+  load: { at: "rib_main top", force_n: 500, direction: "向下" },
+  acceptance: { min_safety_factor: 2.0, max_displacement_mm: 0.5 }
+}
+```
+
+Two properties make this worth more than a sentence in a requirements document:
+
+- **It is checked when written.** Every phrase is resolved against the current
+  geometry at authoring time and the resolution is stored with the case
+  (`resolved_when_authored`). Wording that cannot be pinned to faces stores
+  **nothing** and returns the candidates — so ambiguity is caught while it is
+  still cheap to reword, not after a solver run.
+- **It is executable.** `cae.apply_load_case { project_id, name }` materialises
+  it into the CAE setup exactly as `cae.setup_static` would, so the recorded
+  requirement and what was actually solved cannot drift apart.
+
+Acceptance criteria (`min_safety_factor`, `max_stress_mpa`,
+`max_displacement_mm`, `max_mass_kg`) are written into the package's existing
+`task/design_targets.yaml`, so the normal pass/fail comparison against computed
+metrics picks them up — no parallel verdict system. After a solve,
+`aieng.agent_context`'s `target_comparison` reports each criterion as
+`pass` / `fail` / `unknown` (a criterion whose metric the run did not produce
+stays `unknown` with the reason, never a silent pass).
+
+The load case lives in the project directory (`cae_load_cases.json`), so it
+survives rebuilds and can be authored before geometry exists. Re-authoring the
+same name revises it; targets from other load cases and hand-written targets are
+preserved. Recording a requirement advances no claim — it does not mesh, solve,
+or assert compliance.
 
 ### D — Inspect results and explain findings
 ```

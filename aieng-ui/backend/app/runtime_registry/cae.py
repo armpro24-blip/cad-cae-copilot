@@ -318,6 +318,215 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             normalized.append(op)
         return normalized, None
 
+    def _load_case_sidecar(project_id: str):
+        from .. import cae_load_cases as _lc_mod
+        from ..main import project_dir
+
+        try:
+            return project_dir(active_settings, project_id) / _lc_mod.LOAD_CASES_FILENAME
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _tool_cae_author_load_case(inp: dict[str, Any], _ctx: dict[str, Any]) -> dict[str, Any]:
+        """Record a load case as a requirement — in engineering language, checked now."""
+        import json as _json
+        import zipfile as _zipfile
+
+        import yaml as _yaml
+
+        from .. import cae_load_cases as _lc_mod
+        from .. import cae_setup_intent as _intent
+        from .. import simulation_runner as _sr
+
+        project_id = str(inp.get("project_id") or "").strip()
+        if not project_id:
+            return {"status": "error", "code": "missing_project_id",
+                    "message": "project_id is required."}
+
+        try:
+            case = _lc_mod.normalize_load_case(inp)
+        except ValueError as exc:
+            return {"status": "error", "code": "invalid_load_case", "message": str(exc)}
+
+        # Resolve the words against the CURRENT geometry, if there is any. A
+        # requirement whose phrases cannot be pinned to faces is exactly the
+        # requirement that later turns into a wrong analysis, so the ambiguity is
+        # surfaced while it is still cheap to reword.
+        resolution: dict[str, Any] = {"checked_against_geometry": False}
+        pkg = resolve_project_path(
+            active_settings, project_id,
+            (get_project(active_settings, project_id) or {}).get("aieng_file"),
+        )
+        if pkg is not None and pkg.exists():
+            try:
+                with _zipfile.ZipFile(pkg, "r") as zf:
+                    names = set(zf.namelist())
+                    topo_raw = (
+                        zf.read("geometry/topology_map.json")
+                        if "geometry/topology_map.json" in names else None
+                    )
+                topology = _json.loads(topo_raw) if topo_raw else None
+            except Exception:  # noqa: BLE001
+                topology = None
+            if topology:
+                resolution["checked_against_geometry"] = True
+                fix_hit = _intent.resolve_face_intent(topology, case["fix"])
+                resolution["fix"] = fix_hit
+                if case.get("load"):
+                    resolution["load"] = _intent.resolve_face_intent(topology, case["load"]["at"])
+                unresolved = [
+                    key for key in ("fix", "load")
+                    if key in resolution and resolution[key].get("status") != "ok"
+                ]
+                if unresolved:
+                    return {
+                        "status": "needs_user_input",
+                        "code": "load_case_unresolved",
+                        "message": (
+                            "Recorded nothing: "
+                            + "; ".join(
+                                f"{key}: {resolution[key]['reason']}" for key in unresolved
+                            )
+                        ),
+                        "candidates": [
+                            line for key in unresolved
+                            for line in (resolution[key].get("candidates") or [])
+                        ],
+                        "resolution": resolution,
+                    }
+                case["resolved_when_authored"] = {
+                    key: {
+                        "face_pointers": [f"@face:{f}" for f in resolution[key]["face_ids"]],
+                        "why": resolution[key]["reason"],
+                        "confidence": resolution[key]["confidence"],
+                    }
+                    for key in ("fix", "load") if key in resolution
+                }
+
+        # ── Persist the requirement (project sidecar, survives rebuilds) ─────
+        path = _load_case_sidecar(project_id)
+        if path is None:
+            return {"status": "error", "code": "project_dir_error",
+                    "message": "could not resolve the project directory."}
+        try:
+            existing_raw = path.read_text(encoding="utf-8") if path.exists() else None
+        except OSError:
+            existing_raw = None
+        doc = _lc_mod.upsert_load_case(_lc_mod.read_load_cases(existing_raw), case)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(_json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+        except OSError as exc:
+            return {"status": "error", "code": "write_failed", "message": str(exc)}
+
+        # ── Acceptance criteria → the package's existing design-targets doc ──
+        targets_written = None
+        if case.get("acceptance") and pkg is not None and pkg.exists():
+            try:
+                with _zipfile.ZipFile(pkg, "r") as zf:
+                    names = set(zf.namelist())
+                    prior_raw = (
+                        zf.read("task/design_targets.yaml")
+                        if "task/design_targets.yaml" in names else None
+                    )
+                prior = _yaml.safe_load(prior_raw) if prior_raw else None
+                merged = _lc_mod.acceptance_to_design_targets(
+                    case, prior if isinstance(prior, dict) else None
+                )
+                if merged is not None:
+                    _sr._write_members_to_package(
+                        pkg,
+                        {"task/design_targets.yaml":
+                         _yaml.safe_dump(merged, sort_keys=False, allow_unicode=True).encode()},
+                    )
+                    targets_written = [t["id"] for t in merged.get("targets", [])
+                                       if str(t.get("id", "")).startswith(f"{case['name']}__")]
+            except Exception as exc:  # noqa: BLE001 - the requirement itself is stored
+                targets_written = None
+                resolution["design_targets_error"] = str(exc)
+
+        return {
+            "status": "ok",
+            "tool": "cae.author_load_case",
+            "project_id": project_id,
+            "stored_at": _lc_mod.LOAD_CASES_FILENAME,
+            "load_case": case,
+            "resolution": resolution,
+            "design_targets_written": targets_written,
+            "load_case_names": [c.get("name") for c in doc.get("load_cases", [])],
+            "next_actions": [{
+                "tool": "cae.apply_load_case",
+                "input": {"project_id": project_id, "name": case["name"]},
+                "reason": "Materialise this requirement into the CAE setup when you are ready to analyse.",
+            }],
+            "claim_boundary": (
+                "A load case is a recorded requirement and its acceptance criteria are "
+                "acceptance criteria — not evidence. Nothing here meshes, solves, or "
+                "claims the part complies."
+            ),
+        }
+
+    def _tool_cae_apply_load_case(inp: dict[str, Any], _ctx: dict[str, Any]) -> dict[str, Any]:
+        """Materialise a recorded load case into the CAE setup."""
+        import json as _json
+
+        from .. import cae_load_cases as _lc_mod
+
+        project_id = str(inp.get("project_id") or "").strip()
+        if not project_id:
+            return {"status": "error", "code": "missing_project_id",
+                    "message": "project_id is required."}
+        path = _load_case_sidecar(project_id)
+        doc = _lc_mod.read_load_cases(
+            path.read_text(encoding="utf-8") if path and path.exists() else None
+        )
+        cases = [c for c in doc.get("load_cases", []) if isinstance(c, dict)]
+        if not cases:
+            return {
+                "status": "error",
+                "code": "no_load_cases",
+                "message": "No load case recorded — call cae.author_load_case first.",
+            }
+        wanted = str(inp.get("name") or "").strip()
+        if wanted:
+            case = next((c for c in cases if c.get("name") == wanted), None)
+            if case is None:
+                return {
+                    "status": "error",
+                    "code": "load_case_not_found",
+                    "message": f"No load case named {wanted!r}.",
+                    "available": [c.get("name") for c in cases],
+                }
+        elif len(cases) == 1:
+            case = cases[0]
+        else:
+            return {
+                "status": "needs_user_input",
+                "code": "ambiguous_load_case",
+                "message": "Several load cases are recorded — name the one to apply.",
+                "available": [c.get("name") for c in cases],
+            }
+
+        setup_input: dict[str, Any] = {
+            "project_id": project_id,
+            "material": case.get("material"),
+            "fix": case.get("fix"),
+            "analysis_type": case.get("analysis_type") or "static",
+        }
+        if case.get("load"):
+            setup_input["load"] = case["load"]
+        if case.get("mesh_size_mm"):
+            setup_input["mesh_size_mm"] = case["mesh_size_mm"]
+
+        result = _tool_cae_setup_static(setup_input, _ctx)
+        if isinstance(result, dict):
+            result = dict(result)
+            result["applied_load_case"] = case.get("name")
+            result["acceptance"] = case.get("acceptance") or {}
+            result.setdefault("tool", "cae.apply_load_case")
+            result["tool"] = "cae.apply_load_case"
+        return result
+
     def _tool_cae_setup_static(inp: dict[str, Any], _ctx: dict[str, Any]) -> dict[str, Any]:
         """Author a complete static CAE setup from one engineering-language call."""
         import json as _json
@@ -2456,6 +2665,41 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             "honestly. Read-only analysis (no solver/mesher)."
         ),
         input_schema=_schema("cae.map_results"),
+    )
+
+    rt.register_tool(
+        "cae.author_load_case",
+        _tool_cae_author_load_case,
+        description=(
+            "Record a load case as a REQUIREMENT, in the same engineering language "
+            "cae.setup_static accepts: material, where the part is held, what load it "
+            "carries, and what it must survive (acceptance criteria). This is the physics "
+            "counterpart to cad.author_brief — write it BEFORE meshing or solving. "
+            "Two things make it more than a note: every phrase is resolved against the "
+            "current geometry AT AUTHORING TIME, so ambiguous wording is caught while it is "
+            "still cheap to reword (nothing is stored if it cannot be pinned down); and it is "
+            "executable via cae.apply_load_case, so the requirement and what was actually "
+            "solved cannot drift apart. Acceptance criteria (min_safety_factor, "
+            "max_stress_mpa, max_displacement_mm, max_mass_kg) are written into the package's "
+            "existing task/design_targets.yaml, so the normal pass/fail comparison against "
+            "computed metrics picks them up. Stored per project and revisable by re-authoring "
+            "the same name. Records a requirement — it does not mesh, solve, or claim compliance."
+        ),
+        input_schema=_schema("cae.author_load_case"),
+    )
+
+    rt.register_tool(
+        "cae.apply_load_case",
+        _tool_cae_apply_load_case,
+        description=(
+            "Materialise a recorded load case into the CAE setup — the requirement becomes "
+            "the analysis. Takes the name of a case authored with cae.author_load_case (or "
+            "the only one if there is just one) and writes solver settings, material, "
+            "constraints and loads exactly as cae.setup_static would, echoing back which "
+            "faces it bound and the acceptance criteria that came with the case. Refuses to "
+            "pick for you when several cases exist and none is named."
+        ),
+        input_schema=_schema("cae.apply_load_case"),
     )
 
     rt.register_tool(

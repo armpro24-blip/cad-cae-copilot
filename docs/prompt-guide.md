@@ -104,6 +104,23 @@ for a convergence study, and a solver run is evidence — not certification. The
 workbench states that in its own output; it will not report a solve it did not
 actually run.
 
+### Writing it down as a requirement
+
+If the load case is part of the spec — not a one-off question — record it, and
+say what the part must survive:
+
+> 记一个工况叫 motor_thrust：底面固定，肋顶面 500N 向下，安全系数不低于 2，
+> 位移不超过 0.5mm。
+
+It is checked as you write it: if "底面" could mean two faces, it stores nothing
+and shows you the candidates. Later, `跑 motor_thrust 这个工况` applies exactly
+what was recorded, and after solving you get each criterion back as
+**pass / fail / unknown** — a criterion the run could not measure stays
+`unknown` with the reason, never a quiet pass.
+
+The requirement survives rebuilds and geometry changes, so "did this design
+still meet the spec?" stays answerable.
+
 **Then:**
 
 > 结果怎么样？哪里最危险？

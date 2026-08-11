@@ -1758,6 +1758,76 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         },
         "additionalProperties": True,
     },
+    "cae.author_load_case": {
+        "type": "object",
+        "required": ["project_id", "name", "material", "fix"],
+        "description": (
+            "Record a load case as a requirement, in engineering language, before meshing or "
+            "solving. Phrases are resolved against the current geometry at authoring time and "
+            "nothing is stored if they cannot be pinned to faces. Acceptance criteria go into "
+            "the package's task/design_targets.yaml for the normal pass/fail comparison. "
+            "Example: {project_id, name: \"motor_thrust\", material: \"Al6061-T6\", "
+            "fix: \"底面\", load: {at: \"rib_main top\", force_n: 500, direction: \"-Z\"}, "
+            "acceptance: {min_safety_factor: 2}}."
+        ),
+        "properties": {
+            "project_id": {"type": "string"},
+            "name": {
+                "type": "string",
+                "description": "Short identifier a result can cite, e.g. \"motor_thrust\". Re-authoring the same name revises it.",
+            },
+            "description": {"type": "string", "description": "Optional prose for a reviewer."},
+            "material": {
+                "type": ["string", "object"],
+                "description": "Library material name (e.g. \"Al6061-T6\") or explicit properties.",
+            },
+            "fix": {
+                "type": ["string", "array"],
+                "items": {"type": "string"},
+                "description": "Where the part is held — same vocabulary as cae.setup_static.",
+            },
+            "load": {
+                "type": "object",
+                "description": "What it carries. Omit for an unloaded analysis type.",
+                "properties": {
+                    "at": {"type": ["string", "array"], "items": {"type": "string"}},
+                    "force_n": {"type": "number", "description": "TOTAL force in newtons; 0 is refused."},
+                    "direction": {"description": "Vector like [0,0,-1] or a word: \"-Z\" / \"down\" / \"向下\"."},
+                },
+                "required": ["at", "force_n"],
+            },
+            "acceptance": {
+                "type": "object",
+                "description": (
+                    "What the part must survive. Supported: min_safety_factor, max_stress_mpa, "
+                    "max_displacement_mm, max_mass_kg. Written as design targets; comparison "
+                    "still requires an executed solver run."
+                ),
+                "properties": {
+                    "min_safety_factor": {"type": "number"},
+                    "max_stress_mpa": {"type": "number"},
+                    "max_displacement_mm": {"type": "number"},
+                    "max_mass_kg": {"type": "number"},
+                },
+            },
+            "analysis_type": {"type": "string", "description": "Default \"static\"."},
+            "mesh_size_mm": {"type": "number", "exclusiveMinimum": 0},
+        },
+        "additionalProperties": True,
+    },
+    "cae.apply_load_case": {
+        "type": "object",
+        "required": ["project_id"],
+        "description": (
+            "Materialise a recorded load case into the CAE setup. Pass `name`, or omit it when "
+            "only one case exists; several cases with no name is refused rather than guessed."
+        ),
+        "properties": {
+            "project_id": {"type": "string"},
+            "name": {"type": "string", "description": "Which recorded load case to apply."},
+        },
+        "additionalProperties": True,
+    },
     "cae.setup_static": {
         "type": "object",
         "required": ["project_id", "material", "fix"],
