@@ -66,6 +66,39 @@ The agent picks the faces from the live model, sets up material / support /
 load, meshes, and **pauses for your approval before the solver runs**. You get
 max displacement, max von Mises stress, and where the peak is.
 
+### Saying where it is held and where the load acts
+
+This is the part engineers say is hard to write down. You do not need face ids
+or coordinates — ordinary engineering words work, in Chinese or English:
+
+| You say | It binds |
+|---|---|
+| 底面固定 / fix the bottom | the downward-facing planar face |
+| 螺栓孔固定 / fixed at the bolt holes | the whole hole pattern of one size |
+| 肋的顶面加载 / load on `rib_main` top | that part's most upward-facing surface |
+| 最大平面 / the largest flat face | the biggest planar face |
+| 右侧 / +X side | the face pointing that way |
+| `@face:face_005` | exactly that face, no interpretation |
+
+Scoping by part name is what resolves the usual ambiguity: `底面` on a whole
+assembly may be several faces, `base_plate 底面` is one.
+
+**It answers back in the same language**, so you can check it before any solving
+happens:
+
+```
+fixed (all DOF 1-3): @face:face_005  plane  9521.5 mm²  normal=[0,0,-1]  on base_plate
+load: 500 N along [0.00, 0.00, -1.00] on @face:face_012  plane  235.8 mm²  on rib_main
+material: Al6061-T6 (E=69 GPa, ν=0.33)
+```
+
+If your wording could mean two different faces, it **stops and lists them**
+rather than picking one — you will see `needs_user_input` with the candidate
+faces, their sizes and directions. A sloped face (the top of a triangular
+gusset) is accepted but labelled `inclined 32° from top`, so you know it is not
+flat-on. A load of 0 N is refused outright: it would solve happily and report
+zero stress.
+
 Scope today is **linear static only**. Results are mesh-dependent until you ask
 for a convergence study, and a solver run is evidence — not certification. The
 workbench states that in its own output; it will not report a solve it did not
