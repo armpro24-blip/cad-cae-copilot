@@ -46,6 +46,44 @@ def test_topic_guide_extracts_only_requested_sections() -> None:
     assert "## Fallback mode" not in result["content"]
 
 
+def test_core_topics_point_at_what_they_left_out() -> None:
+    """A lean core is only an improvement if the dropped material stays findable.
+
+    `cad` and `cae` are the MANDATORY pre-action reads, so they carry the
+    contract (code rules, approval boundary, honesty rules) and hand off the
+    reference catalogues. Measured before the split: cad 8505 tokens, cae 10200
+    — paid once per session by every connected agent.
+    """
+    from app import agent_guides
+
+    cad = agent_guides.guide_result("cad")
+    cae = agent_guides.guide_result("cae")
+
+    assert {s["topic"] for s in cad["see_also"]} == {"cad-helpers", "cad-modes"}
+    assert {s["topic"] for s in cae["see_also"]} == {"cae-assembly"}
+    for entry in cad["see_also"] + cae["see_also"]:
+        assert entry["when"], "a pointer without a 'when' is not actionable"
+        assert entry["topic"] in agent_guides.TOPIC_SECTIONS
+
+    # Sub-topics point back at the contract they do not repeat.
+    assert {s["topic"] for s in agent_guides.guide_result("cad-helpers")["see_also"]} == {"cad"}
+    assert {s["topic"] for s in agent_guides.guide_result("cae-assembly")["see_also"]} == {"cae"}
+
+
+def test_split_kept_the_contract_in_the_mandatory_read() -> None:
+    """The gate exists for the rules — those must not have moved to a sub-topic."""
+    from app import agent_guides
+
+    cad = agent_guides.guide_result("cad")["content"]
+    assert "Bind the final model to a variable named **`result`**" in cad
+    assert "## Approval-gated tools" in cad
+    assert "UPPER_SNAKE_CASE" in cad
+
+    cae = agent_guides.guide_result("cae")["content"]
+    assert "Read `accuracy` before quoting a stress" in cae
+    assert "## Approval-gated tools" in cae
+
+
 def test_cad_topic_keeps_feedback_loop_after_python_comments() -> None:
     from app import agent_guides
 
@@ -74,8 +112,32 @@ def test_cad_topic_keeps_feedback_loop_after_python_comments() -> None:
                 "### D — Inspect results and explain findings",
                 "## Approval-gated tools",
                 "## Stale-artifact warnings",
+            ),
+        ),
+        (
+            # Multi-part material moved OUT of the mandatory `cae` read (#482):
+            # it was 24% of that topic and irrelevant to every single-part
+            # session. It must still be complete where it now lives.
+            "cae-assembly",
+            (
                 "### Assembly IR v0 (optional, multi-part)",
                 "contact_physics_modeled:false",
+            ),
+        ),
+        (
+            "cad-helpers",
+            (
+                "### High-level helpers",
+                "`lofted_stack(sections)`",
+                "### Curve patterns",
+            ),
+        ),
+        (
+            "cad-modes",
+            (
+                "### Industrial Design Mode",
+                "### Engineering Mode",
+                "base_plate",
             ),
         ),
         (

@@ -4,6 +4,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.logging_utils import (
@@ -13,6 +14,23 @@ from app.logging_utils import (
     reset_error_metrics,
 )
 from app.main import Settings, create_app, default_project, save_project
+
+
+@pytest.fixture(autouse=True)
+def _enable_file_logging(monkeypatch: pytest.MonkeyPatch):
+    """This module asserts on the log FILE, so it must opt in (#483).
+
+    Test runs no longer attach the rotating file handler by default — a test
+    building an app against the real data root was writing fixture tracebacks
+    into the operator's `aieng-ui/data/logs/backend.log`. Tests about the log
+    itself ask for it explicitly; every log path here is under tmp_path.
+    """
+    monkeypatch.setenv("AIENG_LOG_TO_FILE", "1")
+    yield
+    for handler in list(logging.getLogger("app").handlers):
+        if getattr(handler, "_aieng_managed", False):
+            logging.getLogger("app").removeHandler(handler)
+            handler.close()
 
 
 def _settings(tmp_path: Path) -> Settings:

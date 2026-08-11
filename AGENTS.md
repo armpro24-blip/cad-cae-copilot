@@ -1124,7 +1124,7 @@ band, or a package with no mesh metadata at all, leaves the tier untouched.
 | Tool | Purpose |
 |------|---------|
 | `aieng.agent_readme` | Compact operational quickstart by default; `detail: "full"` returns this complete guide |
-| `aieng.guide` | Task-specific detailed sections from this canonical guide (`cad`, `cae`, `pointers`, `workflows`, etc.) |
+| `aieng.guide` | Task-specific detailed sections from this canonical guide. `cad` / `cae` carry the contract (and satisfy the gate); `cad-helpers`, `cad-modes`, `cae-assembly` hold the reference material they hand off via `see_also`; also `pointers`, `workflows`, `package`, … |
 | `aieng.list_projects` | All known projects with id, name, status, and (for agent-built geometry) `named_parts` + `part_count` |
 | `aieng.find_projects_by_part` | Locate a project by a part label (case-insensitive substring on `named_parts`) |
 | `aieng.agent_context` | Compact context: pointers, stale warnings, next steps |

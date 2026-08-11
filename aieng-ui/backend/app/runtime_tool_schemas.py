@@ -74,7 +74,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "properties": {
             "topic": {
                 "type": "string",
-                "enum": ["cad", "cae", "pointers", "tools", "workflows", "package", "fallback", "frontend", "approvals", "operators", "full"],
+                "enum": ["cad", "cad-helpers", "cad-modes", "cae", "cae-assembly", "pointers", "tools", "workflows", "package", "fallback", "frontend", "approvals", "operators", "full"],
                 "description": "Detailed guide topic to read from the canonical AGENTS.md.",
             },
         },
