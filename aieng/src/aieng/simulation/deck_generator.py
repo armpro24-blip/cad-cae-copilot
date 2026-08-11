@@ -202,6 +202,24 @@ def generate_solver_input_package(
     if not loads and analysis_type not in ("modal", "thermal", "thermal_structural"):
         missing.append("loads")
 
+    # Loads that exist but sum to zero force are worse than missing loads: the
+    # deck assembles, CalculiX converges, and every field comes back 0.0 — a
+    # silent wrong answer presented as a result. Say so loudly instead.
+    if loads and analysis_type not in ("modal", "thermal", "thermal_structural"):
+        total_magnitude = 0.0
+        for load in loads:
+            try:
+                total_magnitude += abs(float(load.get("value", 0.0) or 0.0))
+            except (TypeError, ValueError):
+                continue
+        if total_magnitude <= 0.0:
+            warnings.append(
+                "Every applied load resolved to a magnitude of 0 N, so this deck "
+                "describes an UNLOADED model: the solve will converge and report "
+                "zero displacement and zero stress. Check that each load declares "
+                "its total force (value_n) and a direction vector."
+            )
+
     if missing:
         raise MissingSetupError(
             f"Cannot generate solver input: missing required setup: {', '.join(missing)}"
@@ -368,7 +386,7 @@ def _resolve_loads(
     if isinstance(parsed_loads, dict):
         loads = parsed_loads.get("loads")
         if isinstance(loads, list):
-            return [l for l in loads if isinstance(l, dict)]
+            return _normalize_parsed_loads(loads)
 
     return []
 
@@ -409,6 +427,52 @@ def _primary_dof_from_direction(direction: Any) -> int:
         abs_vals = [abs(direction[0]), abs(direction[1]), abs(direction[2])]
         return int(abs_vals.index(max(abs_vals))) + 1
     return 2  # default to y
+
+
+def _normalize_parsed_loads(loads: list[Any]) -> list[dict[str, Any]]:
+    """Translate authoring-shape parsed loads into the emitter's per-DOF shape.
+
+    ``simulation/cae_imports/parsed_loads.json`` is what an agent writes through
+    ``cae.apply_setup_patch``: a TOTAL force ``value_n`` plus a ``direction``
+    vector, targeting an NSET. The deck emitter consumes the per-DOF shape
+    ``{target, dof, value}`` that the setup.yaml branch above produces.
+
+    Returning the authoring shape verbatim made the emitter read ``value``
+    (absent → 0.0) and ``dof`` (absent → 2), so a 500 N −Z load was written as
+    ``LOAD_001, 2, 0.000000``: CalculiX solved a completely unloaded model and
+    reported 0 mm / 0 MPa as a successful result (measured 2026-08-11 on the
+    documented agent path). Entries already carrying ``dof`` are passed through
+    unchanged, so packages authored in the emitter shape keep working.
+    """
+    out: list[dict[str, Any]] = []
+    for load in loads:
+        if not isinstance(load, dict):
+            continue
+        if "dof" in load:
+            out.append(load)
+            continue
+        raw_magnitude = load.get("value_n")
+        if raw_magnitude is None:
+            raw_magnitude = load.get("magnitude_n")
+        if raw_magnitude is None:
+            raw_magnitude = load.get("magnitude")
+        if raw_magnitude is None:
+            raw_magnitude = load.get("value")
+        try:
+            magnitude = float(raw_magnitude or 0.0)
+        except (TypeError, ValueError):
+            magnitude = 0.0
+        direction = load.get("direction", [0, 0, -1])
+        for dof, component in _load_components(direction, magnitude):
+            out.append(
+                {
+                    "id": f"{load.get('id', 'unknown')}_dof{dof}",
+                    "target": load.get("target"),
+                    "dof": dof,
+                    "value": component,
+                }
+            )
+    return out
 
 
 def _load_components(direction: Any, magnitude: float) -> list[tuple[int, float]]:

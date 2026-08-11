@@ -177,6 +177,7 @@ def _claude_version(command_path: str, env: dict[str, str], timeout_seconds: int
             check=False,
             env=env,
             **_windows_subprocess_kwargs(),
+            stdin=subprocess.DEVNULL,
         )
     except Exception as exc:  # pragma: no cover - defensive diagnostic path
         return {"ok": False, "error": str(exc)}
@@ -227,6 +228,7 @@ def run_claude_preflight(
             env=env,
             cwd=effective_cwd,
             **_windows_subprocess_kwargs(),
+            stdin=subprocess.DEVNULL,
         )
     except subprocess.TimeoutExpired as exc:
         base.update({
@@ -336,6 +338,7 @@ def _run_claude_step(cmd: list[str], prompt: str, timeout_seconds: int) -> subpr
                 capture_output=True,
                 text=True,
                 check=False,
+                stdin=subprocess.DEVNULL,
             )
         else:
             proc.kill()

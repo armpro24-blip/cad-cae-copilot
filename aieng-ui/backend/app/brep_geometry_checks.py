@@ -506,6 +506,7 @@ def run_brep_checks(
                 stderr=subprocess.PIPE,
                 text=True,
                 timeout=timeout,
+                stdin=subprocess.DEVNULL,
             )
         except subprocess.TimeoutExpired:
             return {
