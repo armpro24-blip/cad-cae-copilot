@@ -33,11 +33,14 @@ import json
 import logging
 import os
 import sys
+import threading
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
 
+import anyio
+import anyio.to_thread
 from mcp.server.fastmcp import FastMCP, Image
 from mcp.server.fastmcp.utilities.func_metadata import ArgModelBase, FuncMetadata
 from mcp.types import ToolAnnotations
@@ -96,6 +99,35 @@ _PACKAGE_GUIDE_TOOLS = {
 def _guide_guard_enabled() -> bool:
     """Require task-specific guide reads before category tool calls by default."""
     return os.environ.get("AIENG_MCP_REQUIRE_GUIDES", "1") != "0"
+
+
+_PROJECT_MUTATION_LOCKS: dict[str, threading.Lock] = {}
+_PROJECT_MUTATION_LOCKS_GUARD = threading.Lock()
+_TOOL_THREAD_LIMITER: Any = None
+
+
+def _project_mutation_lock(project_key: str) -> threading.Lock:
+    """One lock per project, so two writes to the same package cannot interleave."""
+    with _PROJECT_MUTATION_LOCKS_GUARD:
+        return _PROJECT_MUTATION_LOCKS.setdefault(project_key, threading.Lock())
+
+
+def _tool_thread_limiter() -> Any:
+    """Bound how many tool bodies run at once.
+
+    Without a bound, a client could start dozens of CAD builds and each would
+    spawn its own subprocess. The cap keeps the machine usable while still
+    letting a liveness ping through during a long call. Override with
+    AIENG_MCP_MAX_CONCURRENT_TOOLS.
+    """
+    global _TOOL_THREAD_LIMITER
+    if _TOOL_THREAD_LIMITER is None:
+        try:
+            capacity = int(os.environ.get("AIENG_MCP_MAX_CONCURRENT_TOOLS", "8"))
+        except ValueError:
+            capacity = 8
+        _TOOL_THREAD_LIMITER = anyio.CapacityLimiter(max(1, capacity))
+    return _TOOL_THREAD_LIMITER
 
 
 def _required_guide_topic(tool_name: str) -> str | None:
@@ -920,11 +952,48 @@ def _build_mcp_server(name: str = "aieng-workbench", *, compact_surface: bool | 
                     return _coerce_result({"status": "error", "code": "tool_exception", "message": f"{type(exc).__name__}: {exc}"})
                 return _finalize_result(result)
 
+            def _execute_serialized(args: dict[str, Any]) -> Any:
+                """Run the tool, serializing mutations that touch the same project.
+
+                Off the event loop every tool runs concurrently, so two writes to
+                the same `.aieng` package could interleave and corrupt it. The
+                single-threaded loop used to provide that exclusion as a side
+                effect; now it is explicit, and scoped per project so unrelated
+                projects still proceed in parallel.
+                """
+                if not is_mutation:
+                    return _execute(args)
+                key = str(
+                    args.get("project_id")
+                    or args.get("packagePath")
+                    or args.get("package_path")
+                    or ""
+                ).strip()
+                if not key:
+                    return _execute(args)
+                with _project_mutation_lock(key):
+                    return _execute(args)
+
+            async def _execute_off_loop(args: dict[str, Any]) -> Any:
+                """Hand the (synchronous) tool body to a worker thread.
+
+                Tool bodies are blocking — a build123d subprocess, a CalculiX run,
+                a package rewrite. Running them inline froze the whole JSON-RPC
+                loop: measured 2026-08-11, a trivial `aieng.list_projects` sent
+                two seconds into a 12-second build waited 14.1 s and was answered
+                only when the build finished. A client that pings for liveness
+                during a long CAD or solver call had every reason to think the
+                server had died.
+                """
+                return await anyio.to_thread.run_sync(
+                    _execute_serialized, args, limiter=_tool_thread_limiter()
+                )
+
             # Approach A approval gate: a gated tool must pause for approval BEFORE
             # executing. Enforced here (server-side), independent of the client's
             # own permission settings — a user allow-listing the workbench tools
             # cannot bypass the workbench's own approval policy.
-            def _handler(**kwargs: Any) -> Any:
+            async def _handler(**kwargs: Any) -> Any:
                 early, args = _preflight(dict(kwargs))
                 if early is not None:
                     return early
@@ -932,7 +1001,7 @@ def _build_mcp_server(name: str = "aieng-workbench", *, compact_surface: bool | 
                     err, args = _apply_decision(_agentic_permission_decision(name_, args), args)
                     if err is not None:
                         return err
-                return _execute(args)
+                return await _execute_off_loop(args)
 
             async def _handler_elicit(**kwargs: Any) -> Any:
                 # Headless approval (#228): ask the connecting client to prompt the
@@ -949,7 +1018,7 @@ def _build_mcp_server(name: str = "aieng-workbench", *, compact_surface: bool | 
                     err, args = _apply_decision(decision, args)
                     if err is not None:
                         return err
-                return _execute(args)
+                return await _execute_off_loop(args)
 
             chosen = _handler_elicit if _elicit_approval_mode() else _handler
             chosen.__name__ = name_.replace(".", "_")
