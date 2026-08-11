@@ -1215,6 +1215,122 @@ def _canonical_material(m: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _synthesize_setup_from_parsed(package_path: Path) -> dict[str, Any] | None:
+    """Build a ``setup.yaml``-shaped dict from the parsed CAE artifacts.
+
+    Two authoring paths write the same physics in different shapes:
+
+    - ``ai_preprocessing`` writes ``simulation/setup.yaml`` — loads/BCs target a
+      **feature id** (``target_feature``) and materials are a dict keyed by name
+      in MPa;
+    - ``cae.apply_setup_patch`` (the documented, API-key-free agent path) writes
+      ``simulation/cae_imports/parsed_*.json`` — loads/BCs target an **NSET
+      name** (``target``) and materials are a list in Pa.
+
+    The deck generator reads both; the static solver behind the sizing sweep read
+    only the first, so an MCP-authored package could `cae.run_solver` but not
+    optimize. This translates the second shape into the first: each NSET target
+    is mapped back to its ``maps_to.feature_id`` through ``cae_mapping.json``.
+
+    Returns ``None`` when there is nothing to synthesize from, so the caller can
+    still report "no CAE setup" honestly.
+    """
+    mapping_raw = _read_member(package_path, _CAE_MAPPING_PATH)
+    try:
+        cae_mapping = json.loads(mapping_raw) if mapping_raw else {}
+    except json.JSONDecodeError:
+        cae_mapping = {}
+    entity_to_feature: dict[str, str] = {}
+    for m in cae_mapping.get("mappings") or []:
+        if not isinstance(m, dict):
+            continue
+        entity = m.get("cae_entity")
+        feature_id = (m.get("maps_to") or {}).get("feature_id")
+        if entity and feature_id:
+            entity_to_feature[str(entity)] = str(feature_id)
+
+    def _read_json(member: str) -> dict[str, Any]:
+        raw = _read_member(package_path, member)
+        if not raw:
+            return {}
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+
+    def _target_feature(item: dict[str, Any]) -> str | None:
+        explicit = item.get("target_feature")
+        if explicit:
+            return str(explicit)
+        target = item.get("target")
+        if target is None:
+            return None
+        return entity_to_feature.get(str(target))
+
+    materials: dict[str, Any] = {}
+    material_name: str | None = None
+    for entry in _read_json(_PARSED_MATERIALS_PATH).get("materials") or []:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or "AIENG_MATERIAL")
+        modulus_mpa = entry.get("youngs_modulus_mpa")
+        if modulus_mpa is None and entry.get("youngs_modulus_pa") is not None:
+            try:
+                modulus_mpa = float(entry["youngs_modulus_pa"]) / 1e6
+            except (TypeError, ValueError):
+                modulus_mpa = None
+        materials[name] = {
+            "youngs_modulus_mpa": modulus_mpa if modulus_mpa is not None else 69000.0,
+            "poisson_ratio": entry.get("poisson_ratio", 0.33),
+            "density_kg_m3": entry.get("density_kg_m3", 2700),
+        }
+        if material_name is None:
+            material_name = name
+
+    boundary_conditions: list[dict[str, Any]] = []
+    for bc in _read_json(_PARSED_BCS_PATH).get("boundary_conditions") or []:
+        if not isinstance(bc, dict):
+            continue
+        feature_id = _target_feature(bc)
+        if not feature_id:
+            continue
+        boundary_conditions.append(
+            {"target_feature": feature_id, "type": bc.get("type", "fixed")}
+        )
+
+    loads: list[dict[str, Any]] = []
+    for load in _read_json(_PARSED_LOADS_PATH).get("loads") or []:
+        if not isinstance(load, dict):
+            continue
+        feature_id = _target_feature(load)
+        if not feature_id:
+            continue
+        loads.append(
+            {
+                "target_feature": feature_id,
+                "value_n": load.get("value_n", load.get("magnitude_n", load.get("value", 0.0))),
+                "direction": load.get("direction") or [0.0, 0.0, -1.0],
+            }
+        )
+
+    if not (materials or boundary_conditions or loads):
+        return None
+
+    setup: dict[str, Any] = {
+        "materials": materials,
+        "boundary_conditions": boundary_conditions,
+        "loads": loads,
+        "synthesized_from": "simulation/cae_imports/parsed_*.json",
+    }
+    if material_name:
+        setup["material_name"] = material_name
+    solver_settings = _read_json("simulation/solver_settings.json")
+    mesh_size = solver_settings.get("mesh_size_mm")
+    if mesh_size:
+        setup["mesh"] = {"target_size_mm": mesh_size}
+    return setup
+
+
 def normalize_cae_bindings(package_path: Path) -> dict[str, Any]:
     """Make agent-authored CAE setup runnable without a hand-written mapping (#376).
 
@@ -1357,6 +1473,26 @@ def normalize_cae_bindings(package_path: Path) -> dict[str, Any]:
 
     if writes:
         _write_members_to_package(package_path, writes)
+
+    # Record each bound face's character (surface type + normal) alongside the
+    # mapping. Binding re-verification (#475) treats a mapping WITHOUT this
+    # evidence as unverifiable and refuses conservatively after any geometry
+    # change — so an agent-authored mapping, which is derived here rather than by
+    # ai_preprocessing, could never survive a parametric edit: measured
+    # 2026-08-11, every sizing-sweep variant failed with "CAE face references do
+    # not match current topology" even though the ids were stable. Deriving the
+    # binding and recording what it means belong together.
+    needs_signatures = _CAE_MAPPING_PATH in writes or any(
+        isinstance(m, dict) and m.get("face_ids") and not m.get("face_signatures")
+        for m in mappings
+    )
+    if needs_signatures:
+        try:
+            from .project_io import annotate_cae_mapping_face_character
+
+            annotate_cae_mapping_face_character(package_path)
+        except Exception as exc:  # noqa: BLE001 - annotation is best-effort
+            LOGGER.warning("face-character annotation failed for %s: %s", package_path, exc)
 
     return {
         "normalized": bool(writes),
@@ -2073,12 +2209,25 @@ def solve_package_static(
         }
 
     setup_raw = _read_member(package_path, "simulation/setup.yaml")
-    if not setup_raw:
+    setup = yaml.safe_load(setup_raw) if setup_raw else None
+    if not setup:
+        # A setup authored through the documented, key-free agent path lives in
+        # simulation/cae_imports/parsed_*.json, not setup.yaml (only the
+        # LLM-backed ai_preprocessing writes that). Requiring setup.yaml here
+        # made the whole optimize→verify loop — sizing sweep, DOE, candidate
+        # evaluation — unreachable for MCP-authored packages: every variant came
+        # back `solver_executed: false, "simulation/setup.yaml not found"`
+        # (measured 2026-08-11, #489) even though cae.run_solver on the SAME
+        # package solved fine.
+        setup = _synthesize_setup_from_parsed(package_path)
+    if not setup:
         return {
             "solver_executed": False, "status": "no_setup", "metrics": {}, "warnings": [],
-            "error": "simulation/setup.yaml not found — run CAE setup first",
+            "error": (
+                "no CAE setup found — write simulation/setup.yaml, or author "
+                "materials/loads/boundary conditions with cae.apply_setup_patch"
+            ),
         }
-    setup = yaml.safe_load(setup_raw)
     cae_raw = _read_member(package_path, "simulation/cae_mapping.json")
     cae_mapping: dict[str, Any] = json.loads(cae_raw) if cae_raw else {"mappings": []}
     topo_raw = _read_member(package_path, "geometry/topology_map.json")
