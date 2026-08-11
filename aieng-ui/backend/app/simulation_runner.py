@@ -762,10 +762,50 @@ def _write_members_to_package(package_path: Path, files: dict[str, bytes]) -> No
 _ELEMENTS_THROUGH_THICKNESS_BANDS = {1: (6.0, 3.0), 2: (1.5, 1.0)}
 
 
+def thinnest_body_extent(topology: dict[str, Any] | None) -> tuple[float, str] | None:
+    """Smallest wall thickness among the model's solids → (mm, body name).
+
+    The whole-model bounding box is the wrong ruler for the canonical case: a
+    120 x 80 x 6 mm plate carrying a 25 mm rib has a bbox whose smallest
+    dimension is 29 mm (plate + rib), while the part that actually bends is the
+    6 mm plate. Measured on that bracket at mesh 3 mm, the bbox rule reported
+    ~9.8 elements "through the thinnest extent" and a `reliable` band when the
+    load-bearing plate carried 2 — optimistic in exactly the direction the
+    quadratic-element work exists to prevent.
+
+    Each solid's own smallest bounding-box dimension is a much better proxy for
+    its wall thickness, and the smallest across solids governs. Still a
+    bounding-box heuristic, not a true thickness field: a solid whose thin
+    feature is not axis-aligned (a diagonal web) is not captured, and
+    ``cae.mesh_convergence`` remains the real answer.
+    """
+    if not isinstance(topology, dict):
+        return None
+    best: tuple[float, str] | None = None
+    for entity in topology.get("entities") or []:
+        if not isinstance(entity, dict) or entity.get("type") != "solid":
+            continue
+        if entity.get("assembly"):
+            continue  # a wrapper compound, not a physical wall
+        bbox = entity.get("bounding_box")
+        if not isinstance(bbox, list) or len(bbox) != 6:
+            continue
+        dims = [abs(bbox[3] - bbox[0]), abs(bbox[4] - bbox[1]), abs(bbox[5] - bbox[2])]
+        positive = [d for d in dims if d > 1e-9]
+        if not positive:
+            continue
+        smallest = min(positive)
+        name = str(entity.get("name") or entity.get("id") or "solid")
+        if best is None or smallest < best[0]:
+            best = (smallest, name)
+    return best
+
+
 def assess_mesh_accuracy(
     nodes: dict[int, tuple[float, float, float]],
     element_type: str | None,
     target_size_mm: float,
+    thinnest_override: tuple[float, str] | None = None,
 ) -> dict[str, Any]:
     """Judge whether this mesh can carry a trustworthy BENDING stress result.
 
@@ -792,11 +832,18 @@ def assess_mesh_accuracy(
         result["reason"] = "no nodes — cannot assess."
         return result
 
-    xs = [c[0] for c in nodes.values()]
-    ys = [c[1] for c in nodes.values()]
-    zs = [c[2] for c in nodes.values()]
-    extents = [max(xs) - min(xs), max(ys) - min(ys), max(zs) - min(zs)]
-    thinnest = min(e for e in extents if e > 0) if any(e > 0 for e in extents) else 0.0
+    governing_body: str | None = None
+    if thinnest_override is not None and thinnest_override[0] > 0:
+        thinnest, governing_body = thinnest_override
+        result["measured_on"] = "thinnest_body"
+        result["governing_body"] = governing_body
+    else:
+        xs = [c[0] for c in nodes.values()]
+        ys = [c[1] for c in nodes.values()]
+        zs = [c[2] for c in nodes.values()]
+        extents = [max(xs) - min(xs), max(ys) - min(ys), max(zs) - min(zs)]
+        thinnest = min(e for e in extents if e > 0) if any(e > 0 for e in extents) else 0.0
+        result["measured_on"] = "model_bounding_box"
     result["thinnest_extent_mm"] = round(thinnest, 6)
 
     if thinnest <= 0 or target_size_mm <= 0:
@@ -817,10 +864,11 @@ def assess_mesh_accuracy(
     result["band"] = band
     result["reliable_for_bending"] = band == "reliable"
 
-    where = (
-        f"~{through:.1f} order-{order} element(s) across the thinnest extent "
-        f"({thinnest:.3g} mm)"
+    through_what = (
+        f"{governing_body} ({thinnest:.3g} mm thick)" if governing_body
+        else f"the thinnest extent ({thinnest:.3g} mm)"
     )
+    where = f"~{through:.1f} order-{order} element(s) through {through_what}"
     if band == "reliable":
         result["reason"] = (
             f"{where} meets the {reliable_at:g}-element bar for bending. Results "
@@ -930,7 +978,16 @@ def generate_mesh_for_package(
             "target_size_mm": size,
         }
 
-    accuracy = assess_mesh_accuracy(nodes, element_type, size)
+    # Judge the mesh against the part that actually bends (the thinnest solid),
+    # not the whole-model bounding box — see thinnest_body_extent.
+    thinnest_override: tuple[float, str] | None = None
+    try:
+        topo_raw = _read_member(package_path, _TOPOLOGY_PATH)
+        if topo_raw:
+            thinnest_override = thinnest_body_extent(json.loads(topo_raw))
+    except Exception as exc:  # noqa: BLE001 - fall back to the bbox rule
+        LOGGER.info("could not read topology for mesh accuracy: %s", exc)
+    accuracy = assess_mesh_accuracy(nodes, element_type, size, thinnest_override)
 
     metadata = {
         "schema_version": "0.1",

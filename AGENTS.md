@@ -852,10 +852,25 @@ verdict then says the result is not trustworthy for bending.
 and `mesh_metadata.json` carries an `accuracy` block: `band`
 (`reliable`/`marginal`/`unreliable`), `elements_through_thinnest`,
 `min_elements_required`, a plain-language `reason`, and a
-`recommended_action`. It counts elements across the model's thinnest extent —
-where a bending gradient has to be resolved — against an order-dependent bar.
+`recommended_action`. It counts elements across the **thinnest solid** — the
+wall a bending gradient actually has to be resolved through — against an
+order-dependent bar, and names the body that governs
+(`governing_body`, `measured_on: "thinnest_body"`):
+
+```
+~1.7 order-2 element(s) through rib_main (5 mm thick) meets the 1.5-element bar
+```
+
+Judging the whole-model bounding box instead was optimistic in exactly the
+canonical case: on a 120×80×6 mm plate carrying a 25 mm rib, the bbox's smallest
+dimension is 29 mm (plate + rib), so a 3 mm mesh read as ~9.8 elements
+"through the thinnest extent" and a `reliable` band while the load-bearing plate
+carried 2. A package with no solids in its topology falls back to the bounding
+box (`measured_on: "model_bounding_box"`).
+
 An `unreliable` band means the stress is likely UNDER-predicted; do not present
-it as a result. This is a bounding-box heuristic, **not** a convergence study —
+it as a result. This is still a bounding-box heuristic per body — a thin feature
+that is not axis-aligned is not captured — and **not** a convergence study:
 `cae.mesh_convergence` remains the real answer, and the `reason` says so.
 
 **Installing CalculiX.** `cae.run_solver` needs the `ccx` executable available at runtime.
