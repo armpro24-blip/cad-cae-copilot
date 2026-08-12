@@ -24,15 +24,34 @@ from pathlib import Path
 BACKEND = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND))
 
-# Re-use the backend's runner template so behaviour stays identical.
-from app.cad_generation import _RUNNER_TEMPLATE
+# Re-use the backend's runner ASSEMBLY, not just its template. Substituting the
+# placeholders here instead drifted the moment the template grew a second one:
+# `__AIENG_SOURCE_LABEL_HINTS__` was left unreplaced, so every fallback run died
+# with `NameError: name '__AIENG_SOURCE_LABEL_HINTS__' is not defined` — on the
+# very first command AGENTS.md gives a tool-less agent.
+from app.cad_generation import (
+    _DESIGN_RULE_MARKER,
+    _build_build123d_runner_script,
+    _runner_subprocess_env,
+)
+
+
+class DesignRuleViolation(RuntimeError):
+    """A `require(...)` in the model failed — a design decision, not a crash.
+
+    The MCP path answers a failed `require()` with a structured
+    `code: "design_rule_violation"` carrying just the message, and AGENTS.md
+    promises exactly that. Fallback mode used to print the internal marker plus a
+    traceback through a temp file instead, which is the same information with the
+    actionable part buried.
+    """
 
 
 def run(code_text: str, out_dir: Path, timeout: int = 120) -> dict:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    runner_script = _RUNNER_TEMPLATE.replace("__AIENG_GENERATED_CODE__", code_text)
+    runner_script = _build_build123d_runner_script(code_text, timeout)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
@@ -55,10 +74,21 @@ def run(code_text: str, out_dir: Path, timeout: int = 120) -> dict:
             capture_output=True,
             text=True,
             timeout=timeout,
+            # Same launch contract as the backend: an explicit environment, and
+            # never the parent's stdin (a child that inherits a pipe blocks at
+            # interpreter startup on Windows).
+            env=_runner_subprocess_env(),
+            stdin=subprocess.DEVNULL,
         )
 
         if proc.returncode != 0:
-            stderr_excerpt = proc.stderr[-2000:] if proc.stderr else "(no stderr)"
+            stderr = proc.stderr or ""
+            for line in stderr.splitlines():
+                if line.startswith(_DESIGN_RULE_MARKER):
+                    raise DesignRuleViolation(
+                        line[len(_DESIGN_RULE_MARKER):].strip()
+                    )
+            stderr_excerpt = stderr[-2000:] if stderr else "(no stderr)"
             raise RuntimeError(
                 f"build123d execution failed (exit {proc.returncode}):\n{stderr_excerpt}"
             )
@@ -110,7 +140,11 @@ def main() -> None:
     if "result" not in code_text:
         print("WARNING: script does not seem to assign to 'result'.", file=sys.stderr)
 
-    result = run(code_text, Path(args.out_dir), timeout=args.timeout)
+    try:
+        result = run(code_text, Path(args.out_dir), timeout=args.timeout)
+    except DesignRuleViolation as exc:
+        print(json.dumps({"code": "design_rule_violation", "message": str(exc)}, indent=2))
+        raise SystemExit(2)
     print(json.dumps(result, indent=2))
 
 

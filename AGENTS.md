@@ -1882,9 +1882,14 @@ conda activate aieng311
 cd aieng-ui/backend/scripts
 python agent_import_project.py ../../output/result.step \
     --name "My Model" \
-    --preview ../../output/result.stl \
+    --preview ../../output/result.glb \
     --project-id my_model_001
 ```
+
+**Pass the GLB, not the STL.** The runner already wrote a real binary GLB, and it
+is the format the viewer renders properly — the project then lands as
+`viewer_ready_glb` instead of `viewer_ready_stl`. `--data-root <dir>` imports
+into a different platform data directory (useful for a scratch run).
 
 This atomically:
 1. Creates the `.aieng` package.
@@ -1894,6 +1899,11 @@ This atomically:
 5. Updates the project status to `viewer_ready_*`.
 
 Refresh the UI (`http://localhost:5173`) and the project will appear.
+
+Both commands are covered end-to-end by
+`aieng-ui/backend/tests/test_fallback_scripts.py` — run it after touching either
+script. They had drifted out of working order precisely because nothing
+exercised them.
 
 ### Kimi Code CLI specific notes
 
