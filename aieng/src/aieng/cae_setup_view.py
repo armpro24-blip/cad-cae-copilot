@@ -23,6 +23,7 @@ Reading a package's physics is a package-format concern, not a backend one.
 from __future__ import annotations
 
 import json
+import math
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -57,25 +58,32 @@ def _read_json(zf: zipfile.ZipFile, member: str) -> dict[str, Any]:
 
 
 def _as_float(value: Any) -> float | None:
-    """A real number, or None — never a string that a downstream schema rejects.
+    """A finite real number, or None — never text, NaN or infinity.
 
     The parsed artifacts are written by several authoring paths and may carry
     values as text. Passing those straight through produced a setup that looks
-    complete and fails `aieng.validate` (or a solver) later.
+    complete and fails `aieng.validate` (or a solver) later. `float()` also
+    accepts `"nan"` and `"inf"`, which would reach a stiffness matrix.
     """
     if isinstance(value, bool) or value is None:
         return None
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return None
+    return number if math.isfinite(number) else None
 
 
 def _as_direction(value: Any) -> list[float]:
-    """A 3-component numeric direction; default -Z when the input is unusable."""
+    """A 3-component numeric direction; default -Z when the input is unusable.
+
+    A zero vector counts as unusable: it resolves to zero force, which the
+    derivations then reject as "no usable load" — a confusing way to report a
+    malformed direction.
+    """
     if isinstance(value, (list, tuple)) and len(value) == 3:
         parts = [_as_float(v) for v in value]
-        if all(p is not None for p in parts):
+        if all(p is not None for p in parts) and any(p for p in parts):
             return [float(p) for p in parts]  # type: ignore[arg-type]
     return [0.0, 0.0, -1.0]
 

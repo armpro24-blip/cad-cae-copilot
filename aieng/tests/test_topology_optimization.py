@@ -682,7 +682,7 @@ def test_plate_bending_is_refused_not_replaced_by_a_textbook_cantilever(tmp_path
     assert prob["grid"]["nelx"] == 40 and prob["grid"]["nely"] == round(40 * 80 / 120)
 
 
-def test_an_unresolvable_load_does_not_borrow_the_bending_reason(tmp_path: Path):
+def test_an_unresolvable_load_does_not_borrow_the_bending_reason(tmp_path: Path) -> None:
     """A load that lands on no cells is a binding problem, not plate bending.
 
     Both end in "no usable load", so the refusal must not blame the physics when

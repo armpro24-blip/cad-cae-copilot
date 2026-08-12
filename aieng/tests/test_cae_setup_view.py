@@ -101,6 +101,28 @@ def test_a_malformed_direction_falls_back_without_crashing(tmp_path: Path) -> No
     assert load_cae_setup_from_package(pkg)["loads"][0]["direction"] == [0.0, 0.0, -1.0]
 
 
+def test_a_zero_direction_is_unusable_not_a_zero_force(tmp_path: Path) -> None:
+    """[0,0,0] would resolve to zero force and be refused as "no usable load"."""
+    pkg = _write(tmp_path / "p.aieng", _parsed_members(
+        loads=[{"target": "N_LOAD", "value_n": 10.0, "direction": [0.0, 0.0, 0.0]}]))
+    assert load_cae_setup_from_package(pkg)["loads"][0]["direction"] == [0.0, 0.0, -1.0]
+
+
+def test_nan_and_infinity_do_not_reach_a_stiffness_matrix(tmp_path: Path) -> None:
+    """`float("nan")` succeeds, so text coercion alone is not enough."""
+    pkg = _write(tmp_path / "p.aieng", _parsed_members(
+        materials=[{"name": "Bad", "youngs_modulus_mpa": "nan",
+                    "poisson_ratio": float("inf"), "density_kg_m3": 7850}],
+        loads=[{"target": "N_LOAD", "value_n": "inf", "direction": [0.0, 0.0, -1.0]}],
+    ))
+    setup = load_cae_setup_from_package(pkg)
+
+    assert setup["materials"]["Bad"]["youngs_modulus_mpa"] == 69000.0
+    assert setup["materials"]["Bad"]["poisson_ratio"] == 0.33
+    assert setup["assumed_properties"] == ["Bad.youngs_modulus_mpa", "Bad.poisson_ratio"]
+    assert setup["loads"][0]["value_n"] == 0.0
+
+
 def test_nothing_to_synthesize_from_returns_none(tmp_path: Path) -> None:
     """So the caller can report "no CAE setup" honestly instead of inventing one."""
     pkg = _write(tmp_path / "p.aieng", {"geometry/topology_map.json": {"entities": []}})
