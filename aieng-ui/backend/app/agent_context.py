@@ -131,6 +131,7 @@ def build_agent_context(
             "cad": cad,
             "brep_graph": _brep_graph_block(package_path if package_exists else None, package_reader=reader),
             "assembly": _assembly_block(package_path if package_exists else None, package_reader=reader),
+            "edit_impact": _edit_impact_block(package_path if package_exists else None, package_reader=reader),
             "cae": _cae_block(fallback, cae_summaries),
             "design_targets": _design_targets_block(design_targets),
             "computed_metrics": _computed_metrics_block(computed_metrics),
@@ -155,6 +156,13 @@ def build_agent_context(
             context["warnings"].append(
                 f"assembly connection '{conn.get('connection_id')}' is geometrically invalid "
                 f"({', '.join(conn.get('reasons') or [])}) and is NOT solver-enabled."
+            )
+        impact = context["edit_impact"]
+        if impact.get("stale"):
+            names = ", ".join(impact.get("affected_artifacts") or []) or "downstream evidence"
+            context["warnings"].append(
+                f"EDIT IMPACT: geometry changed ({impact.get('triggering_tool') or 'unknown tool'}) "
+                f"and downstream evidence is stale — {names}. Revalidate before citing results."
             )
         ifaces = context["assembly"].get("interfaces") or {}
         if ifaces.get("safe_for_solver") is False:
@@ -256,6 +264,53 @@ def _brep_graph_block(
         }
     except Exception as exc:
         return {"present": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+def _edit_impact_block(
+    package_path: Any,
+    *,
+    package_reader: PackageReadCache | None = None,
+) -> dict[str, Any]:
+    """Whether downstream evidence is stale relative to the current geometry.
+
+    AGENTS.md promises this tool reports it — "After a geometry edit,
+    `aieng.agent_context` includes an EDIT IMPACT section listing `@artifact:`
+    references needing revalidation. Treat these as hard blockers before running
+    a simulation" — and so does the tool's own description. It was never
+    implemented here: the EDIT IMPACT text lives in `geometry_providers`, which
+    built prompt context for the LLM path removed in the MCP-first cutover.
+
+    Measured on a package whose geometry had just been replaced by a topology
+    optimization writeback: `requires_revalidation: true` in the package,
+    `warnings: []` in this tool.
+    """
+    if package_path is None:
+        return {"stale": False, "available": False}
+    status = _read_package_member(
+        package_path, "state/revalidation_status.json", package_reader=package_reader
+    )
+    if not isinstance(status, dict):
+        return {"stale": False, "available": False}
+    stale = bool(status.get("requires_revalidation"))
+    block: dict[str, Any] = {
+        "available": True,
+        "stale": stale,
+        "geometry_revision": status.get("current_geometry_revision"),
+        "last_validated_geometry_revision": status.get("last_validated_geometry_revision"),
+        "triggering_tool": status.get("triggering_tool"),
+        "reason": status.get("reason"),
+    }
+    if stale:
+        artifacts = [a for a in (status.get("affected_artifacts") or []) if a][:12]
+        block["affected_artifacts"] = [f"@artifact:{a}" for a in artifacts]
+        block["affected_domains"] = status.get("affected_domains") or []
+        block["guidance"] = (
+            "do not cite these artifacts as evidence until a fresh solver run "
+            "validates the current geometry revision"
+        )
+    else:
+        block["validated_by_run_id"] = status.get("validated_by_run_id")
+    return block
 
 
 def _assembly_block(
@@ -523,6 +578,9 @@ def _agent_brief(context: dict[str, Any]) -> dict[str, Any]:
     failed_count = len(comparison.get("failed_targets") or [])
     unknown_count = len(comparison.get("unknown_targets") or [])
     focus: list[str] = []
+    impact = context.get("edit_impact") if isinstance(context.get("edit_impact"), dict) else {}
+    if impact.get("stale"):
+        focus.append("revalidate downstream evidence against the current geometry")
     invalid_joints = [
         c for c in (assembly.get("attention") or [])
         if c.get("geometry_status") == "invalid"

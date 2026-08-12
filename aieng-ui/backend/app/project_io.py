@@ -1973,13 +1973,20 @@ def _record_geometry_edit_in_package(
     package_path: Path,
     *,
     affected_artifacts: list[str],
+    triggering_tool: str = "cad.edit_parameter",
 ) -> int:
     """Record a geometry edit: increment current_geometry_revision, mark stale.
+
+    ``triggering_tool`` is what the audit trail will name. The core helper always
+    accepted it but this wrapper did not pass it through, so every caller was
+    recorded as `cad.edit_parameter` — an optimization writeback that replaced
+    the whole body claimed to be a parametric edit.
 
     Returns the new current_geometry_revision.
     """
     prev = _read_revalidation_status(package_path)
-    new_status = _core_record_geometry_edit_status(prev, affected_artifacts=affected_artifacts)
+    new_status = _core_record_geometry_edit_status(
+        prev, affected_artifacts=affected_artifacts, triggering_tool=triggering_tool)
     _write_revalidation_status_dict(package_path, new_status)
     return new_status["current_geometry_revision"]
 
