@@ -1739,6 +1739,18 @@ is blocking, and empty interfaces add a `needs_user_input` entry to the CAE draf
 (same gate as invalid connections). It is a geometry-coverage proxy — it meshes
 nothing, runs no solver, and is not a mesh-convergence guarantee.
 
+`sparse` and `over_broad` are judged by **area** against the part's largest
+cross-section (reported as `coverage_fraction`), not by face count or bbox
+diagonal, so a warning describes a defect rather than a geometry: one substantial
+planar face is the normal result of `cad.define_interface`, and a ring-shaped rim
+carries the part's own diagonal while covering a fifth of it. A **curved**
+interface wraps, so its area exceeds any flat footprint by construction (a full
+cylinder is exactly π × its own bbox cross-section); those are judged over-broad
+only when the selection also reaches the part's full extent on **every** axis —
+so a journal band stays clean while "the entire shaft surface" is flagged.
+Measured on a dogfood gearbox, this took four correctly-authored interfaces from
+4 warnings / 0 ok to 1 ok plus three warnings that each name a real problem.
+
 Assembly CAE v0 then produces a **solver-neutral simplified proxy model**:
 `simulation/assembly_cae_model.json` plus
 `diagnostics/assembly_cae_model_diagnostics.json`. Solver deck generation is optional and

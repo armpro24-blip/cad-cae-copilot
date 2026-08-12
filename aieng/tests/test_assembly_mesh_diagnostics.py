@@ -102,6 +102,66 @@ def test_over_broad_interface_warns() -> None:
     assert rec["status"] == "warning"
 
 
+# ── signal, not noise: a warning must describe a defect, not a geometry (#497) ──
+#
+# Measured on a dogfood gearbox: 4 of 4 correctly-authored interfaces warned
+# (`ok: 0`), because both rules were satisfied by construction rather than by
+# defect — one planar face is exactly how `cad.define_interface` is meant to be
+# used, and a ring-shaped rim carries the part's own bbox diagonal while covering
+# a fifth of it. A check that fires on every correct input gets ignored, and the
+# genuinely blocking `empty_interface` gets ignored with it.
+
+def test_one_substantial_face_is_not_sparse() -> None:
+    """A single planar mating face is the normal authoring result, not a defect."""
+    topo = {"p": {
+        "p_body": {"id": "p_body", "type": "solid", "bounding_box": [0, 0, 0, 100, 100, 40]},
+        # a rim covering ~a quarter of the 100x100 cross-section
+        "rim": _face("rim", [0, 0, 40, 100, 100, 40], area=2400.0),
+    }}
+    rec = _rec(_diag(_assembly({"face_ids": ["rim"]}), topo))
+    assert rec["status"] == "ok", rec["findings"]
+    assert rec["coverage_fraction"] == 0.24
+
+
+def test_a_single_sliver_face_is_still_sparse() -> None:
+    """The real sparse signal — a tiny face — must survive."""
+    topo = {"p": {
+        "p_body": {"id": "p_body", "type": "solid", "bounding_box": [0, 0, 0, 100, 100, 40]},
+        "sliver": _face("sliver", [0, 0, 40, 4, 4, 40], area=16.0),
+    }}
+    rec = _rec(_diag(_assembly({"face_ids": ["sliver"]}), topo))
+    assert "sparse_interface" in _codes(rec)
+
+
+def test_a_full_cylindrical_face_is_not_over_broad_by_construction() -> None:
+    """A cylinder's lateral area is pi x its own bbox cross-section, always.
+
+    A short journal band on a long shaft is the TRUE mating region, so it must
+    not be flagged merely for being curved.
+    """
+    topo = {"p": {
+        "p_body": {"id": "p_body", "type": "solid", "bounding_box": [-10, -10, 0, 10, 10, 200]},
+        # 2*pi*r*L with r=10, L=20 -> 1256.6, over a bbox cross-section of 20x20
+        "journal": _face("journal", [-10, -10, 90, 10, 10, 110], area=1256.6),
+    }}
+    rec = _rec(_diag(_assembly({"face_ids": ["journal"]}), topo))
+    assert "over_broad_interface" not in _codes(rec), rec["findings"]
+    assert "sparse_interface" not in _codes(rec), rec["findings"]
+    assert rec["status"] == "ok"
+
+
+def test_a_cylinder_spanning_the_whole_part_is_over_broad() -> None:
+    """Selecting the entire shaft surface as the journal IS over-broad."""
+    topo = {"p": {
+        "p_body": {"id": "p_body", "type": "solid", "bounding_box": [-10, -10, 0, 10, 10, 200]},
+        "whole": _face("whole", [-10, -10, 0, 10, 10, 200], area=12566.0),
+    }}
+    rec = _rec(_diag(_assembly({"face_ids": ["whole"]}), topo))
+    assert rec["coverage_fraction"] > 1.0, "the wrapping branch must be exercised"
+    assert "over_broad_interface" in _codes(rec)
+    assert any("every axis" in f["message"] for f in rec["findings"])
+
+
 def test_partial_resolution_warns_without_blocking() -> None:
     topo = {"p": {
         "p_body": _BIG_BODY,
