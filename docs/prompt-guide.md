@@ -178,6 +178,33 @@ have. 2D is the solid path; **3D is experimental** and the output is a mesh
 proxy — usable for shape insight, not production CAD. The tool labels it that
 way rather than pretending otherwise.
 
+## 8. Say how the parts go together
+
+> 这是三个零件：机壳、端盖、轴。端盖用螺栓压在机壳顶缘上，轴装在机壳的轴承孔里。
+
+You describe the joints the way you would to a colleague — which parts, which
+faces, and what kind of joint. The workbench binds each interface to real B-Rep
+faces and then **checks the joint against the geometry**, so a mistake surfaces
+while it is still cheap:
+
+- A tie / weld / bolt whose two faces **do not touch** is refused outright — you
+  cannot join across a gap at any scale — and it is left out of the analysis
+  model rather than silently transferring load across empty space.
+- A shaft-in-bore or gear mesh can be stated as such (`concentric`, `tangent`),
+  and a pair whose axes do not actually line up is marked invalid.
+- An interface that resolves to **no faces** blocks the assembly as unsafe to
+  solve, and one that covers essentially the whole part is flagged as
+  over-broad — tying down more of the part than really mates over-constrains it.
+
+Ask *"这个装配现在有什么问题?"* at any point and you get the refused joints and
+blocking interfaces by name.
+
+**The honest boundary here is wider than elsewhere.** Assembly connections are
+**simplified proxies**: no nonlinear contact, no bolt preload, no friction. What
+the workbench verifies is that the joints are geometrically possible and
+correctly bound — not that the assembly's stresses are right. Treat an assembly
+result as a layout and load-path check, not as a qualified analysis.
+
 ---
 
 ## What the agent will always do
