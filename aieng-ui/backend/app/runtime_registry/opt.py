@@ -84,8 +84,14 @@ def register_opt_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         try:
             if auto_derive:
                 derive_kw: dict[str, Any] = {"dimension": dimension}
-                if inp.get("design_space_node"):
-                    derive_kw["design_space_node"] = str(inp["design_space_node"])
+                # The selector must be resolved BEFORE deriving: `problem` is
+                # merged in afterwards, so a design_space_node passed there would
+                # arrive too late to choose the bounds and the caller would
+                # silently get the default largest solid instead.
+                selector = inp.get("design_space_node") or (
+                    problem.get("design_space_node") if isinstance(problem, dict) else None)
+                if selector:
+                    derive_kw["design_space_node"] = str(selector)
                 derived = derive_topopt_problem_from_package(pkg, **derive_kw)
                 # The derivation may honestly decline to guess BCs — surface it, don't solve.
                 if derived.get("status") == "needs_user_input":

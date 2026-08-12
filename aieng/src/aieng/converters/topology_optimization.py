@@ -1395,7 +1395,12 @@ def derive_topopt_problem_from_package(
             list(cell_of_point(faces[fid]["center"])) for fid in fids if faces.get(fid, {}).get("center")
         ])
         direction = ld.get("direction") or [0.0, 0.0, -1.0]
-        mag = float(ld.get("value_n") or 1.0)
+        # `or 1.0` turned an EXPLICIT 0 N into a 1 N reference load — the mirror of
+        # the silent-zero-load defect: there, a real load became 0; here, a
+        # deliberate 0 becomes a load that was never applied. Only a MISSING
+        # magnitude defaults to the unit reference.
+        raw_mag = ld.get("value_n")
+        mag = 1.0 if raw_mag is None else float(raw_mag)
         fx, fy, fw = mag * float(direction[u]), mag * float(direction[v]), mag * float(direction[w])
         if cells and (fx or fy):
             loads.append({"cells": cells, "fx": fx, "fy": fy, "from": {
@@ -1518,6 +1523,8 @@ def _face_boundary_voxels(
     the bbox heuristic read a 32°-inclined load face as a y-normal face sitting
     mid-model — interior, refused, and no choice of design space could fix it.
     """
+    if not (isinstance(fbb, list) and len(fbb) >= 6):
+        return None                                        # no bbox -> diagnose, don't crash
     ax: int | None = None
     if isinstance(normal, (list, tuple)) and len(normal) == 3:
         try:
@@ -1670,7 +1677,12 @@ def derive_topopt_problem_3d_from_package(
                 f"e.g. {WHOLE_MODEL_DESIGN_SPACE} for the envelope spanning every body.")
         cells = _dedup_cells(cells)
         direction = ld.get("direction") or [0.0, 0.0, -1.0]
-        mag = float(ld.get("value_n") or 1.0)
+        # `or 1.0` turned an EXPLICIT 0 N into a 1 N reference load — the mirror of
+        # the silent-zero-load defect: there, a real load became 0; here, a
+        # deliberate 0 becomes a load that was never applied. Only a MISSING
+        # magnitude defaults to the unit reference.
+        raw_mag = ld.get("value_n")
+        mag = 1.0 if raw_mag is None else float(raw_mag)
         fx, fy, fz = mag * float(direction[0]), mag * float(direction[1]), mag * float(direction[2])
         if cells and (fx or fy or fz):
             mapping = "occupied_cells" if any(f in interior_mapped for f in fids) else "boundary_layer"

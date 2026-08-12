@@ -147,6 +147,59 @@ def test_an_inclined_load_face_maps_by_its_recorded_normal(tmp_path: Path):
                for w in problem["derivation"]["warnings"]), problem["derivation"]["warnings"]
 
 
+def test_an_explicit_zero_load_stays_zero(tmp_path: Path):
+    """`float(value_n or 1.0)` turned a deliberate 0 N into a 1 N reference load.
+
+    The mirror of the silent-zero-load defect: there a real load became 0, here a
+    deliberate 0 becomes a load that was never applied. `cae.setup_static`
+    refuses `force_n: 0` precisely so zero stress is never reported as a result;
+    the derivation must not reintroduce it.
+    """
+    pytest.importorskip("yaml")
+    pkg = _inclined_bracket(tmp_path)
+    setup = (
+        "boundary_conditions:\n  - {id: bc1, target_feature: feat_fix, type: fixed}\n"
+        "loads:\n  - {id: ld1, target_feature: feat_load, type: force, value_n: 0.0, "
+        "direction: [0.0, 0.0, -1.0]}\n"
+    )
+    tmp = pkg.with_suffix(".tmp.aieng")
+    with zipfile.ZipFile(pkg) as src, zipfile.ZipFile(tmp, "w") as dst:
+        for item in src.infolist():
+            if item.filename != "simulation/setup.yaml":
+                dst.writestr(item, src.read(item.filename))
+        dst.writestr("simulation/setup.yaml", setup)
+    tmp.replace(pkg)
+
+    problem = derive_topopt_problem_from_package(
+        pkg, dimension="3d", resolution_3d=12, design_space_node=WHOLE_MODEL_DESIGN_SPACE)
+    assert problem["status"] == "needs_user_input", "a 0 N load is not a load"
+    assert problem["load_count"] == 0
+
+
+def test_a_face_without_a_bbox_is_diagnosed_not_crashed(tmp_path: Path):
+    """Callers pass `faces.get(...).get("bbox") or []` — indexing that would raise."""
+    pytest.importorskip("yaml")
+    pkg = _bracket(
+        tmp_path / "nobbox.aieng",
+        load_face_bbox=[0, -2.5, 29, 35, 2.5, 29],
+        load_normal=[0, 0, 1],
+    )
+    topo = json.loads(zipfile.ZipFile(pkg).read("geometry/topology_map.json").decode("utf-8"))
+    for ent in topo["entities"]:
+        if ent["id"] == "face_load":
+            ent.pop("bounding_box")
+    tmp = pkg.with_suffix(".tmp.aieng")
+    with zipfile.ZipFile(pkg) as src, zipfile.ZipFile(tmp, "w") as dst:
+        for item in src.infolist():
+            if item.filename != "geometry/topology_map.json":
+                dst.writestr(item, src.read(item.filename))
+        dst.writestr("geometry/topology_map.json", json.dumps(topo))
+    tmp.replace(pkg)
+
+    problem = derive_topopt_problem_from_package(pkg, dimension="3d", resolution_3d=12)
+    assert problem["status"] == "needs_user_input"      # diagnosed, not an IndexError
+
+
 def test_a_boundary_load_still_maps_as_a_boundary_layer(tmp_path: Path):
     """The occupancy fallback must not swallow the ordinary case."""
     pytest.importorskip("yaml")

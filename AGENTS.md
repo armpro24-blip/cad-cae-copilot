@@ -1278,7 +1278,7 @@ defaults to the **largest single solid**, so on a two-body bracket
 derivation refuses, names the owning part, and lists what you could pass
 instead:
 
-```
+```yaml
 status: needs_user_input
 diagnostics: load 'load_001' face face_020 (on rib_main) lies outside the design
              space 'base_plate'. Name another with design_space_node —
