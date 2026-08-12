@@ -656,6 +656,7 @@ def _cannot_derive_2d(
     frame: dict[str, Any],
     support_count: int,
     load_count: int,
+    design_space_options: list[dict[str, Any]],
     out_of_plane_axis: str,
     out_of_plane_only: list[str],
     setup_present: bool,
@@ -694,9 +695,12 @@ def _cannot_derive_2d(
             f"the CAE setup resolved to {support_count} support(s) and {load_count} load(s) "
             "on the design space; at least one of each is required"
         )
+        others = [c["design_space_node"] for c in design_space_options
+                  if c["design_space_node"] != solid_node]
         recommendation = (
-            "check that the fixed faces and the loaded face belong to the design-space "
-            "body, then retry; or pass an explicit `problem`"
+            "the fixed faces and the loaded face must belong to the design space "
+            f"({solid_node!r}, the largest solid); name another with design_space_node"
+            + (f" — e.g. {', '.join(others)}" if others else "")
         )
     return {
         "status": "needs_user_input",
@@ -712,6 +716,7 @@ def _cannot_derive_2d(
         "support_count": support_count,
         "load_count": load_count,
         "out_of_plane_loads": out_of_plane_only,
+        "design_space_candidates": design_space_options,
     }
 
 
@@ -743,6 +748,60 @@ def _body_names(topology_map: Any) -> dict[str, str]:
             ent.get("name") or ent.get("source_ir_node") or ent.get("label") or ident
         )
     return names
+
+
+WHOLE_MODEL_DESIGN_SPACE = "whole_model"
+
+
+def _design_space_candidates(topology_map: Any) -> list[dict[str, Any]]:
+    """Every design space a caller could legitimately name.
+
+    One entry per solid, plus the whole-model envelope. The default — the
+    largest single solid — excludes every other body, so on a two-part bracket a
+    load applied to the rib lands outside the design space and cannot be mapped.
+    Listing the alternatives turns that dead end into one round-trip.
+    """
+    candidates: list[dict[str, Any]] = []
+    union: list[float] | None = None
+    for ent in _topology_entities(topology_map):
+        bb = ent.get("bounding_box") or ent.get("bbox")
+        if not (isinstance(bb, list) and len(bb) >= 6):
+            continue
+        union = list(bb) if union is None else (
+            [min(union[k], bb[k]) for k in range(3)]
+            + [max(union[k + 3], bb[k + 3]) for k in range(3)]
+        )
+        if str(ent.get("type") or "").lower() not in {"solid", "body"}:
+            continue
+        node = str(ent.get("source_ir_node") or ent.get("name") or ent.get("id") or "")
+        if node:
+            candidates.append({"design_space_node": node, "kind": "solid", "bbox": list(bb)})
+    if union is not None:
+        candidates.append({
+            "design_space_node": WHOLE_MODEL_DESIGN_SPACE,
+            "kind": "model_envelope",
+            "bbox": union,
+            "note": "the envelope spanning every body — use when the load enters through "
+                    "a different part than the one being optimized",
+        })
+    return candidates
+
+
+def _resolve_design_space(
+    topology_map: Any, requested: Any, default_bbox: Any, default_node: Any
+) -> tuple[list[float] | None, Any, list[dict[str, Any]], str | None]:
+    """(bbox, node, candidates, error) for an optionally caller-named design space."""
+    candidates = _design_space_candidates(topology_map)
+    if not requested:
+        return default_bbox, default_node, candidates, None
+    wanted = str(requested)
+    for candidate in candidates:
+        if candidate["design_space_node"] == wanted:
+            return candidate["bbox"], wanted, candidates, None
+    known = ", ".join(c["design_space_node"] for c in candidates) or "(none)"
+    return None, wanted, candidates, (
+        f"design_space_node {wanted!r} matches no body in this model; known: {known}"
+    )
 
 
 def _index_faces(topology_map: Any) -> tuple[dict[str, dict[str, Any]], list[float] | None, str | None]:
@@ -1241,6 +1300,7 @@ def derive_topopt_problem_from_package(
     dimension: str = "2d", resolution: int = 48, resolution_3d: int = 16,
     volfrac: float = 0.5, penalty: float = 3.0,
     rmin: float = 1.5, max_iters: int = 40, objective: str = "compliance_minimization",
+    design_space_node: str | None = None,
 ) -> dict[str, Any]:
     """Derive a 2D topology-optimization problem from a project's CAE setup + geometry.
 
@@ -1256,12 +1316,18 @@ def derive_topopt_problem_from_package(
     block records the projection plane, the design-space frame (origin + cell
     size + thickness, so a later writeback can place the optimized body), source
     BC links, and warnings. If fewer than one support AND one load can be derived,
-    falls back to a preset (warned), so the optimizer still runs.
+    the problem is REFUSED (`status: needs_user_input`) with the reason and the
+    design spaces that could be named instead — never replaced by a preset.
+
+    ``design_space_node`` names the body to optimize; the default is the largest
+    single solid. Pass ``WHOLE_MODEL_DESIGN_SPACE`` for the envelope spanning
+    every body — needed when the load enters through a different part.
     """
     if str(dimension) == "3d":
         return derive_topopt_problem_3d_from_package(
             package_path, resolution=resolution_3d, volfrac=volfrac, penalty=penalty,
-            rmin=rmin, max_iters=max_iters, objective=objective)
+            rmin=rmin, max_iters=max_iters, objective=objective,
+            design_space_node=design_space_node)
 
     package_path = Path(package_path)
     warnings: list[str] = []
@@ -1273,6 +1339,13 @@ def derive_topopt_problem_from_package(
         setup = _load_cae_setup(zf)
 
     faces, overall, solid_node = _index_faces(topology_map)
+    overall, solid_node, design_space_options, ds_error = _resolve_design_space(
+        topology_map, design_space_node, overall, solid_node)
+    if ds_error:
+        return {
+            "status": "needs_user_input", "dimension": "2d", "reason": ds_error,
+            "design_space_candidates": design_space_options,
+        }
     if not overall:
         raise ValueError("cannot derive design space: no bounding box in geometry/topology_map.json")
 
@@ -1322,7 +1395,12 @@ def derive_topopt_problem_from_package(
             list(cell_of_point(faces[fid]["center"])) for fid in fids if faces.get(fid, {}).get("center")
         ])
         direction = ld.get("direction") or [0.0, 0.0, -1.0]
-        mag = float(ld.get("value_n") or 1.0)
+        # `or 1.0` turned an EXPLICIT 0 N into a 1 N reference load — the mirror of
+        # the silent-zero-load defect: there, a real load became 0; here, a
+        # deliberate 0 becomes a load that was never applied. Only a MISSING
+        # magnitude defaults to the unit reference.
+        raw_mag = ld.get("value_n")
+        mag = 1.0 if raw_mag is None else float(raw_mag)
         fx, fy, fw = mag * float(direction[u]), mag * float(direction[v]), mag * float(direction[w])
         if cells and (fx or fy):
             loads.append({"cells": cells, "fx": fx, "fy": fy, "from": {
@@ -1360,6 +1438,7 @@ def derive_topopt_problem_from_package(
                 "cell_size": [round(du, 6), round(dv, 6)], "thickness": round(ext[w], 6),
             },
             support_count=len(supports), load_count=len(loads),
+            design_space_options=design_space_options,
             out_of_plane_axis=axis[w], out_of_plane_only=out_of_plane_only,
             # A setup that exists but resolved to nothing is a binding problem,
             # not a missing setup — telling the user to author one they already
@@ -1402,19 +1481,69 @@ def derive_topopt_problem_from_package(
     }
 
 
+def _face_occupied_voxels(
+    fbb: list[float], mins: list[float], ext: list[float], dims: tuple[int, int, int],
+) -> list[list[int]]:
+    """Every voxel the face's bbox overlaps, clamped to the grid.
+
+    For a load that acts on a surface cutting through the domain rather than
+    bounding it — an inclined gusset face, a pad partway up a wall. Returns []
+    when the face lies entirely outside the design space, so "outside" stays
+    distinguishable from "interior".
+    """
+    if not (isinstance(fbb, list) and len(fbb) >= 6):
+        return []
+    spans: list[range] = []
+    for a in range(3):
+        lo = (fbb[a] - mins[a]) / ext[a]
+        hi = (fbb[a + 3] - mins[a]) / ext[a]
+        if hi < -0.01 or lo > 1.01:
+            return []                                      # outside on this axis
+        i0 = min(max(int(lo * dims[a]), 0), dims[a] - 1)
+        i1 = min(max(int(hi * dims[a]), 0), dims[a] - 1)
+        spans.append(range(min(i0, i1), max(i0, i1) + 1))
+    return [[i, j, k] for i in spans[0] for j in spans[1] for k in spans[2]]
+
+
 def _face_boundary_voxels(
     fbb: list[float], mins: list[float], ext: list[float], dims: tuple[int, int, int],
+    normal: Any = None,
 ) -> tuple[list[list[int]], int, int] | None:
     """Map a planar face to a layer of boundary voxels (no projection — full 3D).
 
-    Finds the face's normal axis (its thin extent), checks the face sits on a
-    design-space boundary (near min or max along that axis), and returns the voxel
-    cells covering the face's footprint on that boundary layer. Returns None if the
-    face is interior (not safely on a boundary) so the caller can ask the user."""
-    extents = [fbb[a + 3] - fbb[a] for a in range(3)]
-    ax = min(range(3), key=lambda a: extents[a])           # normal axis = thinnest
+    Finds the face's normal axis, checks the face sits on a design-space boundary
+    (near min or max along that axis), and returns the voxel cells covering the
+    face's footprint on that boundary layer. Returns None if the face is interior
+    (not safely on a boundary) so the caller can ask the user.
+
+    The normal axis comes from the face's RECORDED normal when the topology has
+    one. Inferring it from the bounding box's thinnest extent is exact for an
+    axis-aligned face and wrong for every inclined one: a triangular gusset's
+    hypotenuse is thin along the rib's THICKNESS, not along its own normal, so
+    the bbox heuristic read a 32°-inclined load face as a y-normal face sitting
+    mid-model — interior, refused, and no choice of design space could fix it.
+    """
+    if not (isinstance(fbb, list) and len(fbb) >= 6):
+        return None                                        # no bbox -> diagnose, don't crash
+    ax: int | None = None
+    if isinstance(normal, (list, tuple)) and len(normal) == 3:
+        try:
+            comps = [abs(float(c)) for c in normal]
+        except (TypeError, ValueError):
+            comps = []
+        if comps and max(comps) > 0:
+            ax = max(range(3), key=lambda a: comps[a])
+    if ax is None:
+        extents = [fbb[a + 3] - fbb[a] for a in range(3)]
+        ax = min(range(3), key=lambda a: extents[a])       # fallback: thinnest extent
     coord = (fbb[ax] + fbb[ax + 3]) / 2.0
     rel = (coord - mins[ax]) / ext[ax]
+    if not (-0.15 <= rel <= 1.15):
+        # OUTSIDE the design space along its own normal, not on its boundary.
+        # `min(rel, 1 - rel)` goes negative for rel > 1, which the interior test
+        # below reads as "on a boundary" — so a load face 19 mm above a 6 mm
+        # plate was silently mapped onto the plate's top layer.
+        return None
     if min(rel, 1.0 - rel) > 0.15:                         # not near a boundary plane
         return None
     layer = 0 if rel < 0.5 else dims[ax] - 1
@@ -1443,6 +1572,7 @@ def derive_topopt_problem_3d_from_package(
     package_path: str | Path, *,
     resolution: int = 16, volfrac: float = 0.3, penalty: float = 3.0,
     rmin: float = 1.5, max_iters: int = 30, objective: str = "compliance_minimization",
+    design_space_node: str | None = None,
 ) -> dict[str, Any]:
     """Derive a full-3D topology-optimization problem from a project's CAE + geometry.
 
@@ -1461,6 +1591,13 @@ def derive_topopt_problem_3d_from_package(
 
     faces, overall, solid_node = _index_faces(topology_map)
     body_names = _body_names(topology_map)
+    overall, solid_node, design_space_options, ds_error = _resolve_design_space(
+        topology_map, design_space_node, overall, solid_node)
+    if ds_error:
+        return {
+            "status": "needs_user_input", "dimension": "3d", "reason": ds_error,
+            "design_space_candidates": design_space_options,
+        }
     if not overall:
         raise ValueError("cannot derive design space: no bounding box in geometry/topology_map.json")
 
@@ -1490,7 +1627,9 @@ def derive_topopt_problem_3d_from_package(
         fids = _resolve_target_faces(bc.get("target_feature"), feat_to_faces, faces)
         cells: list[list[int]] = []
         for fid in fids:
-            mapped = _face_boundary_voxels(faces.get(fid, {}).get("bbox") or [], mins, ext, dims)
+            mapped = _face_boundary_voxels(
+                faces.get(fid, {}).get("bbox") or [], mins, ext, dims,
+                faces.get(fid, {}).get("normal"))
             if mapped:
                 cells.extend(mapped[0])
             else:
@@ -1505,33 +1644,55 @@ def derive_topopt_problem_3d_from_package(
             diagnostics.append(f"support '{bc.get('target_feature')}' resolved to no faces")
 
     loads: list[dict[str, Any]] = []
+    interior_mapped: list[str] = []
+    warnings_3d: list[str] = []
     for ld in setup_loads:
         fids = _resolve_target_faces(ld.get("target_feature"), feat_to_faces, faces)
         cells = []
         for fid in fids:
-            mapped = _face_boundary_voxels(faces.get(fid, {}).get("bbox") or [], mins, ext, dims)
+            mapped = _face_boundary_voxels(
+                faces.get(fid, {}).get("bbox") or [], mins, ext, dims,
+                faces.get(fid, {}).get("normal"))
             if mapped:
                 cells.extend(mapped[0])
-            else:
-                # Name the body, not just the face id. The design space is the
-                # LARGEST solid, so on the canonical plate+rib bracket the load
-                # face belongs to the rib and lies outside it entirely — a
-                # diagnostic naming only `face_020` leaves the user nowhere to go.
-                owner_id = faces.get(fid, {}).get("body_id")
-                owner = body_names.get(str(owner_id), owner_id) if owner_id else None
-                owned = f" (on {owner})" if owner and owner != solid_node else ""
-                diagnostics.append(
-                    f"load '{ld.get('target_feature')}' face {fid}{owned} is not on the boundary "
-                    f"of the design space '{solid_node}' (the largest solid). Pass an explicit "
-                    "`problem` with the design_space_node you mean, or model the design envelope "
-                    "as one body.")
+                continue
+            # A load does not have to sit on a boundary plane — it only has to
+            # act on cells. Requiring a boundary layer refused the archetypal
+            # case outright: a bracket's load enters through the rib's INCLINED
+            # face, which spans the domain rather than bounding it. Fall back to
+            # the voxels the face actually occupies, and record that it did.
+            occupied = _face_occupied_voxels(
+                faces.get(fid, {}).get("bbox") or [], mins, ext, dims)
+            if occupied:
+                cells.extend(occupied)
+                interior_mapped.append(str(fid))
+                continue
+            # Genuinely outside the design space — name the body and the way out.
+            owner_id = faces.get(fid, {}).get("body_id")
+            owner = body_names.get(str(owner_id), owner_id) if owner_id else None
+            owned = f" (on {owner})" if owner and owner != solid_node else ""
+            diagnostics.append(
+                f"load '{ld.get('target_feature')}' face {fid}{owned} lies outside the design "
+                f"space '{solid_node}'. Name another with design_space_node — "
+                f"e.g. {WHOLE_MODEL_DESIGN_SPACE} for the envelope spanning every body.")
         cells = _dedup_cells(cells)
         direction = ld.get("direction") or [0.0, 0.0, -1.0]
-        mag = float(ld.get("value_n") or 1.0)
+        # `or 1.0` turned an EXPLICIT 0 N into a 1 N reference load — the mirror of
+        # the silent-zero-load defect: there, a real load became 0; here, a
+        # deliberate 0 becomes a load that was never applied. Only a MISSING
+        # magnitude defaults to the unit reference.
+        raw_mag = ld.get("value_n")
+        mag = 1.0 if raw_mag is None else float(raw_mag)
         fx, fy, fz = mag * float(direction[0]), mag * float(direction[1]), mag * float(direction[2])
         if cells and (fx or fy or fz):
-            loads.append({"cells": cells, "fx": fx, "fy": fy, "fz": fz, "from": {
+            mapping = "occupied_cells" if any(f in interior_mapped for f in fids) else "boundary_layer"
+            loads.append({"cells": cells, "fx": fx, "fy": fy, "fz": fz, "mapping": mapping, "from": {
                 "target_feature": ld.get("target_feature"), "value_n": mag, "direction": direction}})
+            if mapping == "occupied_cells":
+                warnings_3d.append(
+                    f"load '{ld.get('target_feature')}' acts on a face that cuts through the "
+                    "design space rather than bounding it (an inclined or interior surface); "
+                    "it is applied to the voxels the face occupies")
         elif not fids:
             diagnostics.append(f"load '{ld.get('target_feature')}' resolved to no faces")
 
@@ -1548,6 +1709,10 @@ def derive_topopt_problem_3d_from_package(
             "design_space_node": solid_node,
             "design_space_bbox": overall,
             "support_count": len(supports), "load_count": len(loads),
+            # The default design space is the largest single SOLID, so a load on
+            # any other body is outside it by construction. Name the alternatives
+            # rather than leaving the caller to guess what it may pass back.
+            "design_space_candidates": design_space_options,
         }
 
     result_guidance, guidance_warnings = collect_topopt_result_guidance(package_path, solid_node)
@@ -1574,7 +1739,8 @@ def derive_topopt_problem_3d_from_package(
             "frame": frame,
             "support_count": len(supports), "load_count": len(loads),
             "result_guidance_inputs": result_guidance.get("sources"),
-            "warnings": diagnostics + guidance_warnings,
+            "design_space_candidates": design_space_options,
+            "warnings": diagnostics + warnings_3d + guidance_warnings,
             "limitations": [
                 "Full-3D structured-voxel idealization: supports/loads are snapped to the nearest "
                 "design-space boundary voxel layer; experimental reference, not production.",

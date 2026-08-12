@@ -41,6 +41,8 @@ def register_opt_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         for k in ("volfrac", "penalty", "rmin"):
             if inp.get(k) is not None:
                 kw[k] = float(inp[k])
+        if inp.get("design_space_node"):
+            kw["design_space_node"] = str(inp["design_space_node"])
         try:
             problem = derive_topopt_problem_from_package(pkg, **kw)
         except Exception as exc:  # noqa: BLE001
@@ -48,7 +50,9 @@ def register_opt_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         # 3D derivation may honestly decline to guess BCs.
         if problem.get("status") == "needs_user_input":
             return {"status": "needs_user_input", "tool": "opt.derive_problem_from_cae",
-                    "problem": problem, "diagnostics": problem.get("diagnostics")}
+                    "problem": problem, "diagnostics": problem.get("diagnostics"),
+                    # The way out of a refusal the default design space caused.
+                    "design_space_candidates": problem.get("design_space_candidates")}
         return {"status": "ok", "tool": "opt.derive_problem_from_cae", "problem": problem,
                 "derivation": problem.get("derivation")}
 
@@ -79,11 +83,21 @@ def register_opt_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         optimizer = str(inp.get("optimizer") or ("simp_3d" if dimension == "3d" else "simp_2d"))
         try:
             if auto_derive:
-                derived = derive_topopt_problem_from_package(pkg, dimension=dimension)
-                # 3D derivation may honestly decline to guess BCs — surface it, don't solve.
+                derive_kw: dict[str, Any] = {"dimension": dimension}
+                # The selector must be resolved BEFORE deriving: `problem` is
+                # merged in afterwards, so a design_space_node passed there would
+                # arrive too late to choose the bounds and the caller would
+                # silently get the default largest solid instead.
+                selector = inp.get("design_space_node") or (
+                    problem.get("design_space_node") if isinstance(problem, dict) else None)
+                if selector:
+                    derive_kw["design_space_node"] = str(selector)
+                derived = derive_topopt_problem_from_package(pkg, **derive_kw)
+                # The derivation may honestly decline to guess BCs — surface it, don't solve.
                 if derived.get("status") == "needs_user_input":
                     return {"status": "needs_user_input", "tool": "opt.run_topology_optimization",
-                            "problem": derived, "diagnostics": derived.get("diagnostics")}
+                            "problem": derived, "diagnostics": derived.get("diagnostics"),
+                            "design_space_candidates": derived.get("design_space_candidates")}
                 if isinstance(problem, dict):  # caller overrides (volfrac, grid, ...) win
                     derived.update({k: v for k, v in problem.items() if k != "bcs"})
                     if isinstance(problem.get("bcs"), dict):

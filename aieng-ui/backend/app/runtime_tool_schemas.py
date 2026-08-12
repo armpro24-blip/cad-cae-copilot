@@ -136,6 +136,15 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                     "any provided problem fields override the derived ones."
                 ),
             },
+            "design_space_node": {
+                "type": "string",
+                "description": (
+                    "Body to optimize when deriving (default: the largest single solid). Pass "
+                    "'whole_model' for the envelope spanning every body — needed when the load "
+                    "enters through a different part than the one being optimized. A refusal "
+                    "lists the valid names in design_space_candidates."
+                ),
+            },
             "dimension": {
                 "type": "string",
                 "enum": ["2d", "3d"],
@@ -335,6 +344,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "penalty": {"type": "number", "description": "SIMP penalization exponent (default 3.0)."},
             "rmin": {"type": "number", "description": "Sensitivity filter radius in cells (default 1.5)."},
             "max_iters": {"type": "integer", "description": "Optimizer iteration cap (default 40; 30 for 3d)."},
+            "design_space_node": {"type": "string", "description": "Body to optimize (default: the largest single solid). Pass 'whole_model' for the envelope spanning every body — needed when the load enters through a different part. A refusal lists the valid names in design_space_candidates."},
         },
         "additionalProperties": True,
         "description": (
