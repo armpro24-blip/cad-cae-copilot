@@ -130,6 +130,7 @@ def build_agent_context(
             },
             "cad": cad,
             "brep_graph": _brep_graph_block(package_path if package_exists else None, package_reader=reader),
+            "assembly": _assembly_block(package_path if package_exists else None, package_reader=reader),
             "cae": _cae_block(fallback, cae_summaries),
             "design_targets": _design_targets_block(design_targets),
             "computed_metrics": _computed_metrics_block(computed_metrics),
@@ -146,6 +147,15 @@ def build_agent_context(
             "claim_advancement": "none",
             "claim_boundary": CLAIM_BOUNDARY,
         }
+        refused = [
+            c for c in (context["assembly"].get("attention") or [])
+            if c.get("geometry_status") == "invalid"
+        ]
+        for conn in refused:
+            context["warnings"].append(
+                f"assembly connection '{conn.get('connection_id')}' is geometrically invalid "
+                f"({', '.join(conn.get('reasons') or [])}) and is NOT solver-enabled."
+            )
         context["agent_brief"] = _agent_brief(context)
         return context
     finally:
@@ -236,6 +246,71 @@ def _brep_graph_block(
             "pointer_syntax": (graph or {}).get("pointer_syntax") or {"face": "@face:<face_id>", "edge": "@edge:<edge_id>"},
             "digest": digest,
             "entity_index_sample": dict(list((index or {}).items())[:12]) if isinstance(index, dict) else {},
+        }
+    except Exception as exc:
+        return {"present": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+def _assembly_block(
+    package_path: Any,
+    *,
+    package_reader: PackageReadCache | None = None,
+) -> dict[str, Any]:
+    """Whether this project is an assembly, and which joints are blocking (#496).
+
+    Measured on the dogfood gearbox: after three parts, four interfaces and three
+    mates were authored, `agent_context` reported nothing about any of it — an
+    agent reading its session context could not tell an assembly from a single
+    part, let alone that one connection was refused. Deliberately compact: counts,
+    a status tally, and only the connections that are NOT plausible.
+    """
+    if package_path is None:
+        return {"present": False}
+    try:
+        assembly = _read_package_member(
+            package_path, "assembly/assembly_ir.json", package_reader=package_reader
+        )
+        if not isinstance(assembly, dict) or not assembly.get("parts"):
+            return {"present": False}
+        geometry = _read_package_member(
+            package_path,
+            "diagnostics/assembly_connection_geometry.json",
+            package_reader=package_reader,
+        )
+        connections = (geometry or {}).get("connections") or []
+        tally: dict[str, int] = {}
+        blocking: list[dict[str, Any]] = []
+        for conn in connections:
+            status = conn.get("geometry_status") or "unknown"
+            tally[status] = tally.get(status, 0) + 1
+            if status != "plausible":
+                blocking.append({
+                    "connection_id": conn.get("connection_id"),
+                    "type": conn.get("type"),
+                    "geometry_status": status,
+                    "reasons": conn.get("reasons") or [],
+                })
+        draft = _read_package_member(
+            package_path,
+            "simulation/assembly_cae_setup_draft.json",
+            package_reader=package_reader,
+        )
+        return {
+            "present": True,
+            "part_count": len(assembly.get("parts") or []),
+            "interface_count": len(assembly.get("interfaces") or []),
+            "connection_count": len(assembly.get("connections") or []),
+            "connection_status": tally,
+            "attention": blocking[:8],
+            "cae_draft_status": (draft or {}).get("status"),
+            "needs_user_input": ((draft or {}).get("needs_user_input") or [])[:8],
+            "honesty": {
+                "contact_physics_modeled": False,
+                "bolt_preload_modeled": bool(
+                    ((geometry or {}).get("provenance") or {}).get("bolt_preload_modeled")
+                ),
+                "note": "Assembly connections are simplified proxies, not nonlinear contact.",
+            },
         }
     except Exception as exc:
         return {"present": False, "error": f"{type(exc).__name__}: {exc}"}
@@ -422,10 +497,20 @@ def _agent_brief(context: dict[str, Any]) -> dict[str, Any]:
     cae = context.get("cae") if isinstance(context.get("cae"), dict) else {}
     targets = context.get("design_targets") if isinstance(context.get("design_targets"), dict) else {}
     comparison = context.get("target_comparison") if isinstance(context.get("target_comparison"), dict) else {}
+    assembly = context.get("assembly") if isinstance(context.get("assembly"), dict) else {}
 
     failed_count = len(comparison.get("failed_targets") or [])
     unknown_count = len(comparison.get("unknown_targets") or [])
     focus: list[str] = []
+    invalid_joints = [
+        c for c in (assembly.get("attention") or [])
+        if c.get("geometry_status") == "invalid"
+    ]
+    if invalid_joints:
+        focus.append(
+            "fix the refused assembly connection(s): "
+            + ", ".join(str(c.get("connection_id")) for c in invalid_joints[:3])
+        )
     if cad.get("geometry_evidence_level") in {"none", "metadata"}:
         focus.append("obtain real CAD geometry or live CAD snapshot")
     if not cae.get("materials") and not cae.get("fea_setup_draft"):
@@ -456,12 +541,20 @@ def _part_summary(context: dict[str, Any]) -> str:
     project = context.get("project") if isinstance(context.get("project"), dict) else {}
     cad = context.get("cad") if isinstance(context.get("cad"), dict) else {}
     geometry = cad.get("known_geometry") if isinstance(cad.get("known_geometry"), dict) else {}
+    assembly = context.get("assembly") if isinstance(context.get("assembly"), dict) else {}
     name = project.get("name") or project.get("id") or "project"
     kind = geometry.get("geometry_kind") or geometry.get("primitive")
     evidence = cad.get("geometry_evidence_level") or "unknown"
     if kind:
-        return f"{name}: {kind} geometry with {evidence} evidence."
-    return f"{name}: CAD geometry evidence level is {evidence}."
+        base = f"{name}: {kind} geometry with {evidence} evidence."
+    else:
+        base = f"{name}: CAD geometry evidence level is {evidence}."
+    if assembly.get("present"):
+        base += (
+            f" Assembly IR: {assembly.get('part_count')} part(s), "
+            f"{assembly.get('connection_count')} connection(s)."
+        )
+    return base
 
 
 def _physics_summary(cae: dict[str, Any]) -> str:

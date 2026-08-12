@@ -1698,6 +1698,15 @@ validates connection geometry (the same two-step as `POST /assembly/process`).
 Authoring stays inside the v0 honesty contract: representation + validation only
 — no contact physics, no bolt preload, no solver.
 
+**`aieng.agent_context` reports the assembly.** Its `assembly` block states
+whether the project is one at all (`present`), the part / interface / connection
+counts, a `connection_status` tally, and — compactly — only the connections that
+are NOT `plausible`, each with its status and reasons, plus the CAE draft's
+`needs_user_input` and the standing honesty flags. A connection classified
+`invalid` also raises a top-level `warnings` entry and a `next_decision_focus`
+item, so a refused joint cannot be missed by an agent reading its session
+context.
+
 When per-part / package topology maps are available, the same call also **resolves interfaces
 and validates connection geometry** (geometry-validation only — still no contact/preload/solver):
 it resolves each interface's `topology_refs` to bbox/centroid/normal/area, applies the part
@@ -1705,7 +1714,20 @@ transform into world coordinates (`assembly/interface_resolution.json`), and jud
 connection's plausibility from centroid distance / bbox overlap / normal alignment / semantic-role
 fit → `geometry_status` ∈ plausible / warning / invalid / insufficient_data
 (`diagnostics/assembly_connection_geometry.json`). Invalid connections are marked `disabled` +
-`needs_user_input` in the CAE setup draft. Unresolved refs are reported honestly, never invented.
+`needs_user_input` in the CAE setup draft and are not solver-enabled in
+`simulation/assembly_cae_model.json`. Unresolved refs are reported honestly, never invented.
+
+**A joint across a gap is `invalid`, not a warning.** Proximity is judged relative
+to the interface size, which is the right question for "are these plausibly near
+each other" and the wrong one for a joint: a `rigid_tie` / `bonded` /
+`welded_proxy` / `bolted_proxy` whose two interfaces do not touch cannot exist at
+any scale, so it is classified `invalid` (`joint_across_gap`) and the existing
+disable gate fires. Measured on a dogfood gearbox, a `bonded` tie between faces
+20 mm apart previously scored only `warning` — 20 mm is small next to their
+162 mm interface diagonal — and stayed solver-enabled, transferring load across
+empty space (stiffer than reality, in the non-conservative direction) with
+`needs_user_input: []`. `spring_proxy` is deliberately exempt: connecting distant
+parts is what a spring is for.
 
 The same pass also writes **pre-solver interface-NSET quality diagnostics**
 (`diagnostics/assembly_mesh_interface_diagnostics.json`): per interface it flags

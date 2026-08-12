@@ -53,6 +53,20 @@ _TOUCH_FRAC = 0.02     # gap <= this*scale -> touching/overlapping
 _NEAR_FRAC = 0.5       # gap >  this*scale -> far apart
 _NORMAL_SAME_DOT = 0.5  # mating faces expected anti-parallel; dot > this is suspicious
 
+# Connection types whose whole meaning is "these two surfaces are JOINED". A
+# relative-scale threshold answers "are these plausibly near each other", which
+# is the wrong question for a joint: you cannot tie, weld or bolt across a gap
+# at any scale. Measured on the dogfood gearbox — a `bonded` tie between a cover
+# and a shaft 20 mm apart scored `warning` (20 mm is small next to the 162 mm
+# interface diagonal), stayed `supported: true` with `load_transfer: true`, and
+# was carried into assembly_cae_model.json as a tie constraint welding nodes
+# across empty space: stiffer than reality, in the non-conservative direction,
+# with `needs_user_input: []`.
+# `spring_proxy` is deliberately excluded — a spring connecting distant parts is
+# exactly what it is for — and `contact_proxy` already never claims better than
+# `warning`.
+_JOIN_CONNECTION_TYPES = {"rigid_tie", "bonded", "welded_proxy", "bolted_proxy"}
+
 # semantic roles preferred by each proxy type (for evidence checks)
 _PREFERRED_ROLES = {
     "bolted_proxy": {"bolt_hole", "mounting_face"},
@@ -325,7 +339,8 @@ def resolve_assembly_interfaces(assembly: Any,
 def _status_from_reasons(reasons: list[str], insufficient: bool) -> str:
     if insufficient:
         return "insufficient_data"
-    if any(r in {"far_apart", "missing_transform_blocks_validation", "mate_predicate_violated"} for r in reasons):
+    if any(r in {"far_apart", "joint_across_gap", "missing_transform_blocks_validation",
+                 "mate_predicate_violated"} for r in reasons):
         return "invalid"
     if reasons:
         return "warning"
@@ -489,6 +504,9 @@ def validate_connection_geometry(assembly: Any, resolution: dict[str, Any]) -> d
                     reasons.append("far_apart")
                 elif not touching:
                     reasons.append("no_overlap")
+                    if ctype in _JOIN_CONNECTION_TYPES:
+                        # A joint across a gap cannot exist at any scale.
+                        reasons.append("joint_across_gap")
                 if normal_alignment is not None and normal_alignment > _NORMAL_SAME_DOT:
                     reasons.append("normals_same_direction")
 
