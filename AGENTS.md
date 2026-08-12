@@ -1530,15 +1530,26 @@ High-risk operations remain individually `[APPROVAL REQUIRED]`:
 
 ## Stale-artifact warnings
 
-After a geometry edit, `aieng.agent_context` includes an **EDIT IMPACT** section
-listing `@artifact:` references needing revalidation. Treat these as hard blockers
-before running a simulation. Typical fix:
-```
+After a geometry edit, `aieng.agent_context` reports an **`edit_impact`** block —
+`stale`, the geometry revision and the last validated one, the tool that
+triggered it, and the `@artifact:` references needing revalidation. When it is
+stale the same fact is raised as a top-level `warnings` entry and a
+`next_decision_focus` item, because a hard blocker buried in a sub-block is not a
+blocker. Treat these as hard blockers before running a simulation. Typical fix:
+```text
 1. aieng.refresh_semantics   { project_id }
 2. cae.generate_solver_input { project_id }
 3. cae.run_solver            { project_id }   [APPROVAL REQUIRED]
 ```
 (A fresh `cad.execute_build123d` automatically clears stale state.)
+
+**Every tool that changes geometry records it**, `opt.writeback_to_shape_ir`
+included — it replaces the whole body with the optimized one, so it marks every
+downstream CAE artifact stale and names itself as the trigger. It used to record
+nothing: the package still said `geometry_modified: false` from the previous
+solver run while the 30-face bracket had become a one-face mesh proxy, and the
+solver was blocked only because the old face ids happened to vanish. Safety by
+accident is not safety.
 
 ---
 

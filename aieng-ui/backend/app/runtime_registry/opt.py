@@ -14,6 +14,43 @@ from ..legacy_app_symbols import sync_main_symbols
 
 LOGGER = logging.getLogger("app.app_factory")
 
+# Mesh payload fields an agent cannot act on inline. Every one of them has a
+# scalar counterpart alongside it (`vertex_count`, `triangle_count`, `bbox`), and
+# the full node is written to geometry/shape_ir.json regardless.
+_BULK_SHAPE_IR_FIELDS = ("vertices", "faces", "triangles", "density", "density_3d",
+                         "density_voxels", "boundary", "boundary_points", "polygon")
+
+
+def _summarize_shape_ir_payload(payload: Any) -> Any:
+    """The Shape IR writeback payload with its bulk arrays replaced by their size.
+
+    Measured on a 3D writeback: the response was 30,118 chars (~7.5k tokens),
+    27,544 of them raw vertex and face arrays — beside the `vertex_count`,
+    `triangle_count`, `bbox` and honesty tags that say the same thing in forty.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    parts = payload.get("parts")
+    if not isinstance(parts, list):
+        # An unexpected shape is still the caller's data — summarizing must never
+        # be the thing that loses it.
+        return payload
+
+    summarized: list[Any] = []
+    for part in parts:
+        if not isinstance(part, dict):
+            summarized.append(part)
+            continue
+        kept = {k: v for k, v in part.items() if k not in _BULK_SHAPE_IR_FIELDS}
+        omitted = {k: len(part[k]) for k in _BULK_SHAPE_IR_FIELDS
+                   if isinstance(part.get(k), list)}
+        if omitted:
+            kept["omitted_arrays"] = omitted
+            kept["omitted_arrays_note"] = (
+                "sizes only — the full geometry is in geometry/shape_ir.json")
+        summarized.append(kept)
+    return {**payload, "parts": summarized}
+
 
 def register_opt_tools(rt: Any, active_settings: Any, app_context: Any, _schema: Any) -> dict[str, Any]:
     """Register opt runtime tools."""
@@ -250,11 +287,44 @@ def register_opt_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 context={"project_id": pid},
             )
 
+        # This tool REPLACES the project's geometry with the optimized body, so
+        # every downstream CAE artifact is stale — exactly what cad.edit_parameter
+        # records. Without it `state/revalidation_status.json` kept saying
+        # `geometry_modified: false` from the previous solver run, agent_context
+        # showed no EDIT IMPACT, and the solver was blocked only because the old
+        # face ids happened to vanish: safety by accident, not by rule.
+        geometry_revision = None
+        try:
+            from ..project_io import _record_geometry_edit_in_package
+
+            geometry_revision = _record_geometry_edit_in_package(
+                pkg, triggering_tool="opt.writeback_to_shape_ir", affected_artifacts=[
+                "results/computed_metrics.json",
+                "results/result_summary.json",
+                "simulation/mesh/mesh_metadata.json",
+                "simulation/cae_mapping.json",
+                "cae/*",
+                "analysis/field_regions.json",
+            ])
+        except Exception:
+            log_exception(
+                LOGGER,
+                "Failed to record the geometry edit after topology optimization writeback.",
+                subsystem="app_factory.topology_writeback.revalidation",
+                context={"project_id": pid},
+            )
+
         return {
             "status": "ok",
             "tool": "opt.writeback_to_shape_ir",
-            "shape_ir": payload,
+            # A summary, not the mesh: the full node is in geometry/shape_ir.json.
+            # Returning it inline cost ~7.5k tokens per call, 91% of it vertex and
+            # face arrays an agent cannot act on — next to the counts and bbox that
+            # say the same thing.
+            "shape_ir": _summarize_shape_ir_payload(payload),
             "recompile": recompile,
+            "geometry_revision": geometry_revision,
+            "downstream_evidence": "stale — geometry was replaced by the optimized body",
         }
 
     rt.register_tool(
