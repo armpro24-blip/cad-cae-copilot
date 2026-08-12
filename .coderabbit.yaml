@@ -31,40 +31,47 @@ reviews:
         is merely misleading is therefore a real defect. Weight these patterns —
         each one has shipped here through green CI:
 
-        1. HONEST REFUSAL vs SILENT SUBSTITUTE. When a function cannot do what
-           was asked, it must say so rather than do something else. Flag any
-           `status: "ok"` that carries a preset, a default, or a fallback in
-           place of the thing requested. If two sibling code paths disagree
-           about whether to refuse, the honest one is the specification.
+        1. `undocumented-path` — a path the docs advertise that no test
+           exercises. If a PR adds or changes a documented command, script or
+           tool, ask what exercises it. Four documented chains were dogfooded
+           here; all four were broken.
 
-        2. THE CALLER ASKED FOR A AND SILENTLY GOT B. Check that every
-           documented input is actually read, and read at a point where it can
+        2. `by-construction` — a threshold satisfied by construction, not by
+           defect. Ask what a rule says about a CORRECT input. A check that
+           fires on every valid case carries no information (and buries the
+           genuinely blocking finding beside it); one whose condition is
+           unreachable for the shape at hand never fires at all. Be suspicious
+           of proxy quantities — a bounding box's thinnest axis, a bbox
+           diagonal — that are degenerate for the geometry being judged.
+
+        3. `silent-substitute` — a substitute instead of an honest refusal.
+           Flag any `status: "ok"` that carries a preset, a default or a
+           fallback in place of the thing requested. If two sibling code paths
+           disagree about whether to refuse, the honest one is the spec.
+
+        4. `asked-a-got-b` — the caller asked for A and silently got B. Check
+           that every documented input is actually read, at a point where it can
            still affect the outcome. Watch for `x or DEFAULT` where an explicit
            falsy value (0, 0.0, "") is meaningful, and for values read after the
            decision they were meant to influence.
 
-        3. INVENTED DATA THAT LOOKS DECLARED. If a default stands in for missing
-           input, the caller must be able to tell. Prefer recording that a value
-           was assumed over silently substituting a plausible one — especially
-           for material properties, loads, and anything that reaches a solver.
+        5. `invented-data` — invented data that looks declared. If a default
+           stands in for missing input, the caller must be able to tell. Prefer
+           recording that a value was assumed over silently substituting a
+           plausible one — especially for material properties, loads, and
+           anything that reaches a solver.
 
-        4. A THRESHOLD SATISFIED BY CONSTRUCTION. Ask what a rule says about a
-           CORRECT input. A check that fires on every valid case carries no
-           information (and buries the genuinely blocking finding beside it); a
-           check whose condition is unreachable for the shape at hand never
-           fires at all. Be suspicious of proxy quantities — a bounding box's
-           thinnest axis, a bbox diagonal — that are degenerate for the geometry
-           being judged.
+        6. `safety-by-accident` — the gate held, but not because the rule fired.
+           When a gate holds, ask whether the rule fired or whether an unrelated
+           coincidence held the line. A mutation that invalidates downstream
+           evidence must record that it did, not rely on a side effect that
+           happens to block the next step.
 
-        5. SAFETY BY ACCIDENT. When a gate holds, ask whether the rule fired or
-           whether an unrelated coincidence held the line. A mutation that
-           invalidates downstream evidence must record that it did, not rely on
-           a side effect that happens to block the next step.
-
-        6. A STORED ARTIFACT OLDER THAN THE LOGIC THAT READS IT. Derived files
-           are written once and served as current forever. Where a fact is cheap
-           to recompute from the source of truth at read time, prefer that: it
-           is self-healing when the deriving logic improves.
+        7. `stale-artifact` — a stored artifact older than the logic that reads
+           it. Derived files are written once and served as current forever.
+           Where a fact is cheap to recompute from the source of truth at read
+           time, prefer that: it is self-healing when the deriving logic
+           improves.
 
         Also: a helper that condenses, filters, or normalises data must never be
         the thing that loses it on an unexpected shape.
