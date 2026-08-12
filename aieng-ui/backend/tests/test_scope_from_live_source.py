@@ -88,7 +88,7 @@ def test_genuinely_local_parameters_are_left_alone() -> None:
         assert "scope_note" not in entries[constant]
 
 
-def test_scope_is_only_ever_widened(tmp_path: Path) -> None:
+def test_scope_is_only_ever_widened() -> None:
     """A stored global/unscoped already demands confirmation — never relax it."""
     graph = {"features": [
         {"id": "feat_global_params", "name": "Global Parameters", "type": "global_params",
@@ -130,3 +130,15 @@ def test_the_edit_gate_never_fails_an_edit_on_a_missing_source(tmp_path: Path) -
     assert _constant_is_shared_in_source(_package(tmp_path, None), "PLATE_THICKNESS") is False
     assert _constant_is_shared_in_source(tmp_path / "absent.aieng", "PLATE_THICKNESS") is False
     assert _constant_is_shared_in_source(_package(tmp_path, _SOURCE), "") is False
+
+
+def test_an_undecodable_source_costs_nothing_but_the_enrichment(tmp_path: Path) -> None:
+    """Scope enrichment is a bonus; losing it must not lose the index itself."""
+    pkg = tmp_path / "bad.aieng"
+    with zipfile.ZipFile(pkg, "w") as zf:
+        zf.writestr("geometry/source.py", b"\xff\xfe not utf-8 \xff")
+    assert _constant_is_shared_in_source(pkg, "PLATE_THICKNESS") is False
+
+    # and the index still carries every stored parameter
+    entries = _by_constant(build_parameter_index(_STALE_GRAPH, None))
+    assert set(entries) == {"PLATE_LENGTH", "PLATE_THICKNESS", "RIB_THICKNESS"}

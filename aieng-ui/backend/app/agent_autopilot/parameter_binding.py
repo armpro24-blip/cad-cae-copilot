@@ -69,9 +69,10 @@ def scopes_from_source(source_code: Any, constant_names: Any) -> dict[str, str]:
     point of the scope flag is to warn BEFORE.
 
     Constant→part binding is pure text analysis, so the honest answer is
-    recomputable at read time. Returns only constants whose live usage disagrees
-    with a naive per-feature reading; a constant used by 2+ named parts is
-    ``global`` (shared — edits ripple).
+    recomputable at read time. Returns one entry per constant that could be
+    bound to at least one named part: ``global`` when 2+ parts use it (shared —
+    edits ripple), ``local`` when exactly one does. Constants that bind to no
+    part are absent, so the caller keeps whatever the stored graph said.
     """
     text = str(source_code or "")
     names = {str(n) for n in (constant_names or []) if n}

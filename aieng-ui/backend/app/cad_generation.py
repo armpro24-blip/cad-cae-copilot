@@ -8878,10 +8878,14 @@ def design_review(
                     from .agent_autopilot.parameter_binding import build_parameter_index
 
                     feature_graph = json.loads(zf.read("graph/feature_graph.json").decode("utf-8"))
-                    source_code = (
-                        zf.read("geometry/source.py").decode("utf-8")
-                        if "geometry/source.py" in names else None
-                    )
+                    # Scope enrichment is a bonus, so its failure must not cost
+                    # the review its graph-based edit targets — an undecodable
+                    # source.py would otherwise raise into the outer handler and
+                    # leave parameter_index None.
+                    try:
+                        source_code = zf.read("geometry/source.py").decode("utf-8")
+                    except Exception:  # noqa: BLE001
+                        source_code = None
                     parameter_index = build_parameter_index(feature_graph, source_code)
     except Exception:
         # Critique already succeeded; degrade to critique-only findings rather
