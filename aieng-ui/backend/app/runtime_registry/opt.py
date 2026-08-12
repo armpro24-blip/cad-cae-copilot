@@ -30,24 +30,26 @@ def _summarize_shape_ir_payload(payload: Any) -> Any:
     """
     if not isinstance(payload, dict):
         return payload
-    out = {k: v for k, v in payload.items() if k != "parts"}
     parts = payload.get("parts")
-    if isinstance(parts, list):
-        summarized = []
-        for part in parts:
-            if not isinstance(part, dict):
-                summarized.append(part)
-                continue
-            kept = {k: v for k, v in part.items() if k not in _BULK_SHAPE_IR_FIELDS}
-            omitted = {k: len(part[k]) for k in _BULK_SHAPE_IR_FIELDS
-                       if isinstance(part.get(k), list)}
-            if omitted:
-                kept["omitted_arrays"] = omitted
-                kept["omitted_arrays_note"] = (
-                    "sizes only — the full geometry is in geometry/shape_ir.json")
-            summarized.append(kept)
-        out["parts"] = summarized
-    return out
+    if not isinstance(parts, list):
+        # An unexpected shape is still the caller's data — summarizing must never
+        # be the thing that loses it.
+        return payload
+
+    summarized: list[Any] = []
+    for part in parts:
+        if not isinstance(part, dict):
+            summarized.append(part)
+            continue
+        kept = {k: v for k, v in part.items() if k not in _BULK_SHAPE_IR_FIELDS}
+        omitted = {k: len(part[k]) for k in _BULK_SHAPE_IR_FIELDS
+                   if isinstance(part.get(k), list)}
+        if omitted:
+            kept["omitted_arrays"] = omitted
+            kept["omitted_arrays_note"] = (
+                "sizes only — the full geometry is in geometry/shape_ir.json")
+        summarized.append(kept)
+    return {**payload, "parts": summarized}
 
 
 def register_opt_tools(rt: Any, active_settings: Any, app_context: Any, _schema: Any) -> dict[str, Any]:

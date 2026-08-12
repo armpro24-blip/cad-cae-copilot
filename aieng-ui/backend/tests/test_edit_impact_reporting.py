@@ -164,3 +164,16 @@ def test_the_writeback_response_omits_bulk_arrays_but_keeps_their_size() -> None
     assert part["vertex_count"] == 350 and part["triangle_count"] == 696
     assert part["lossy"] is True and part["not_production_cad"] is True
     assert len(json.dumps(part)) < 600, "the summary must not itself be a payload"
+
+
+def test_an_unexpected_payload_shape_is_returned_untouched() -> None:
+    """Summarizing must never be the thing that loses the caller's data."""
+    from app.runtime_registry.opt import _summarize_shape_ir_payload
+
+    for payload in (
+        {"format": "aieng.shape_ir", "parts": "not-a-list"},
+        {"format": "aieng.shape_ir"},                       # no parts at all
+        {"format": "aieng.shape_ir", "parts": None},
+        "not-a-dict",
+    ):
+        assert _summarize_shape_ir_payload(payload) == payload

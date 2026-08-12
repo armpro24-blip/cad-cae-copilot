@@ -1536,7 +1536,7 @@ triggered it, and the `@artifact:` references needing revalidation. When it is
 stale the same fact is raised as a top-level `warnings` entry and a
 `next_decision_focus` item, because a hard blocker buried in a sub-block is not a
 blocker. Treat these as hard blockers before running a simulation. Typical fix:
-```
+```text
 1. aieng.refresh_semantics   { project_id }
 2. cae.generate_solver_input { project_id }
 3. cae.run_solver            { project_id }   [APPROVAL REQUIRED]
