@@ -156,6 +156,13 @@ def build_agent_context(
                 f"assembly connection '{conn.get('connection_id')}' is geometrically invalid "
                 f"({', '.join(conn.get('reasons') or [])}) and is NOT solver-enabled."
             )
+        ifaces = context["assembly"].get("interfaces") or {}
+        if ifaces.get("safe_for_solver") is False:
+            context["warnings"].append(
+                "assembly interface(s) resolve to an empty node set: "
+                f"{', '.join(ifaces.get('blocking') or []) or 'unnamed'} — "
+                "the assembly is not safe to solve."
+            )
         context["agent_brief"] = _agent_brief(context)
         return context
     finally:
@@ -295,6 +302,19 @@ def _assembly_block(
             "simulation/assembly_cae_setup_draft.json",
             package_reader=package_reader,
         )
+        # Interface coverage is only worth reporting now that a warning means a
+        # defect rather than a geometry (#497) — before, every correct interface
+        # warned, so forwarding it would have been pure noise.
+        mesh_diag = _read_package_member(
+            package_path,
+            "diagnostics/assembly_mesh_interface_diagnostics.json",
+            package_reader=package_reader,
+        )
+        interfaces = {
+            "safe_for_solver": (mesh_diag or {}).get("safe_for_solver"),
+            "summary": (mesh_diag or {}).get("summary") or {},
+            "blocking": (mesh_diag or {}).get("blocking_interfaces") or [],
+        } if mesh_diag else None
         return {
             "present": True,
             "part_count": len(assembly.get("parts") or []),
@@ -304,6 +324,7 @@ def _assembly_block(
             "attention": blocking[:8],
             "cae_draft_status": (draft or {}).get("status"),
             "needs_user_input": ((draft or {}).get("needs_user_input") or [])[:8],
+            "interfaces": interfaces,
             "honesty": {
                 "contact_physics_modeled": False,
                 "bolt_preload_modeled": bool(

@@ -74,21 +74,38 @@ _DRAFT = {
 }
 
 
-def _write_assembly_package(pkg: Path) -> None:
+_MESH_DIAG_OK = {
+    "safe_for_solver": True,
+    "summary": {"ok": 2, "warning": 0, "blocking": 0},
+    "blocking_interfaces": [],
+}
+
+_MESH_DIAG_BLOCKED = {
+    "safe_for_solver": False,
+    "summary": {"ok": 1, "warning": 0, "blocking": 1},
+    "blocking_interfaces": ["if_b"],
+}
+
+
+def _write_assembly_package(pkg: Path, *, mesh_diag: dict | None = None) -> None:
     pkg.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(pkg, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("manifest.json", json.dumps({"model_id": "asm-context-test"}))
         zf.writestr("assembly/assembly_ir.json", json.dumps(_ASSEMBLY))
         zf.writestr("diagnostics/assembly_connection_geometry.json", json.dumps(_GEOMETRY))
         zf.writestr("simulation/assembly_cae_setup_draft.json", json.dumps(_DRAFT))
+        zf.writestr(
+            "diagnostics/assembly_mesh_interface_diagnostics.json",
+            json.dumps(mesh_diag if mesh_diag is not None else _MESH_DIAG_OK),
+        )
 
 
-def _context(tmp_path: Path, *, assembly: bool) -> dict:
+def _context(tmp_path: Path, *, assembly: bool, mesh_diag: dict | None = None) -> dict:
     settings = _make_settings(tmp_path)
     client = TestClient(create_app(settings))
     project_id, pkg = _make_project(settings, "assembly-context")
     if assembly:
-        _write_assembly_package(pkg)
+        _write_assembly_package(pkg, mesh_diag=mesh_diag)
     else:
         pkg.parent.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(pkg, "w") as zf:
@@ -131,6 +148,20 @@ def test_draft_status_and_honesty_flags_are_carried(tmp_path: Path) -> None:
     assert block["needs_user_input"]
     assert block["honesty"]["contact_physics_modeled"] is False
     assert block["honesty"]["bolt_preload_modeled"] is False
+
+
+def test_interface_coverage_is_reported(tmp_path: Path) -> None:
+    block = _context(tmp_path, assembly=True)["assembly"]
+    assert block["interfaces"]["safe_for_solver"] is True
+    assert block["interfaces"]["summary"]["ok"] == 2
+
+
+def test_an_empty_interface_makes_the_assembly_unsafe_to_solve(tmp_path: Path) -> None:
+    """`empty_interface` is the one BLOCKING finding — it must reach warnings."""
+    ctx = _context(tmp_path, assembly=True, mesh_diag=_MESH_DIAG_BLOCKED)
+    assert ctx["assembly"]["interfaces"]["safe_for_solver"] is False
+    assert any("if_b" in w and "not safe to solve" in w for w in ctx["warnings"]), \
+        ctx["warnings"]
 
 
 def test_single_part_project_is_unaffected(tmp_path: Path) -> None:

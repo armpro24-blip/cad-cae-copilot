@@ -1705,7 +1705,10 @@ are NOT `plausible`, each with its status and reasons, plus the CAE draft's
 `needs_user_input` and the standing honesty flags. A connection classified
 `invalid` also raises a top-level `warnings` entry and a `next_decision_focus`
 item, so a refused joint cannot be missed by an agent reading its session
-context.
+context. The block's `interfaces` field carries the interface-coverage verdict
+(`safe_for_solver` + the ok/warning/blocking tally); an interface that resolves
+to an empty node set makes `safe_for_solver` false and likewise raises a
+top-level warning.
 
 When per-part / package topology maps are available, the same call also **resolves interfaces
 and validates connection geometry** (geometry-validation only — still no contact/preload/solver):
