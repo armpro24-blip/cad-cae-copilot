@@ -102,6 +102,108 @@ def test_over_broad_interface_warns() -> None:
     assert rec["status"] == "warning"
 
 
+# ── signal, not noise: a warning must describe a defect, not a geometry (#497) ──
+#
+# Measured on a dogfood gearbox: 4 of 4 correctly-authored interfaces warned
+# (`ok: 0`), because both rules were satisfied by construction rather than by
+# defect — one planar face is exactly how `cad.define_interface` is meant to be
+# used, and a ring-shaped rim carries the part's own bbox diagonal while covering
+# a fifth of it. A check that fires on every correct input gets ignored, and the
+# genuinely blocking `empty_interface` gets ignored with it.
+
+def test_one_substantial_face_is_not_sparse() -> None:
+    """A single planar mating face is the normal authoring result, not a defect."""
+    topo = {"p": {
+        "p_body": {"id": "p_body", "type": "solid", "bounding_box": [0, 0, 0, 100, 100, 40]},
+        # a rim on a part whose bbox surface is 2*(10000+4000+4000) = 36000
+        "rim": _face("rim", [0, 0, 40, 100, 100, 40], area=2400.0),
+    }}
+    rec = _rec(_diag(_assembly({"face_ids": ["rim"]}), topo))
+    assert rec["status"] == "ok", rec["findings"]
+    assert rec["coverage_fraction"] == round(2400.0 / 36000.0, 6)
+
+
+def test_a_single_sliver_face_is_still_sparse() -> None:
+    """The real sparse signal — a tiny face — must survive."""
+    topo = {"p": {
+        "p_body": {"id": "p_body", "type": "solid", "bounding_box": [0, 0, 0, 100, 100, 40]},
+        "sliver": _face("sliver", [0, 0, 40, 4, 4, 40], area=16.0),
+    }}
+    rec = _rec(_diag(_assembly({"face_ids": ["sliver"]}), topo))
+    assert "sparse_interface" in _codes(rec)
+
+
+# The next three pin the shape-independence the coverage measure exists for: a
+# curved selection needs no curvature signal and no per-axis span test, both of
+# which degenerate (a cylinder's lateral area is pi x its own bbox cross-section
+# regardless of how much of the part it is; a per-axis span test is satisfied by
+# any face of a thin part).
+
+def test_a_journal_band_on_a_long_shaft_is_clean() -> None:
+    """The true mating region must not be flagged merely for being curved."""
+    topo = {"p": {
+        "p_body": {"id": "p_body", "type": "solid", "bounding_box": [-10, -10, 0, 10, 10, 200]},
+        # 2*pi*r*L, r=10 L=20 -> 1256.6, against a bbox surface of 2*(400+4000+4000)
+        "journal": _face("journal", [-10, -10, 90, 10, 10, 110], area=1256.6),
+    }}
+    rec = _rec(_diag(_assembly({"face_ids": ["journal"]}), topo))
+    assert rec["status"] == "ok", rec["findings"]
+
+
+def test_the_entire_shaft_surface_is_over_broad() -> None:
+    """Selecting the whole lateral surface as the journal IS over-broad."""
+    topo = {"p": {
+        "p_body": {"id": "p_body", "type": "solid", "bounding_box": [-10, -10, 0, 10, 10, 200]},
+        "whole": _face("whole", [-10, -10, 0, 10, 10, 200], area=12566.0),
+    }}
+    rec = _rec(_diag(_assembly({"face_ids": ["whole"]}), topo))
+    assert "over_broad_interface" in _codes(rec)
+    assert "part surface" in rec["findings"][0]["message"]
+
+
+def test_the_rim_of_a_thin_disc_is_clean() -> None:
+    """A short wide cylinder: its rim reaches the part's full extent on every
+    axis, so a per-axis span test would flag this press-fit band. By area it is
+    7% of the disc's boundary — a legitimate mating region."""
+    topo = {"p": {
+        "p_body": {"id": "p_body", "type": "solid", "bounding_box": [-10, -10, 0, 10, 10, 1]},
+        # 2*pi*r*L, r=10 L=1 -> 62.8, against a bbox surface of 2*(400+20+20)
+        "rim": _face("rim", [-10, -10, 0, 10, 10, 1], area=62.8),
+    }}
+    rec = _rec(_diag(_assembly({"face_ids": ["rim"]}), topo))
+    assert rec["status"] == "ok", rec["findings"]
+    assert "over_broad_interface" not in _codes(rec)
+    assert "sparse_interface" not in _codes(rec)
+
+
+def test_coverage_does_not_depend_on_how_the_part_is_placed() -> None:
+    """Rotating a part inflates its world AABB but not its interface area.
+
+    A 100x100x2 plate at 45 deg about Z has a ~141x141x2 world box — nearly
+    double the surface — so a world-box denominator would drop coverage from 48%
+    to 24% and silently suppress the warning. Coverage compares two intrinsic
+    quantities, so the verdict travels with the part.
+    """
+    topo = {"p": {
+        "p_body": {"id": "p_body", "type": "solid", "bounding_box": [0, 0, 0, 100, 100, 2]},
+        "top": _face("top", [0, 0, 2, 100, 100, 2], area=10000.0),
+    }}
+    c = 0.7071067811865476
+
+    def _placed(matrix):
+        asm = _assembly({"face_ids": ["top"]})
+        if matrix is not None:
+            asm["parts"][0]["transform"] = {"matrix": matrix, "translation": [0, 0, 0], "unit": "mm"}
+        return _rec(_diag(asm, topo))
+
+    upright = _placed(None)
+    rotated = _placed([[c, -c, 0.0], [c, c, 0.0], [0.0, 0.0, 1.0]])
+
+    assert upright["coverage_fraction"] == rotated["coverage_fraction"]
+    assert "over_broad_interface" in _codes(upright)
+    assert "over_broad_interface" in _codes(rotated), rotated["findings"]
+
+
 def test_partial_resolution_warns_without_blocking() -> None:
     topo = {"p": {
         "p_body": _BIG_BODY,

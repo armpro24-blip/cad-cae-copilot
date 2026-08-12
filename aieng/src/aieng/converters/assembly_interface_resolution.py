@@ -44,9 +44,27 @@ FEATURE_GRAPH_PATH = "graph/feature_graph.json"
 # An interface that maps onto zero faces yields an EMPTY node set; one mapping
 # onto a single tiny face yields a SPARSE/undersampled one — both produce
 # misleading assembly solver results, so they are surfaced before any run.
-_SPARSE_MAX_FACES = 1          # <= this resolved face(s) -> undersampled interface
+# `sparse` and `over_broad` are judged by AREA against the part's largest
+# cross-section, not by face count or bbox diagonal. Measured on the dogfood
+# gearbox, the earlier proxies fired on 4 of 4 correctly-authored interfaces
+# (`ok: 0`), because both are true by construction rather than by defect:
+#   - one planar face is exactly how `cad.define_interface` is meant to be used,
+#     so `face_count <= 1` flags the normal case;
+#   - a ring-shaped housing rim has the part's own footprint diagonal while
+#     covering 22% of it, so a diagonal ratio calls it over-broad.
+# A diagnostic that fires on every correct input teaches the engineer to ignore
+# it — which is how the genuinely blocking `empty_interface` gets missed.
+# Both are measured as `coverage_fraction` = interface area / the part's bbox
+# SURFACE area — "how much of the part's boundary does this selection tie down".
+# One quantity, no shape assumptions: it needs neither a curvature signal nor a
+# per-axis span test, so a flat plate, a ring, a long shaft and a thin disc are
+# all judged by the same number. A single planar face can never exceed ~0.5 of a
+# bbox's surface, so 0.4 means "nearly the largest single-face selection there
+# is"; on a cube one face is 0.167 and correctly stays clean.
+_SPARSE_MAX_FACES = 1          # a single face is only sparse if it is also small
+_SPARSE_SURFACE_FRAC = 0.01    # iface-area / part-bbox-surface < this -> sliver
 _DISCONNECT_GAP_FRAC = 0.05    # member-face gap > this*iface-diag -> separate region
-_OVER_BROAD_DIAG_FRAC = 0.9    # iface-diag / part-diag > this -> interface spans the part
+_OVER_BROAD_SURFACE_FRAC = 0.4  # iface-area / part-bbox-surface > this -> spans the part
 
 # proximity thresholds expressed as a fraction of the larger interface bbox diagonal
 _TOUCH_FRAC = 0.02     # gap <= this*scale -> touching/overlapping
@@ -104,6 +122,24 @@ def _bbox_from_points(pts: list[list[float]]) -> list[float]:
 
 def _bbox_diag(bb: list[float]) -> float:
     return math.sqrt(sum((float(bb[i + 3]) - float(bb[i])) ** 2 for i in range(3)))
+
+
+_IDENTITY_ROTATION = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+_ZERO_TRANSLATION = [0.0, 0.0, 0.0]
+
+
+def _bbox_surface_area(bb: list[float]) -> float:
+    """Surface area of an AABB — the scale an interface area is measured against.
+
+    Area is the honest yardstick for "how much of this part does the selection
+    tie down": a ring and a full disc of the same outer diameter share a bbox
+    diagonal but not an area, and it is area that decides how many nodes a
+    constraint captures. Measuring against the whole boundary rather than one
+    cross-section also makes the number shape-agnostic — a curved face that wraps
+    the body needs no special case.
+    """
+    ex = [max(float(bb[i + 3]) - float(bb[i]), 0.0) for i in range(3)]
+    return 2.0 * (ex[0] * ex[1] + ex[1] * ex[2] + ex[0] * ex[2])
 
 
 def _bbox_gap(a: list[float], b: list[float]) -> float:
@@ -750,9 +786,19 @@ def diagnose_mesh_interfaces(assembly: Any, topology_by_part: dict[str, dict[str
 
         member_boxes = _iface_member_world_boxes(iface, topo_index, R, tvec)
         region_count = _region_count(member_boxes, _DISCONNECT_GAP_FRAC * iface_diag) if iface_diag > 0 else len(member_boxes)
-        part_bbox = _part_world_bbox(topo_index, R, tvec)
+        # The part's own scale, measured BEFORE the placement transform. A world
+        # axis-aligned box inflates when the part is rotated (a 100x10x10 bar at
+        # 45 deg gains ~3x the surface) while the interface area does not, so a
+        # world-box denominator would let assembly orientation decide whether an
+        # interface is over-broad. Coverage compares two intrinsic quantities.
+        part_bbox = _part_world_bbox(topo_index, _IDENTITY_ROTATION, _ZERO_TRANSLATION)
         part_diag = _bbox_diag(part_bbox) if part_bbox else 0.0
-        broad_ratio = (iface_diag / part_diag) if part_diag > 0 and iface_diag > 0 else None
+        part_surface = _bbox_surface_area(part_bbox) if part_bbox else 0.0
+        coverage = (
+            (float(area) / part_surface)
+            if part_surface > 0 and isinstance(area, (int, float)) and area
+            else None
+        )
 
         findings: list[dict[str, Any]] = []
         if status_res == "unresolved" or face_count == 0 or not area:
@@ -769,10 +815,15 @@ def diagnose_mesh_interfaces(assembly: Any, topology_by_part: dict[str, dict[str
                     "message": f"{len(unresolved)} of {requested} interface refs did not resolve",
                     "guidance": "refresh topology_refs against the latest part geometry; unresolved refs are dropped from the node set.",
                 })
-            if face_count <= _SPARSE_MAX_FACES:
+            if face_count <= _SPARSE_MAX_FACES and (coverage is None or coverage < _SPARSE_SURFACE_FRAC):
+                extent = (
+                    f" covering {coverage * 100:.2f}% of the part surface"
+                    if coverage is not None else " (part extent unknown)"
+                )
                 findings.append({
                     "code": "sparse_interface", "severity": "warning",
-                    "message": f"interface maps onto only {face_count} face(s); the node set may be undersampled",
+                    "message": f"interface maps onto only {face_count} face(s){extent}; "
+                               "the node set may be undersampled",
                     "guidance": "refine the mesh on this interface or extend topology_refs so the contact/load region is adequately sampled.",
                 })
             if region_count > 1:
@@ -781,10 +832,11 @@ def diagnose_mesh_interfaces(assembly: Any, topology_by_part: dict[str, dict[str
                     "message": f"interface faces form {region_count} disconnected regions",
                     "guidance": "split into separate interfaces or confirm the refs belong to one contact patch; a disconnected node set can misrepresent load transfer.",
                 })
-            if broad_ratio is not None and broad_ratio > _OVER_BROAD_DIAG_FRAC:
+            if coverage is not None and coverage > _OVER_BROAD_SURFACE_FRAC:
                 findings.append({
                     "code": "over_broad_interface", "severity": "warning",
-                    "message": f"interface spans {round(broad_ratio * 100)}% of the part diagonal; likely over-broad",
+                    "message": f"interface covers {round(coverage * 100)}% of the part surface; "
+                               "likely over-broad",
                     "guidance": "narrow the interface to the true mating region; an over-broad node set over-constrains the model.",
                 })
 
@@ -807,6 +859,8 @@ def diagnose_mesh_interfaces(assembly: Any, topology_by_part: dict[str, dict[str
             "region_count": region_count,
             "interface_diag": round(iface_diag, 6) if iface_diag else 0.0,
             "part_diag": round(part_diag, 6) if part_diag else None,
+            "part_surface_area": round(part_surface, 6) if part_surface else None,
+            "coverage_fraction": round(coverage, 6) if coverage is not None else None,
             "status": status,
             "findings": findings,
         })
