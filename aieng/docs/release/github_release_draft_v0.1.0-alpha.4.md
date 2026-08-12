@@ -5,7 +5,7 @@
 ## What changed
 
 This release is almost entirely **defects found by using the product**, not by
-reading it. Four dogfood rounds drove the documented agent paths end to end —
+reading it. Four rounds of dogfooding drove the documented agent paths end to end —
 assembly authoring, the no-MCP fallback scripts, topology optimization, and
 parametric editing — and every one of them was broken in a way the test suite
 could not see. Thirteen real defects, plus the CAE pre-processing rewrite that
@@ -21,7 +21,7 @@ Setting up an analysis used to mean reading a digest of every face's normal and
 area, picking ids by eye, and hand-writing four JSON patches with NSET names,
 DOF ranges and direction vectors. Now it is one call in engineering language:
 
-```
+```text
 cae.setup_static {
   material: "Al6061-T6",
   fix:  "bottom",                                    # or "bolt holes" / "base_plate bottom"
