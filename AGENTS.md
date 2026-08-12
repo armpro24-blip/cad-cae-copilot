@@ -1272,13 +1272,40 @@ beam, and `opt.writeback_to_shape_ir` would have written that result back as the
 part's geometry. The 3D derivation in the same module already refused this way;
 now both do.
 
-**Know what the design space is.** It defaults to the **largest single solid**.
-On a two-body bracket (`base_plate` + `rib_main`) that excludes the rib, so a
-load applied to the rib resolves to no design-space boundary and the 3D
-derivation refuses — naming the owning part and the design space:
-`load 'load_001' face face_020 (on rib_main) is not on the boundary of the
-design space 'base_plate' (the largest solid)`. Pass an explicit `problem` with
-the `design_space_node` you mean, or model the design envelope as one body.
+**Know what the design space is, and name another when you need to.** It
+defaults to the **largest single solid**, so on a two-body bracket
+(`base_plate` + `rib_main`) a load applied to the rib lies outside it. The
+derivation refuses, names the owning part, and lists what you could pass
+instead:
+
+```
+status: needs_user_input
+diagnostics: load 'load_001' face face_020 (on rib_main) lies outside the design
+             space 'base_plate'. Name another with design_space_node —
+             e.g. whole_model for the envelope spanning every body.
+design_space_candidates: base_plate (solid) | rib_main (solid) | whole_model (model_envelope)
+```
+
+Pass `design_space_node` to `opt.derive_problem_from_cae` or
+`opt.run_topology_optimization` — a body name, or **`whole_model`** for the
+envelope spanning every body. Measured on that bracket: the default refuses,
+`whole_model` derives a 16×11×4 problem (1 support, 500 N on 15 cells) and the
+optimizer takes compliance from 7.5e4 to 9.4e3 at the target volume fraction.
+The default is deliberately unchanged — which body is the design space is an
+engineering decision, not something to infer.
+
+**A load may act on a face that cuts through the design space.** A boundary
+plane is not required: a bracket's load enters through the rib's *inclined*
+face, which spans the domain rather than bounding it. Such a load maps to the
+voxels the face occupies and the derivation records `mapping: "occupied_cells"`
+plus a warning saying so; an ordinary boundary face stays `"boundary_layer"`.
+Supports remain boundary-only — a support in mid-domain is a modelling error far
+more often than an intent.
+
+Face normals come from the topology's recorded `normal`, not from the bounding
+box's thinnest extent: a gusset hypotenuse is thin along the rib's *thickness*,
+so the bbox heuristic read a 32°-inclined load face as a y-normal face sitting
+mid-model, and no choice of design space could rescue it.
 **Mesh-to-CAD reconstruction honesty.** Mesh outputs may run a conservative
 backend-only reconstruction ladder after region segmentation / analytic fitting:
 face candidates → OCC face validation → stitching plan → OCC sewing →
