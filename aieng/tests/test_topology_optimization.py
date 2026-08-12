@@ -682,6 +682,38 @@ def test_plate_bending_is_refused_not_replaced_by_a_textbook_cantilever(tmp_path
     assert prob["grid"]["nelx"] == 40 and prob["grid"]["nely"] == round(40 * 80 / 120)
 
 
+def test_an_unresolvable_load_does_not_borrow_the_bending_reason(tmp_path: Path):
+    """A load that lands on no cells is a binding problem, not plate bending.
+
+    Both end in "no usable load", so the refusal must not blame the physics when
+    the real fault is that the target never resolved.
+    """
+    pytest.importorskip("yaml")
+    pkg = tmp_path / "plate_unbound.aieng"
+    _write_cae_project(pkg)
+    # point the load at a feature no mapping knows about
+    setup = (
+        "boundary_conditions:\n  - {id: bc1, target_feature: feat_fix, type: fixed}\n"
+        "loads:\n  - {id: ld1, target_feature: feat_ghost, type: force, "
+        "value_n: 500.0, direction: [0.0, 0.0, -1.0]}\n"
+    )
+    tmp = pkg.with_suffix(".tmp.aieng")
+    with zipfile.ZipFile(pkg) as src, zipfile.ZipFile(tmp, "w") as dst:
+        for item in src.infolist():
+            if item.filename != "simulation/setup.yaml":
+                dst.writestr(item, src.read(item.filename))
+        dst.writestr("simulation/setup.yaml", setup)
+    tmp.replace(pkg)
+
+    prob = derive_topopt_problem_from_package(pkg, resolution=40)
+    assert prob["status"] == "needs_user_input"
+    assert prob["out_of_plane_loads"] == [], "an unbound load is not an out-of-plane load"
+    assert "bending" not in prob["reason"]
+    # a setup that exists but resolved to nothing must not read as "no CAE setup"
+    assert "no CAE setup" not in prob["reason"]
+    assert "0 load(s)" in prob["reason"]
+
+
 def test_in_plane_load_still_derives_a_full_problem(tmp_path: Path):
     """The refusal is about the idealization, not about being strict."""
     pytest.importorskip("yaml")

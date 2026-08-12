@@ -56,6 +56,30 @@ def _read_json(zf: zipfile.ZipFile, member: str) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _as_float(value: Any) -> float | None:
+    """A real number, or None — never a string that a downstream schema rejects.
+
+    The parsed artifacts are written by several authoring paths and may carry
+    values as text. Passing those straight through produced a setup that looks
+    complete and fails `aieng.validate` (or a solver) later.
+    """
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_direction(value: Any) -> list[float]:
+    """A 3-component numeric direction; default -Z when the input is unusable."""
+    if isinstance(value, (list, tuple)) and len(value) == 3:
+        parts = [_as_float(v) for v in value]
+        if all(p is not None for p in parts):
+            return [float(p) for p in parts]  # type: ignore[arg-type]
+    return [0.0, 0.0, -1.0]
+
+
 def _parse_setup_document(raw: str) -> dict[str, Any]:
     if raw.lstrip().startswith("{"):
         try:
@@ -102,20 +126,30 @@ def synthesize_setup_from_parsed(zf: zipfile.ZipFile) -> dict[str, Any] | None:
 
     materials: dict[str, Any] = {}
     material_name: str | None = None
+    assumed: list[str] = []
     for entry in _read_json(zf, PARSED_MATERIALS_PATH).get("materials") or []:
         if not isinstance(entry, dict):
             continue
         name = str(entry.get("name") or "AIENG_MATERIAL")
-        modulus_mpa = entry.get("youngs_modulus_mpa")
-        if modulus_mpa is None and entry.get("youngs_modulus_pa") is not None:
-            try:
-                modulus_mpa = float(entry["youngs_modulus_pa"]) / 1e6
-            except (TypeError, ValueError):
-                modulus_mpa = None
+        modulus_mpa = _as_float(entry.get("youngs_modulus_mpa"))
+        if modulus_mpa is None:
+            pa = _as_float(entry.get("youngs_modulus_pa"))
+            modulus_mpa = pa / 1e6 if pa is not None else None
+        poisson = _as_float(entry.get("poisson_ratio"))
+        density = _as_float(entry.get("density_kg_m3"))
+        # Fall back to generic-aluminium numbers only when the artifacts really
+        # carry nothing, and SAY which values were assumed. A synthesized setup
+        # feeds the static solver; a caller must be able to tell a declared
+        # property from an invented one.
+        for field, value in (("youngs_modulus_mpa", modulus_mpa),
+                             ("poisson_ratio", poisson),
+                             ("density_kg_m3", density)):
+            if value is None:
+                assumed.append(f"{name}.{field}")
         materials[name] = {
             "youngs_modulus_mpa": modulus_mpa if modulus_mpa is not None else 69000.0,
-            "poisson_ratio": entry.get("poisson_ratio", 0.33),
-            "density_kg_m3": entry.get("density_kg_m3", 2700),
+            "poisson_ratio": poisson if poisson is not None else 0.33,
+            "density_kg_m3": density if density is not None else 2700.0,
         }
         if material_name is None:
             material_name = name
@@ -137,10 +171,11 @@ def synthesize_setup_from_parsed(zf: zipfile.ZipFile) -> dict[str, Any] | None:
         feature_id = target_feature(load)
         if not feature_id:
             continue
+        raw_value = load.get("value_n", load.get("magnitude_n", load.get("value", 0.0)))
         loads.append({
             "target_feature": feature_id,
-            "value_n": load.get("value_n", load.get("magnitude_n", load.get("value", 0.0))),
-            "direction": load.get("direction") or [0.0, 0.0, -1.0],
+            "value_n": _as_float(raw_value) or 0.0,
+            "direction": _as_direction(load.get("direction")),
         })
 
     if not (materials or boundary_conditions or loads):
@@ -154,6 +189,8 @@ def synthesize_setup_from_parsed(zf: zipfile.ZipFile) -> dict[str, Any] | None:
     }
     if material_name:
         setup["material_name"] = material_name
+    if assumed:
+        setup["assumed_properties"] = assumed
     mesh_size = _read_json(zf, SOLVER_SETTINGS_PATH).get("mesh_size_mm")
     if mesh_size:
         setup["mesh"] = {"target_size_mm": mesh_size}

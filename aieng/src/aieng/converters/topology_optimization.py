@@ -1331,7 +1331,10 @@ def derive_topopt_problem_from_package(
                 warnings.append(
                     f"load '{ld.get('target_feature')}' is mostly out-of-plane ({axis[w]}); "
                     "the 2D problem keeps only the in-plane component")
-        elif abs(fw) > 0:
+        elif cells and abs(fw) > 0:
+            # Only a load that DID land on cells, and whose force is entirely
+            # out-of-plane, diagnoses the plate-bending case. One that resolved
+            # to no cells is a binding problem and must not borrow that reason.
             out_of_plane_only.append(str(ld.get("target_feature")))
             warnings.append(
                 f"load '{ld.get('target_feature')}' is purely out-of-plane ({axis[w]}); "
@@ -1358,7 +1361,10 @@ def derive_topopt_problem_from_package(
             },
             support_count=len(supports), load_count=len(loads),
             out_of_plane_axis=axis[w], out_of_plane_only=out_of_plane_only,
-            setup_present=bool(setup_bcs or setup_loads),
+            # A setup that exists but resolved to nothing is a binding problem,
+            # not a missing setup — telling the user to author one they already
+            # have would send them the wrong way.
+            setup_present=bool(setup),
         )
 
     # Advisory engineering guidance from neutral CAE result artifacts (if present).

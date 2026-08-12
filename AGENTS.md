@@ -1234,6 +1234,9 @@ is possible).
 | `opt.doe_sizing_study` | Multi-parameter DOE sizing study (approval required): jointly vary 2+ editable parameters by explicit values or ranges, generate a full-factorial or LHS design within a 64-point budget, solve each design point with real static FEA, and rank by objective + constraints. Baseline never modified; failed points reported honestly. |
 | `opt.derive_problem_from_cae` | Derive a topology-optimization problem (grid + supports + loads + design space) from a project's CAE setup + geometry (`topology_map` faces + design-space bbox). Reads the setup **whichever path authored it** — `simulation/setup.yaml` or the key-free `simulation/cae_imports/parsed_*.json`. Read-only; returns the problem + a `derivation` block. `dimension=2d` (default) projects supports/loads onto the plane of the two largest dims; `dimension=3d` keeps the full 3D layout (structured voxel grid, supports→boundary layers, full 3D force). **Both dimensions return `status=needs_user_input` rather than substituting a preset** when the BCs can't be mapped |
 | `opt.run_topology_optimization` | Run topology optimization (built-in self-contained SIMP, compliance-min, pure numpy — no external solver) → `analysis/topology_optimization.json`. `simp_2d` (default) or `simp_3d` (experimental structured-voxel 3D, `dimension=3d`; honest `capability` block: experimental_reference, production_ready:false). Honest coarse limitations recorded. Set `auto_derive` (or omit `problem`) to derive supports/loads/design-space from the project's CAE setup; either dimension may return `needs_user_input` instead of guessing |
+| `opt.writeback_to_shape_ir` | Author the optimization result back into `geometry/shape_ir.json`, then recompile through runtime routing → the optimized body meshes/views + gets verification + object_registry, linked to its `design_space_node`. 2D: `method=contour` (default) writes a marching-squares boundary as an `extruded_region` (`boundary=spline` default → closed periodic spline / CAD-friendly curve, falls back to `polygon` if it would overshoot the design-space envelope); `method=voxels` writes the blocky `density_voxels`. 3D: `method=surface` (default) writes a smooth **marching-cubes** `surface_mesh` proxy (mesh / lossy / not production CAD; falls back to `voxels` if no isosurface); `method=voxels` writes the blocky 3D `density_voxels`. Placed in the design-space frame. Default representation `brep_build123d` for 2D (analytic faces — pickable, STEP-exportable; auto-falls back to `manifold_mesh` if the B-Rep build fails); 3D defaults to `manifold_mesh` |
+| `postprocess.generate_computed_metrics` | Import metrics from CSV/JSON |
+| `postprocess.refresh_cae_summary` | Regenerate result summary + evidence markdown |
 
 **A 2D problem it cannot honestly pose is refused, not replaced.** The 2D
 projection plane is spanned by the design space's two **largest** dimensions, so
@@ -1257,8 +1260,6 @@ derivation refuses — naming the owning part and the design space:
 `load 'load_001' face face_020 (on rib_main) is not on the boundary of the
 design space 'base_plate' (the largest solid)`. Pass an explicit `problem` with
 the `design_space_node` you mean, or model the design envelope as one body.
-| `opt.writeback_to_shape_ir` | Author the optimization result back into `geometry/shape_ir.json`, then recompile through runtime routing → the optimized body meshes/views + gets verification + object_registry, linked to its `design_space_node`. 2D: `method=contour` (default) writes a marching-squares boundary as an `extruded_region` (`boundary=spline` default → closed periodic spline / CAD-friendly curve, falls back to `polygon` if it would overshoot the design-space envelope); `method=voxels` writes the blocky `density_voxels`. 3D: `method=surface` (default) writes a smooth **marching-cubes** `surface_mesh` proxy (mesh / lossy / not production CAD; falls back to `voxels` if no isosurface); `method=voxels` writes the blocky 3D `density_voxels`. Placed in the design-space frame. Default representation `brep_build123d` for 2D (analytic faces — pickable, STEP-exportable; auto-falls back to `manifold_mesh` if the B-Rep build fails); 3D defaults to `manifold_mesh` |
-
 **Mesh-to-CAD reconstruction honesty.** Mesh outputs may run a conservative
 backend-only reconstruction ladder after region segmentation / analytic fitting:
 face candidates → OCC face validation → stitching plan → OCC sewing →
@@ -1274,8 +1275,6 @@ overwrites the source/generated STEP. When reconstructed topology replaces
 and restore mesh topology. Reconstructed STEP (`geometry/reconstructed.step`) is
 mesh-derived/lossy, not original design history, not production CAD certification,
 and freeform/NURBS fitting remains future work.
-| `postprocess.generate_computed_metrics` | Import metrics from CSV/JSON |
-| `postprocess.refresh_cae_summary` | Regenerate result summary + evidence markdown |
 
 ### Package lifecycle
 
