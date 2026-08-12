@@ -22,6 +22,7 @@ import argparse
 import json
 import shutil
 import sys
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -60,7 +61,12 @@ def register_project(
     project_id: str | None = None,
     data_root: Path | None = None,
 ) -> dict[str, Any]:
-    settings = Settings.from_env() if data_root is None else Settings(data_root=data_root)
+    # `Settings(data_root=...)` used to be enough; the dataclass has since gained
+    # four required fields, so the documented `--data-root` flag raised TypeError
+    # instead of importing anything. Override the one field, keep the rest.
+    settings = Settings.from_env()
+    if data_root is not None:
+        settings = replace(settings, data_root=Path(data_root))
     projects_root = settings.projects_root
     projects_root.mkdir(parents=True, exist_ok=True)
 
