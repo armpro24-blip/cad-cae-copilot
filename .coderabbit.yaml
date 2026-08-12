@@ -1,0 +1,112 @@
+# CodeRabbit review configuration.
+#
+# The generic review is already useful here — it has caught a silently invented
+# aluminium material, a `float("nan")` passing a numeric coercion, a documented
+# selector read too late to matter, and a summarizer that deleted the field it
+# was summarizing. What it cannot know is which defect patterns THIS codebase
+# keeps producing, so they are named below.
+#
+# The long form, with the measured instance behind each pattern, is the
+# "Review lens" section of AGENTS.md (also served as `aieng.guide {topic:
+# "review"}`). Keep the two in sync: this file is the trigger, that section is
+# the evidence.
+
+language: en-GB
+
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  auto_review:
+    enabled: true
+    drafts: false
+
+  path_instructions:
+    - path: "**/*.py"
+      instructions: |
+        This is an agent-facing CAD/CAE workbench: the primary consumer of every
+        return value is an AI agent, not a human reading a screen. An output that
+        is merely misleading is therefore a real defect. Weight these patterns —
+        each one has shipped here through green CI:
+
+        1. `undocumented-path` — a path the docs advertise that no test
+           exercises. If a PR adds or changes a documented command, script or
+           tool, ask what exercises it. Four documented chains were dogfooded
+           here; all four were broken.
+
+        2. `by-construction` — a threshold satisfied by construction, not by
+           defect. Ask what a rule says about a CORRECT input. A check that
+           fires on every valid case carries no information (and buries the
+           genuinely blocking finding beside it); one whose condition is
+           unreachable for the shape at hand never fires at all. Be suspicious
+           of proxy quantities — a bounding box's thinnest axis, a bbox
+           diagonal — that are degenerate for the geometry being judged.
+
+        3. `silent-substitute` — a substitute instead of an honest refusal.
+           Flag any `status: "ok"` that carries a preset, a default or a
+           fallback in place of the thing requested. If two sibling code paths
+           disagree about whether to refuse, the honest one is the spec.
+
+        4. `asked-a-got-b` — the caller asked for A and silently got B. Check
+           that every documented input is actually read, at a point where it can
+           still affect the outcome. Watch for `x or DEFAULT` where an explicit
+           falsy value (0, 0.0, "") is meaningful, and for values read after the
+           decision they were meant to influence.
+
+        5. `invented-data` — invented data that looks declared. If a default
+           stands in for missing input, the caller must be able to tell. Prefer
+           recording that a value was assumed over silently substituting a
+           plausible one — especially for material properties, loads, and
+           anything that reaches a solver.
+
+        6. `safety-by-accident` — the gate held, but not because the rule fired.
+           When a gate holds, ask whether the rule fired or whether an unrelated
+           coincidence held the line. A mutation that invalidates downstream
+           evidence must record that it did, not rely on a side effect that
+           happens to block the next step.
+
+        7. `stale-artifact` — a stored artifact older than the logic that reads
+           it. Derived files are written once and served as current forever.
+           Where a fact is cheap to recompute from the source of truth at read
+           time, prefer that: it is self-healing when the deriving logic
+           improves.
+
+        Also: a helper that condenses, filters, or normalises data must never be
+        the thing that loses it on an unexpected shape.
+
+    - path: "aieng-ui/backend/app/runtime_registry/**"
+      instructions: |
+        These are the MCP tool handlers an external agent drives. Additionally:
+        - every tool response is context the agent pays for — flag bulk arrays
+          (vertices, faces, density grids) returned inline when a count, a bbox
+          or a package path would serve;
+        - a refusal must be actionable: name the offending entity the way the
+          user named it (part label, not internal id) and state what could be
+          passed instead;
+        - honesty flags (`production_ready`, `solver_executed`, credibility
+          tiers, `*_modeled: false`) must never be weakened or dropped.
+
+    - path: "**/test_*.py"
+      instructions: |
+        Tests here are the specification of an honesty contract, so check what
+        they ENCODE, not just that they pass:
+        - a test that asserts a silent fallback, a substituted preset, or an
+          invented default is encoding a defect as the expectation;
+        - a test that had to change the engineering input (a load direction, a
+          material) to make the feature work is evidence the FEATURE is broken;
+        - assert the invariant rather than a literal: a hard-coded version or
+          size breaks on every legitimate change while checking nothing.
+
+    - path: "**/*.md"
+      instructions: |
+        Documentation here is a contract an agent acts on, so treat an unkept
+        promise as a defect: if the text says a tool reports something, check the
+        tool actually does. Flag prose inserted between rows of a Markdown table
+        (it terminates the table and strands every row below), and version
+        numbers in forward-looking instructions that were not updated with the
+        release — while leaving dated captures of past runs alone.
+
+chat:
+  auto_reply: true

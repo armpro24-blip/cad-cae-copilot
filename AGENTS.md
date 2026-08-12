@@ -2015,6 +2015,106 @@ curl -X POST http://localhost:8000/api/agent/invoke-tool \
 
 ---
 
+## Review lens — the defect patterns this codebase actually produces
+
+Seven patterns account for most of the real defects found by dogfooding this
+workbench. Each is stated with the question that detects it and a measured
+instance, because the abstract version is easy to nod at and hard to apply. Use
+this when reviewing a PR, and when reviewing your own work before opening one.
+
+None of these make a test fail. Every instance below shipped through green CI.
+
+The bracketed id on each heading is shared with `.coderabbit.yaml`, so the
+automated reviewer is told about the same seven; a test asserts the two lists are
+equal rather than merely non-empty.
+
+### 1. `undocumented-path` — a path the docs advertise that no test exercises
+
+**Ask: `grep -rln <tool-or-script-name>` — does anything but the docs mention it?**
+
+Four documented chains were dogfooded; all four were broken. The no-MCP fallback
+scripts were referenced by exactly one file in the repo — AGENTS.md, which
+advertises them to agents that have no other way in — and the first command in
+the documented sequence died with `NameError` on an unsubstituted placeholder.
+
+### 2. `by-construction` — a threshold satisfied by construction, not by defect
+
+**Ask: what does this rule say about a CORRECT input?**
+
+Two shapes, both bad:
+- *fires on every correct input* — `face_count <= 1` flagged one planar face as
+  "undersampled", which is exactly how `cad.define_interface` is meant to be
+  used: 4 of 4 correct interfaces warned, so the one genuinely blocking finding
+  was ignored with them;
+- *never fires when it should* — a load on a plate is perpendicular to its two
+  largest dimensions by definition, so the 2D projection dropped it every time.
+
+A bbox's thinnest axis is the *part's* thin direction, so it can never be an
+inclined face's normal. Watch for a proxy quantity that is degenerate for the
+shape at hand.
+
+### 3. `silent-substitute` — a substitute instead of an honest refusal
+
+**Ask: when this cannot do what was asked, does it say so, or does it do something else?**
+
+The 2D topology-optimization derivation answered `status: "ok"` carrying a
+textbook `cantilever` preset for a real 500 N bracket — and `writeback` would
+then have made that fiction the part's geometry. Worse than failing. The 3D
+derivation in the same module already refused correctly: **when two sibling code
+paths disagree about honesty, the honest one is the spec.**
+
+### 4. `asked-a-got-b` — the caller asked for A and silently got B
+
+**Ask: is every documented input actually read, at a point where it can still matter?**
+
+`design_space_node` was documented on `problem`, read only from the top level,
+and `problem` is merged *after* derivation — so a caller requesting the whole
+envelope got the default and no indication why. Its cousins: an explicit `0 N`
+load read as "missing" and defaulted to 1 N, and `float("nan")` passing a numeric
+coercion.
+
+### 5. `invented-data` — invented data that looks declared
+
+**Ask: if a default stood in for missing input, can the caller tell?**
+
+With no modulus in the parsed artifacts, a synthesized material became
+69000 MPa / 0.33 / 2700 — generic aluminium, indistinguishable from a stated
+value, in a setup that feeds the static solver. The fallback is fine; the silence
+is not. Record what was assumed (`assumed_properties`) instead of removing the
+fallback, so behaviour is unchanged and the data stops lying.
+
+### 6. `safety-by-accident` — the gate held, but not because the rule fired
+
+**Ask: is this gate holding because the rule fired, or because of an unrelated coincidence?**
+
+`opt.writeback_to_shape_ir` replaced a 30-face bracket with a one-face mesh proxy
+and recorded no geometry change at all. The solver was still blocked — but only
+because the old face ids happened to vanish. Different geometry with colliding
+ids would have sailed through. A gate that works by luck is not a gate.
+
+### 7. `stale-artifact` — a stored artifact older than the logic that reads it
+
+**Ask: was this file written by today's code?**
+
+The feature graph is written once and served as current forever. A constant that
+dimensions the plate *and* positions the rib was reported `scope: "local"` — "the
+safe single-part edit" — because the graph predated the binder that would have
+caught it, and the scope-risk gate reads the same graph. Prefer recomputing a
+cheap derived fact at read time; it is self-healing when the logic improves.
+
+### Two habits that caught defects repeatedly
+
+- **When a fix turns a failure into a success, confirm the success has the reason
+  you intended.** Fixing the face-normal inference made a refusal become
+  `status: ok` — which turned out to be a face *outside* the design space reading
+  as *on its boundary*, a worse bug hidden behind the first.
+- **A test that had to change the physics to make the feature work is evidence
+  the feature is broken.** Next to the tests asserting the cantilever
+  substitution sat one whose comment read "rewrite the load to act in-plane (-Y)
+  so derivation yields a real load".
+
+---
+
 ## Common mistakes to avoid
 
 | Mistake | Correct approach |

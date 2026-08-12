@@ -146,6 +146,12 @@ TOPIC_SECTIONS: dict[str, tuple[str, ...]] = {
         "Tool taxonomy",
         "Approval-gated tools",
     ),
+    # Its own topic on purpose: a reviewer wants it, a modeller does not, and
+    # folding it into `cad`/`cae` would undo the weight cuts of #494.
+    "review": (
+        "Review lens — the defect patterns this codebase actually produces",
+        "Common mistakes to avoid",
+    ),
     "workflows": (
         "Pointer syntax — `@kind:id`",
         "Recommended workflows",
