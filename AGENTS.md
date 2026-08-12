@@ -1742,17 +1742,20 @@ is blocking, and empty interfaces add a `needs_user_input` entry to the CAE draf
 (same gate as invalid connections). It is a geometry-coverage proxy — it meshes
 nothing, runs no solver, and is not a mesh-convergence guarantee.
 
-`sparse` and `over_broad` are judged by **area** against the part's largest
-cross-section (reported as `coverage_fraction`), not by face count or bbox
-diagonal, so a warning describes a defect rather than a geometry: one substantial
-planar face is the normal result of `cad.define_interface`, and a ring-shaped rim
-carries the part's own diagonal while covering a fifth of it. A **curved**
-interface wraps, so its area exceeds any flat footprint by construction (a full
-cylinder is exactly π × its own bbox cross-section); those are judged over-broad
-only when the selection also reaches the part's full extent on **every** axis —
-so a journal band stays clean while "the entire shaft surface" is flagged.
-Measured on a dogfood gearbox, this took four correctly-authored interfaces from
-4 warnings / 0 ok to 1 ok plus three warnings that each name a real problem.
+`sparse` and `over_broad` are judged by **area** — `coverage_fraction` =
+interface area ÷ the part's bbox surface area, i.e. how much of the part's
+boundary the selection ties down — not by face count or bbox diagonal, so a
+warning describes a defect rather than a geometry: one substantial planar face is
+the normal result of `cad.define_interface`, and a ring-shaped rim carries the
+part's own diagonal while covering 5% of its surface. One shape-agnostic number
+does the whole job: a curved face that wraps the body needs no curvature signal
+and no per-axis span test (both degenerate — a cylinder's lateral area is π ×
+its own bbox cross-section however little of the part it is, and a per-axis span
+test is satisfied by any face of a thin part). So a journal band (9%) and a thin
+disc's press-fit rim (7%) stay clean while the entire shaft surface (74%) is
+flagged. Measured on a dogfood gearbox, this took four correctly-authored
+interfaces from 4 warnings / 0 ok to 1 ok plus three warnings that each name a
+real problem.
 
 Assembly CAE v0 then produces a **solver-neutral simplified proxy model**:
 `simulation/assembly_cae_model.json` plus

@@ -115,12 +115,12 @@ def test_one_substantial_face_is_not_sparse() -> None:
     """A single planar mating face is the normal authoring result, not a defect."""
     topo = {"p": {
         "p_body": {"id": "p_body", "type": "solid", "bounding_box": [0, 0, 0, 100, 100, 40]},
-        # a rim covering ~a quarter of the 100x100 cross-section
+        # a rim on a part whose bbox surface is 2*(10000+4000+4000) = 36000
         "rim": _face("rim", [0, 0, 40, 100, 100, 40], area=2400.0),
     }}
     rec = _rec(_diag(_assembly({"face_ids": ["rim"]}), topo))
     assert rec["status"] == "ok", rec["findings"]
-    assert rec["coverage_fraction"] == 0.24
+    assert rec["coverage_fraction"] == round(2400.0 / 36000.0, 6)
 
 
 def test_a_single_sliver_face_is_still_sparse() -> None:
@@ -133,33 +133,46 @@ def test_a_single_sliver_face_is_still_sparse() -> None:
     assert "sparse_interface" in _codes(rec)
 
 
-def test_a_full_cylindrical_face_is_not_over_broad_by_construction() -> None:
-    """A cylinder's lateral area is pi x its own bbox cross-section, always.
+# The next three pin the shape-independence the coverage measure exists for: a
+# curved selection needs no curvature signal and no per-axis span test, both of
+# which degenerate (a cylinder's lateral area is pi x its own bbox cross-section
+# regardless of how much of the part it is; a per-axis span test is satisfied by
+# any face of a thin part).
 
-    A short journal band on a long shaft is the TRUE mating region, so it must
-    not be flagged merely for being curved.
-    """
+def test_a_journal_band_on_a_long_shaft_is_clean() -> None:
+    """The true mating region must not be flagged merely for being curved."""
     topo = {"p": {
         "p_body": {"id": "p_body", "type": "solid", "bounding_box": [-10, -10, 0, 10, 10, 200]},
-        # 2*pi*r*L with r=10, L=20 -> 1256.6, over a bbox cross-section of 20x20
+        # 2*pi*r*L, r=10 L=20 -> 1256.6, against a bbox surface of 2*(400+4000+4000)
         "journal": _face("journal", [-10, -10, 90, 10, 10, 110], area=1256.6),
     }}
     rec = _rec(_diag(_assembly({"face_ids": ["journal"]}), topo))
-    assert "over_broad_interface" not in _codes(rec), rec["findings"]
-    assert "sparse_interface" not in _codes(rec), rec["findings"]
-    assert rec["status"] == "ok"
+    assert rec["status"] == "ok", rec["findings"]
 
 
-def test_a_cylinder_spanning_the_whole_part_is_over_broad() -> None:
-    """Selecting the entire shaft surface as the journal IS over-broad."""
+def test_the_entire_shaft_surface_is_over_broad() -> None:
+    """Selecting the whole lateral surface as the journal IS over-broad."""
     topo = {"p": {
         "p_body": {"id": "p_body", "type": "solid", "bounding_box": [-10, -10, 0, 10, 10, 200]},
         "whole": _face("whole", [-10, -10, 0, 10, 10, 200], area=12566.0),
     }}
     rec = _rec(_diag(_assembly({"face_ids": ["whole"]}), topo))
-    assert rec["coverage_fraction"] > 1.0, "the wrapping branch must be exercised"
     assert "over_broad_interface" in _codes(rec)
-    assert any("every axis" in f["message"] for f in rec["findings"])
+    assert "part surface" in rec["findings"][0]["message"]
+
+
+def test_the_rim_of_a_thin_disc_is_clean() -> None:
+    """A short wide cylinder: its rim reaches the part's full extent on every
+    axis, so a per-axis span test would flag this press-fit band. By area it is
+    7% of the disc's boundary — a legitimate mating region."""
+    topo = {"p": {
+        "p_body": {"id": "p_body", "type": "solid", "bounding_box": [-10, -10, 0, 10, 10, 1]},
+        # 2*pi*r*L, r=10 L=1 -> 62.8, against a bbox surface of 2*(400+20+20)
+        "rim": _face("rim", [-10, -10, 0, 10, 10, 1], area=62.8),
+    }}
+    rec = _rec(_diag(_assembly({"face_ids": ["rim"]}), topo))
+    assert "over_broad_interface" not in _codes(rec), rec["findings"]
+    assert "sparse_interface" not in _codes(rec), rec["findings"]
 
 
 def test_partial_resolution_warns_without_blocking() -> None:

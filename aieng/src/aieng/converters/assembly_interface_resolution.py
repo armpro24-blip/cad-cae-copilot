@@ -54,11 +54,17 @@ FEATURE_GRAPH_PATH = "graph/feature_graph.json"
 #     covering 22% of it, so a diagonal ratio calls it over-broad.
 # A diagnostic that fires on every correct input teaches the engineer to ignore
 # it — which is how the genuinely blocking `empty_interface` gets missed.
+# Both are measured as `coverage_fraction` = interface area / the part's bbox
+# SURFACE area — "how much of the part's boundary does this selection tie down".
+# One quantity, no shape assumptions: it needs neither a curvature signal nor a
+# per-axis span test, so a flat plate, a ring, a long shaft and a thin disc are
+# all judged by the same number. A single planar face can never exceed ~0.5 of a
+# bbox's surface, so 0.4 means "nearly the largest single-face selection there
+# is"; on a cube one face is 0.167 and correctly stays clean.
 _SPARSE_MAX_FACES = 1          # a single face is only sparse if it is also small
-_SPARSE_AREA_FRAC = 0.02       # iface-area / part-cross-section < this -> sliver
+_SPARSE_SURFACE_FRAC = 0.01    # iface-area / part-bbox-surface < this -> sliver
 _DISCONNECT_GAP_FRAC = 0.05    # member-face gap > this*iface-diag -> separate region
-_OVER_BROAD_AREA_FRAC = 0.9    # facing interface covering ~all of the cross-section
-_WRAP_SPAN_FRAC = 0.9          # wrapping interface reaching ~the part's full extent, per axis
+_OVER_BROAD_SURFACE_FRAC = 0.4  # iface-area / part-bbox-surface > this -> spans the part
 
 # proximity thresholds expressed as a fraction of the larger interface bbox diagonal
 _TOUCH_FRAC = 0.02     # gap <= this*scale -> touching/overlapping
@@ -118,32 +124,18 @@ def _bbox_diag(bb: list[float]) -> float:
     return math.sqrt(sum((float(bb[i + 3]) - float(bb[i])) ** 2 for i in range(3)))
 
 
-def _bbox_max_cross_section(bb: list[float]) -> float:
-    """Largest axis-aligned cross-section of an AABB — a scale for interface area.
+def _bbox_surface_area(bb: list[float]) -> float:
+    """Surface area of an AABB — the scale an interface area is measured against.
 
-    Area is the honest yardstick for "does this interface cover the part":
-    a ring and a full disc of the same outer diameter share a bbox diagonal but
-    not an area, and it is the area that decides how much of the part a node set
-    ties down.
+    Area is the honest yardstick for "how much of this part does the selection
+    tie down": a ring and a full disc of the same outer diameter share a bbox
+    diagonal but not an area, and it is area that decides how many nodes a
+    constraint captures. Measuring against the whole boundary rather than one
+    cross-section also makes the number shape-agnostic — a curved face that wraps
+    the body needs no special case.
     """
     ex = [max(float(bb[i + 3]) - float(bb[i]), 0.0) for i in range(3)]
-    return max(ex[0] * ex[1], ex[1] * ex[2], ex[0] * ex[2])
-
-
-def _bbox_spans(inner: list[float], outer: list[float], frac: float) -> bool:
-    """True when `inner` reaches at least `frac` of `outer`'s extent on EVERY axis.
-
-    An interface is a surface on one side of a part, so it normally spans at most
-    two axes. Reaching the part's full extent on all three means the selection
-    wraps the whole body — which no mating region does.
-    """
-    for i in range(3):
-        outer_extent = float(outer[i + 3]) - float(outer[i])
-        if outer_extent <= 0:
-            continue
-        if (float(inner[i + 3]) - float(inner[i])) < frac * outer_extent:
-            return False
-    return True
+    return 2.0 * (ex[0] * ex[1] + ex[1] * ex[2] + ex[0] * ex[2])
 
 
 def _bbox_gap(a: list[float], b: list[float]) -> float:
@@ -792,10 +784,10 @@ def diagnose_mesh_interfaces(assembly: Any, topology_by_part: dict[str, dict[str
         region_count = _region_count(member_boxes, _DISCONNECT_GAP_FRAC * iface_diag) if iface_diag > 0 else len(member_boxes)
         part_bbox = _part_world_bbox(topo_index, R, tvec)
         part_diag = _bbox_diag(part_bbox) if part_bbox else 0.0
-        part_cross_section = _bbox_max_cross_section(part_bbox) if part_bbox else 0.0
+        part_surface = _bbox_surface_area(part_bbox) if part_bbox else 0.0
         coverage = (
-            (float(area) / part_cross_section)
-            if part_cross_section > 0 and isinstance(area, (int, float)) and area
+            (float(area) / part_surface)
+            if part_surface > 0 and isinstance(area, (int, float)) and area
             else None
         )
 
@@ -814,9 +806,9 @@ def diagnose_mesh_interfaces(assembly: Any, topology_by_part: dict[str, dict[str
                     "message": f"{len(unresolved)} of {requested} interface refs did not resolve",
                     "guidance": "refresh topology_refs against the latest part geometry; unresolved refs are dropped from the node set.",
                 })
-            if face_count <= _SPARSE_MAX_FACES and (coverage is None or coverage < _SPARSE_AREA_FRAC):
+            if face_count <= _SPARSE_MAX_FACES and (coverage is None or coverage < _SPARSE_SURFACE_FRAC):
                 extent = (
-                    f" covering {coverage * 100:.1f}% of the part cross-section"
+                    f" covering {coverage * 100:.2f}% of the part surface"
                     if coverage is not None else " (part extent unknown)"
                 )
                 findings.append({
@@ -831,28 +823,11 @@ def diagnose_mesh_interfaces(assembly: Any, topology_by_part: dict[str, dict[str
                     "message": f"interface faces form {region_count} disconnected regions",
                     "guidance": "split into separate interfaces or confirm the refs belong to one contact patch; a disconnected node set can misrepresent load transfer.",
                 })
-            # A facing interface is judged by how much of the cross-section it
-            # covers. A curved one wraps, so its area exceeds any flat footprint
-            # by construction (a full cylinder is exactly pi x its own bbox
-            # cross-section) — for those the honest question is whether the
-            # selection reaches the part's full extent on every axis.
-            wraps = coverage is not None and coverage > 1.0
-            over_broad_message = None
-            if wraps:
-                if iface_bbox and part_bbox and _bbox_spans(iface_bbox, part_bbox, _WRAP_SPAN_FRAC):
-                    over_broad_message = (
-                        "interface wraps the part and reaches its full extent on every axis; "
-                        "likely over-broad"
-                    )
-            elif coverage is not None and coverage > _OVER_BROAD_AREA_FRAC:
-                over_broad_message = (
-                    f"interface covers {round(coverage * 100)}% of the part cross-section; "
-                    "likely over-broad"
-                )
-            if over_broad_message:
+            if coverage is not None and coverage > _OVER_BROAD_SURFACE_FRAC:
                 findings.append({
                     "code": "over_broad_interface", "severity": "warning",
-                    "message": over_broad_message,
+                    "message": f"interface covers {round(coverage * 100)}% of the part surface; "
+                               "likely over-broad",
                     "guidance": "narrow the interface to the true mating region; an over-broad node set over-constrains the model.",
                 })
 
@@ -875,7 +850,7 @@ def diagnose_mesh_interfaces(assembly: Any, topology_by_part: dict[str, dict[str
             "region_count": region_count,
             "interface_diag": round(iface_diag, 6) if iface_diag else 0.0,
             "part_diag": round(part_diag, 6) if part_diag else None,
-            "part_cross_section_area": round(part_cross_section, 6) if part_cross_section else None,
+            "part_surface_area": round(part_surface, 6) if part_surface else None,
             "coverage_fraction": round(coverage, 6) if coverage is not None else None,
             "status": status,
             "findings": findings,
