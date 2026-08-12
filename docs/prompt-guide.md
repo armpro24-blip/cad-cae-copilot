@@ -174,9 +174,24 @@ density.
 > 帮我做一个拓扑优化，看看材料该怎么分布。
 
 Derives the design space, supports, and loads from the CAE setup you already
-have. 2D is the solid path; **3D is experimental** and the output is a mesh
-proxy — usable for shape insight, not production CAD. The tool labels it that
-way rather than pretending otherwise.
+have — no need to restate the physics.
+
+**It will tell you when your part is the wrong shape for the 2D idealization.**
+The 2D plane is spanned by the part's two largest dimensions, so a plate or
+bracket loaded in *bending* (the load pressing on its face) has no in-plane
+force at all — plane-stress cannot represent that, in any plane. You get a
+refusal saying exactly that, pointing at 3D, instead of a plausible-looking
+result computed for someone else's load case. In-plane loading (a shear web, a
+frame pulled in its own plane) is the 2D path's home ground.
+
+**3D is experimental** and the output is a mesh proxy — usable for shape
+insight, not production CAD. The tool labels it that way rather than pretending
+otherwise.
+
+The design space defaults to the **largest single solid**. If your load lands on
+a different body — a rib on a base plate — the tool says so by name and asks
+which design space you meant, rather than optimizing the plate as if the rib
+were not there.
 
 ## 8. Say how the parts go together
 

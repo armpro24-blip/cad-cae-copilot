@@ -1232,8 +1232,31 @@ is possible).
 | `cad.tolerance_stackup` | Read-only 1D tolerance stack-up: pass an ordered list of contributors (name, nominal, plus, minus, optional distribution) and get worst-case arithmetic min/max, RSS sigma and confidence-band min/max, controlling contributors, and honesty notes. Assumes independence and +/- 3-sigma tolerance coverage; not a GD&T solver. No geometry mutation. |
 | `opt.sizing_sweep` | Parametric sizing sweep (approval required): vary ONE editable dimension across explicit `values` OR a `{min, max, steps/step}` range, solve each variant with real static FEA, and rank by objective. Range values are clamped to the parameter's declared min/max. Default is recommend-only; set `apply_winner=true` to apply the winning value through the audited `cad.edit_parameter` path and report its `regression_diff`. A variant that fails to solve is reported honestly and never recommended. |
 | `opt.doe_sizing_study` | Multi-parameter DOE sizing study (approval required): jointly vary 2+ editable parameters by explicit values or ranges, generate a full-factorial or LHS design within a 64-point budget, solve each design point with real static FEA, and rank by objective + constraints. Baseline never modified; failed points reported honestly. |
-| `opt.derive_problem_from_cae` | Derive a topology-optimization problem (grid + supports + loads + design space) from a project's CAE setup (`simulation/setup.yaml`) + geometry (`topology_map` faces + design-space bbox). Read-only; returns the problem + a `derivation` block. `dimension=2d` (default) projects supports/loads onto the plane of the two largest dims (out-of-plane force dropped); `dimension=3d` keeps the full 3D layout (structured voxel grid, supports→boundary layers, full 3D force) and returns `status=needs_user_input` with diagnostics if BCs can't be safely mapped |
-| `opt.run_topology_optimization` | Run topology optimization (built-in self-contained SIMP, compliance-min, pure numpy — no external solver) → `analysis/topology_optimization.json`. `simp_2d` (default) or `simp_3d` (experimental structured-voxel 3D, `dimension=3d`; honest `capability` block: experimental_reference, production_ready:false). Honest coarse limitations recorded. Set `auto_derive` (or omit `problem`) to derive supports/loads/design-space from the project's CAE setup; 3D may return `needs_user_input` instead of guessing |
+| `opt.derive_problem_from_cae` | Derive a topology-optimization problem (grid + supports + loads + design space) from a project's CAE setup + geometry (`topology_map` faces + design-space bbox). Reads the setup **whichever path authored it** — `simulation/setup.yaml` or the key-free `simulation/cae_imports/parsed_*.json`. Read-only; returns the problem + a `derivation` block. `dimension=2d` (default) projects supports/loads onto the plane of the two largest dims; `dimension=3d` keeps the full 3D layout (structured voxel grid, supports→boundary layers, full 3D force). **Both dimensions return `status=needs_user_input` rather than substituting a preset** when the BCs can't be mapped |
+| `opt.run_topology_optimization` | Run topology optimization (built-in self-contained SIMP, compliance-min, pure numpy — no external solver) → `analysis/topology_optimization.json`. `simp_2d` (default) or `simp_3d` (experimental structured-voxel 3D, `dimension=3d`; honest `capability` block: experimental_reference, production_ready:false). Honest coarse limitations recorded. Set `auto_derive` (or omit `problem`) to derive supports/loads/design-space from the project's CAE setup; either dimension may return `needs_user_input` instead of guessing |
+
+**A 2D problem it cannot honestly pose is refused, not replaced.** The 2D
+projection plane is spanned by the design space's two **largest** dimensions, so
+for a plate or bracket the load that matters — bending, normal to the face — is
+always along the thinnest axis and has no in-plane component. Re-picking the
+plane does not rescue it: a plane containing that load is only as tall as the
+part is thick (a 6 mm plate on a 48-cell grid gives 2 cells). Plane-stress
+simply cannot carry plate bending, so the derivation returns
+`status: needs_user_input` naming that, and points at `dimension="3d"`.
+
+It used to return `status: "ok"` carrying the **`cantilever` preset** instead —
+measured on a dogfood motor mount, a real 500 N bracket was posed as a textbook
+beam, and `opt.writeback_to_shape_ir` would have written that result back as the
+part's geometry. The 3D derivation in the same module already refused this way;
+now both do.
+
+**Know what the design space is.** It defaults to the **largest single solid**.
+On a two-body bracket (`base_plate` + `rib_main`) that excludes the rib, so a
+load applied to the rib resolves to no design-space boundary and the 3D
+derivation refuses — naming the owning part and the design space:
+`load 'load_001' face face_020 (on rib_main) is not on the boundary of the
+design space 'base_plate' (the largest solid)`. Pass an explicit `problem` with
+the `design_space_node` you mean, or model the design envelope as one body.
 | `opt.writeback_to_shape_ir` | Author the optimization result back into `geometry/shape_ir.json`, then recompile through runtime routing → the optimized body meshes/views + gets verification + object_registry, linked to its `design_space_node`. 2D: `method=contour` (default) writes a marching-squares boundary as an `extruded_region` (`boundary=spline` default → closed periodic spline / CAD-friendly curve, falls back to `polygon` if it would overshoot the design-space envelope); `method=voxels` writes the blocky `density_voxels`. 3D: `method=surface` (default) writes a smooth **marching-cubes** `surface_mesh` proxy (mesh / lossy / not production CAD; falls back to `voxels` if no isosurface); `method=voxels` writes the blocky 3D `density_voxels`. Placed in the design-space frame. Default representation `brep_build123d` for 2D (analytic faces — pickable, STEP-exportable; auto-falls back to `manifold_mesh` if the B-Rep build fails); 3D defaults to `manifold_mesh` |
 
 **Mesh-to-CAD reconstruction honesty.** Mesh outputs may run a conservative

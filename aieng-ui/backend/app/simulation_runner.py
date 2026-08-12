@@ -1275,117 +1275,20 @@ def _canonical_material(m: dict[str, Any]) -> dict[str, Any]:
 def _synthesize_setup_from_parsed(package_path: Path) -> dict[str, Any] | None:
     """Build a ``setup.yaml``-shaped dict from the parsed CAE artifacts.
 
-    Two authoring paths write the same physics in different shapes:
-
-    - ``ai_preprocessing`` writes ``simulation/setup.yaml`` — loads/BCs target a
-      **feature id** (``target_feature``) and materials are a dict keyed by name
-      in MPa;
-    - ``cae.apply_setup_patch`` (the documented, API-key-free agent path) writes
-      ``simulation/cae_imports/parsed_*.json`` — loads/BCs target an **NSET
-      name** (``target``) and materials are a list in Pa.
-
-    The deck generator reads both; the static solver behind the sizing sweep read
-    only the first, so an MCP-authored package could `cae.run_solver` but not
-    optimize. This translates the second shape into the first: each NSET target
-    is mapped back to its ``maps_to.feature_id`` through ``cae_mapping.json``.
-
-    Returns ``None`` when there is nothing to synthesize from, so the caller can
-    still report "no CAE setup" honestly.
+    The translation itself lives in :mod:`aieng.cae_setup_view` — reading a
+    package's physics is a package-format concern, and keeping a second copy
+    here is how the topology-optimization derivation ended up never learning
+    about the key-free authoring path at all. This wrapper stays because the
+    solver path and its tests call it by name.
     """
-    mapping_raw = _read_member(package_path, _CAE_MAPPING_PATH)
+    ensure_aieng_on_path()
+    from aieng.cae_setup_view import synthesize_setup_from_parsed
+
     try:
-        cae_mapping = json.loads(mapping_raw) if mapping_raw else {}
-    except json.JSONDecodeError:
-        cae_mapping = {}
-    entity_to_feature: dict[str, str] = {}
-    for m in cae_mapping.get("mappings") or []:
-        if not isinstance(m, dict):
-            continue
-        entity = m.get("cae_entity")
-        feature_id = (m.get("maps_to") or {}).get("feature_id")
-        if entity and feature_id:
-            entity_to_feature[str(entity)] = str(feature_id)
-
-    def _read_json(member: str) -> dict[str, Any]:
-        raw = _read_member(package_path, member)
-        if not raw:
-            return {}
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            return {}
-
-    def _target_feature(item: dict[str, Any]) -> str | None:
-        explicit = item.get("target_feature")
-        if explicit:
-            return str(explicit)
-        target = item.get("target")
-        if target is None:
-            return None
-        return entity_to_feature.get(str(target))
-
-    materials: dict[str, Any] = {}
-    material_name: str | None = None
-    for entry in _read_json(_PARSED_MATERIALS_PATH).get("materials") or []:
-        if not isinstance(entry, dict):
-            continue
-        name = str(entry.get("name") or "AIENG_MATERIAL")
-        modulus_mpa = entry.get("youngs_modulus_mpa")
-        if modulus_mpa is None and entry.get("youngs_modulus_pa") is not None:
-            try:
-                modulus_mpa = float(entry["youngs_modulus_pa"]) / 1e6
-            except (TypeError, ValueError):
-                modulus_mpa = None
-        materials[name] = {
-            "youngs_modulus_mpa": modulus_mpa if modulus_mpa is not None else 69000.0,
-            "poisson_ratio": entry.get("poisson_ratio", 0.33),
-            "density_kg_m3": entry.get("density_kg_m3", 2700),
-        }
-        if material_name is None:
-            material_name = name
-
-    boundary_conditions: list[dict[str, Any]] = []
-    for bc in _read_json(_PARSED_BCS_PATH).get("boundary_conditions") or []:
-        if not isinstance(bc, dict):
-            continue
-        feature_id = _target_feature(bc)
-        if not feature_id:
-            continue
-        boundary_conditions.append(
-            {"target_feature": feature_id, "type": bc.get("type", "fixed")}
-        )
-
-    loads: list[dict[str, Any]] = []
-    for load in _read_json(_PARSED_LOADS_PATH).get("loads") or []:
-        if not isinstance(load, dict):
-            continue
-        feature_id = _target_feature(load)
-        if not feature_id:
-            continue
-        loads.append(
-            {
-                "target_feature": feature_id,
-                "value_n": load.get("value_n", load.get("magnitude_n", load.get("value", 0.0))),
-                "direction": load.get("direction") or [0.0, 0.0, -1.0],
-            }
-        )
-
-    if not (materials or boundary_conditions or loads):
+        with zipfile.ZipFile(package_path) as zf:
+            return synthesize_setup_from_parsed(zf)
+    except (OSError, zipfile.BadZipFile):
         return None
-
-    setup: dict[str, Any] = {
-        "materials": materials,
-        "boundary_conditions": boundary_conditions,
-        "loads": loads,
-        "synthesized_from": "simulation/cae_imports/parsed_*.json",
-    }
-    if material_name:
-        setup["material_name"] = material_name
-    solver_settings = _read_json("simulation/solver_settings.json")
-    mesh_size = solver_settings.get("mesh_size_mm")
-    if mesh_size:
-        setup["mesh"] = {"target_size_mm": mesh_size}
-    return setup
 
 
 def normalize_cae_bindings(package_path: Path) -> dict[str, Any]:
