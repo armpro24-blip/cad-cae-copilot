@@ -170,6 +170,50 @@ def test_contact_proxy_draft_only():
     assert c["geometry_status"] == "warning"   # never "plausible"
 
 
+def _separated(conn_type, gap_mm=2.0):
+    """Interfaces `gap_mm` apart: too far to touch, too near to be `far_apart`.
+
+    Interface diagonal ~7.07 mm, so touch_tol ~0.14 and near_tol ~3.53.
+    """
+    asm = _two_part_assembly(conn_type)
+    asm["parts"][1]["transform"]["translation"] = [0, 0, 10 + gap_mm]
+    res = resolve_assembly_interfaces(asm, _topology())
+    return validate_connection_geometry(asm, res)["connections"][0]
+
+
+def test_join_across_a_gap_is_invalid_not_merely_a_warning():
+    """A tie/weld/bolt across empty space cannot exist at any scale (#496).
+
+    Measured on the dogfood gearbox: a `bonded` tie between interfaces 20 mm
+    apart scored `warning` (20 mm is small next to their 162 mm diagonal), so it
+    stayed solver-enabled and transferred load across the gap — stiffer than
+    reality, in the non-conservative direction, with `needs_user_input: []`.
+    """
+    for ctype in ("rigid_tie", "bonded", "welded_proxy", "bolted_proxy"):
+        c = _separated(ctype)
+        assert c["geometry_status"] == "invalid", f"{ctype}: {c['reasons']} {c['metrics']}"
+        assert "joint_across_gap" in c["reasons"], ctype
+        assert c["metrics"]["bbox_overlap"] is False
+
+
+def test_a_spring_across_a_gap_stays_a_warning():
+    """Distance is what a spring is for — it must not inherit the joint rule."""
+    c = _separated("spring_proxy")
+    assert c["geometry_status"] == "warning", c["reasons"]
+    assert "joint_across_gap" not in c["reasons"]
+    assert "no_overlap" in c["reasons"]
+
+
+def test_touching_joints_are_unaffected():
+    """The escalation must not disturb correctly-mated joints."""
+    for ctype in ("rigid_tie", "bonded"):
+        asm = _two_part_assembly(ctype)
+        res = resolve_assembly_interfaces(asm, _topology())
+        c = validate_connection_geometry(asm, res)["connections"][0]
+        assert c["geometry_status"] == "plausible", f"{ctype}: {c['reasons']}"
+        assert "joint_across_gap" not in c["reasons"]
+
+
 def test_spring_proxy_warning_even_when_aligned():
     asm = _two_part_assembly("spring_proxy")
     res = resolve_assembly_interfaces(asm, _topology())
@@ -226,6 +270,21 @@ def test_package_invalid_connection_disables_cae_draft(tmp_path: Path):
         assert draft["status"] == "needs_user_input"
         cdraft = draft["connections"][0]
         assert cdraft["geometry_status"] == "invalid" and cdraft.get("disabled") is True
+
+
+def test_package_gapped_tie_is_disabled_end_to_end(tmp_path: Path):
+    """The gap case must reach the draft, not just the classifier (#496)."""
+    asm = _two_part_assembly("bonded")
+    asm["parts"][1]["transform"]["translation"] = [0, 0, 12]  # 2 mm gap, not far_apart
+    pkg = _write_assembly_package(tmp_path, asm)
+    resolve_and_validate_assembly_geometry(pkg)
+    with zipfile.ZipFile(pkg) as zf:
+        draft = json.loads(zf.read("simulation/assembly_cae_setup_draft.json"))
+    assert draft["status"] == "needs_user_input"
+    cdraft = draft["connections"][0]
+    assert cdraft["geometry_status"] == "invalid" and cdraft.get("disabled") is True
+    assert any("joint_across_gap" in m for m in draft["needs_user_input"]), \
+        draft["needs_user_input"]
 
 
 def test_package_without_assembly_unaffected(tmp_path: Path):
