@@ -13,3 +13,7 @@ root. Read it before acting.
 - Do NOT diagnose the backend with `pylanceRunCodeSnippet`, subprocess, or psutil.
   If the backend at `http://127.0.0.1:8000` is down, ask the user to start it
   (`conda activate aieng311 && uvicorn app.main:app --reload --port 8000` from `aieng-ui/backend`).
+- **Before reviewing a PR — including your own, before opening it — read
+  `aieng.guide {topic: "review"}`.** It names the six defect patterns this
+  codebase actually produces, each with the question that detects it and the
+  measured instance behind it. Every one of them shipped through green CI.
