@@ -23,6 +23,6 @@ Import directly from submodules::
     from aieng.revalidation_status import record_geometry_edit_status
 """
 
-__version__ = "0.1.0a2"
+__version__ = "0.1.0a3"
 
 FORMAT_VERSION = "0.1.0"

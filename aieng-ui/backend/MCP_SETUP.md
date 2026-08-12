@@ -53,14 +53,14 @@ tag; PyPI publication is planned but not yet live, so a bare
 
 ```bash
 uvx \
-  --from "aieng-workbench-mcp[full] @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.3#subdirectory=aieng-ui/backend" \
-  --with "aieng-format @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.3#subdirectory=aieng" \
+  --from "aieng-workbench-mcp[full] @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.4#subdirectory=aieng-ui/backend" \
+  --with "aieng-format @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.4#subdirectory=aieng" \
   aieng-workbench-mcp \
   --approval-mode client \
   --data-dir ~/.aieng-workbench
 ```
 
-(Drop the `@v0.1.0-alpha.3` pins to track `main` instead.) Once the packages
+(Drop the `@v0.1.0-alpha.4` pins to track `main` instead.) Once the packages
 are on PyPI, the short form becomes available:
 
 ```bash
@@ -122,8 +122,8 @@ Headless no-clone install (from the published release tag):
     "aieng-workbench": {
       "command": "uvx",
       "args": [
-        "--from", "aieng-workbench-mcp[full] @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.3#subdirectory=aieng-ui/backend",
-        "--with", "aieng-format @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.3#subdirectory=aieng",
+        "--from", "aieng-workbench-mcp[full] @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.4#subdirectory=aieng-ui/backend",
+        "--with", "aieng-format @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.4#subdirectory=aieng",
         "aieng-workbench-mcp",
         "--approval-mode", "client",
         "--data-dir", "~/.aieng-workbench"
@@ -159,8 +159,8 @@ Add to `~/.codex/config.toml`:
 [mcp_servers.aieng-workbench]
 command = "uvx"
 args = [
-  "--from", "aieng-workbench-mcp[full] @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.3#subdirectory=aieng-ui/backend",
-  "--with", "aieng-format @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.3#subdirectory=aieng",
+  "--from", "aieng-workbench-mcp[full] @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.4#subdirectory=aieng-ui/backend",
+  "--with", "aieng-format @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.4#subdirectory=aieng",
   "aieng-workbench-mcp",
   "--approval-mode", "client",
   "--compact-tool-surface",
@@ -195,8 +195,8 @@ Use `.vscode/mcp.json` style configuration:
       "type": "stdio",
       "command": "uvx",
       "args": [
-        "--from", "aieng-workbench-mcp[full] @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.3#subdirectory=aieng-ui/backend",
-        "--with", "aieng-format @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.3#subdirectory=aieng",
+        "--from", "aieng-workbench-mcp[full] @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.4#subdirectory=aieng-ui/backend",
+        "--with", "aieng-format @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.4#subdirectory=aieng",
         "aieng-workbench-mcp",
         "--approval-mode", "client",
         "--compact-tool-surface",
@@ -240,8 +240,8 @@ cd ../aieng-ui/backend && python -m build
 
 python -m venv /tmp/mcp-smoke-venv
 /tmp/mcp-smoke-venv/bin/pip install \
-  ../../aieng/dist/aieng_format-0.1.0a2-py3-none-any.whl \
-  ./dist/aieng_workbench_mcp-0.1.0a2-py3-none-any.whl
+  ../../aieng/dist/aieng_format-0.1.0a3-py3-none-any.whl \
+  ./dist/aieng_workbench_mcp-0.1.0a3-py3-none-any.whl
 /tmp/mcp-smoke-venv/bin/aieng-workbench-mcp-smoke
 ```
 
