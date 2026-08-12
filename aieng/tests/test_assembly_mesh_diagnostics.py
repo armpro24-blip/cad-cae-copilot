@@ -171,8 +171,37 @@ def test_the_rim_of_a_thin_disc_is_clean() -> None:
         "rim": _face("rim", [-10, -10, 0, 10, 10, 1], area=62.8),
     }}
     rec = _rec(_diag(_assembly({"face_ids": ["rim"]}), topo))
-    assert "over_broad_interface" not in _codes(rec), rec["findings"]
-    assert "sparse_interface" not in _codes(rec), rec["findings"]
+    assert rec["status"] == "ok", rec["findings"]
+    assert "over_broad_interface" not in _codes(rec)
+    assert "sparse_interface" not in _codes(rec)
+
+
+def test_coverage_does_not_depend_on_how_the_part_is_placed() -> None:
+    """Rotating a part inflates its world AABB but not its interface area.
+
+    A 100x100x2 plate at 45 deg about Z has a ~141x141x2 world box — nearly
+    double the surface — so a world-box denominator would drop coverage from 48%
+    to 24% and silently suppress the warning. Coverage compares two intrinsic
+    quantities, so the verdict travels with the part.
+    """
+    topo = {"p": {
+        "p_body": {"id": "p_body", "type": "solid", "bounding_box": [0, 0, 0, 100, 100, 2]},
+        "top": _face("top", [0, 0, 2, 100, 100, 2], area=10000.0),
+    }}
+    c = 0.7071067811865476
+
+    def _placed(matrix):
+        asm = _assembly({"face_ids": ["top"]})
+        if matrix is not None:
+            asm["parts"][0]["transform"] = {"matrix": matrix, "translation": [0, 0, 0], "unit": "mm"}
+        return _rec(_diag(asm, topo))
+
+    upright = _placed(None)
+    rotated = _placed([[c, -c, 0.0], [c, c, 0.0], [0.0, 0.0, 1.0]])
+
+    assert upright["coverage_fraction"] == rotated["coverage_fraction"]
+    assert "over_broad_interface" in _codes(upright)
+    assert "over_broad_interface" in _codes(rotated), rotated["findings"]
 
 
 def test_partial_resolution_warns_without_blocking() -> None:

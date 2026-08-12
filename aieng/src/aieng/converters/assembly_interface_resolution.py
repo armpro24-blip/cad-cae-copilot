@@ -124,6 +124,10 @@ def _bbox_diag(bb: list[float]) -> float:
     return math.sqrt(sum((float(bb[i + 3]) - float(bb[i])) ** 2 for i in range(3)))
 
 
+_IDENTITY_ROTATION = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+_ZERO_TRANSLATION = [0.0, 0.0, 0.0]
+
+
 def _bbox_surface_area(bb: list[float]) -> float:
     """Surface area of an AABB — the scale an interface area is measured against.
 
@@ -782,7 +786,12 @@ def diagnose_mesh_interfaces(assembly: Any, topology_by_part: dict[str, dict[str
 
         member_boxes = _iface_member_world_boxes(iface, topo_index, R, tvec)
         region_count = _region_count(member_boxes, _DISCONNECT_GAP_FRAC * iface_diag) if iface_diag > 0 else len(member_boxes)
-        part_bbox = _part_world_bbox(topo_index, R, tvec)
+        # The part's own scale, measured BEFORE the placement transform. A world
+        # axis-aligned box inflates when the part is rotated (a 100x10x10 bar at
+        # 45 deg gains ~3x the surface) while the interface area does not, so a
+        # world-box denominator would let assembly orientation decide whether an
+        # interface is over-broad. Coverage compares two intrinsic quantities.
+        part_bbox = _part_world_bbox(topo_index, _IDENTITY_ROTATION, _ZERO_TRANSLATION)
         part_diag = _bbox_diag(part_bbox) if part_bbox else 0.0
         part_surface = _bbox_surface_area(part_bbox) if part_bbox else 0.0
         coverage = (
