@@ -628,8 +628,8 @@ def test_simp_2d_degenerate_explicit_falls_back_to_preset():
     assert out["bcs_source"] == "preset" and out["bcs_preset"] == "cantilever"
 
 
-def _write_cae_project(pkg: Path) -> None:
-    """A 120x80x10 plate: left face fixed, right face loaded -X... downward (-Z)."""
+def _write_cae_project(pkg: Path, direction: str = "[0.0, 0.0, -1.0]") -> None:
+    """A 120x80x10 plate: left face fixed, right face loaded (default: downward -Z)."""
     topo = {"entities": [
         {"id": "body_plate", "type": "solid", "source_ir_node": "plate",
          "bounding_box": [0, 0, 0, 120, 80, 10]},
@@ -647,7 +647,7 @@ def _write_cae_project(pkg: Path) -> None:
         "  - id: bc1\n    target_feature: feat_fix\n    type: fixed\n"
         "loads:\n"
         "  - id: ld1\n    target_feature: feat_load\n    type: force\n"
-        "    value_n: 500.0\n    direction: [0.0, 0.0, -1.0]\n"
+        f"    value_n: 500.0\n    direction: {direction}\n"
     )
     with zipfile.ZipFile(pkg, "w") as zf:
         zf.writestr("geometry/topology_map.json", json.dumps(topo))
@@ -655,25 +655,80 @@ def _write_cae_project(pkg: Path) -> None:
         zf.writestr("simulation/setup.yaml", setup)
 
 
-def test_derive_problem_from_package_maps_supports_loads(tmp_path: Path):
+def test_plate_bending_is_refused_not_replaced_by_a_textbook_cantilever(tmp_path: Path):
+    """The archetypal case must not silently become someone else's problem.
+
+    The projection plane is spanned by the two LARGEST dimensions, so for a plate
+    or bracket the load that matters — bending, normal to the face — is always
+    along the thinnest axis and always dropped. This used to return `status: ok`
+    carrying the `cantilever` preset, so a real part was optimized against a load
+    case that was not its own, and `opt.writeback_to_shape_ir` then wrote that
+    result back as the part's geometry.
+    """
     pytest.importorskip("yaml")
     pkg = tmp_path / "plate.aieng"
-    _write_cae_project(pkg)
+    _write_cae_project(pkg)  # 500 N along -Z on a 120x80x10 plate
     prob = derive_topopt_problem_from_package(pkg, resolution=40)
-    d = prob["derivation"]
-    # plane = the two largest dims (x=120 > y=80 > z=10): u=x, v=y, out-of-plane=z
-    assert d["plane"] == {"u_axis": "x", "v_axis": "y", "out_of_plane_axis": "z"}
+
+    assert prob["status"] == "needs_user_input"
+    assert prob.get("bcs", {}).get("preset") is None, "a preset must never stand in"
+    assert "thinnest axis" in prob["reason"] and "bending" in prob["reason"]
+    assert "dimension='3d'" in prob["recommendation"]
+    assert prob["out_of_plane_loads"] == ["feat_load"]
+    # the derivation it DID manage is still reported, so the diagnosis is checkable
+    assert prob["plane"] == {"u_axis": "x", "v_axis": "y", "out_of_plane_axis": "z"}
+    assert prob["support_count"] == 1 and prob["load_count"] == 0
+    assert prob["frame"]["thickness"] == 10.0
     assert prob["grid"]["nelx"] == 40 and prob["grid"]["nely"] == round(40 * 80 / 120)
+
+
+def test_an_unresolvable_load_does_not_borrow_the_bending_reason(tmp_path: Path) -> None:
+    """A load that lands on no cells is a binding problem, not plate bending.
+
+    Both end in "no usable load", so the refusal must not blame the physics when
+    the real fault is that the target never resolved.
+    """
+    pytest.importorskip("yaml")
+    pkg = tmp_path / "plate_unbound.aieng"
+    _write_cae_project(pkg)
+    # point the load at a feature no mapping knows about
+    setup = (
+        "boundary_conditions:\n  - {id: bc1, target_feature: feat_fix, type: fixed}\n"
+        "loads:\n  - {id: ld1, target_feature: feat_ghost, type: force, "
+        "value_n: 500.0, direction: [0.0, 0.0, -1.0]}\n"
+    )
+    tmp = pkg.with_suffix(".tmp.aieng")
+    with zipfile.ZipFile(pkg) as src, zipfile.ZipFile(tmp, "w") as dst:
+        for item in src.infolist():
+            if item.filename != "simulation/setup.yaml":
+                dst.writestr(item, src.read(item.filename))
+        dst.writestr("simulation/setup.yaml", setup)
+    tmp.replace(pkg)
+
+    prob = derive_topopt_problem_from_package(pkg, resolution=40)
+    assert prob["status"] == "needs_user_input"
+    assert prob["out_of_plane_loads"] == [], "an unbound load is not an out-of-plane load"
+    assert "bending" not in prob["reason"]
+    # a setup that exists but resolved to nothing must not read as "no CAE setup"
+    assert "no CAE setup" not in prob["reason"]
+    assert "0 load(s)" in prob["reason"]
+
+
+def test_in_plane_load_still_derives_a_full_problem(tmp_path: Path):
+    """The refusal is about the idealization, not about being strict."""
+    pytest.importorskip("yaml")
+    pkg = tmp_path / "plate_in_plane.aieng"
+    _write_cae_project(pkg, direction="[0.0, -1.0, 0.0]")
+    prob = derive_topopt_problem_from_package(pkg, resolution=40)
+
+    assert prob.get("status") != "needs_user_input"
+    d = prob["derivation"]
+    assert d["derived"] is True
+    assert d["plane"] == {"u_axis": "x", "v_axis": "y", "out_of_plane_axis": "z"}
     assert prob["design_space_node"] == "plate"
-    # support maps to the left column (i=0) — populated even though the load is dropped
     sup_cells = prob["bcs"]["supports"][0]["cells"]
     assert sup_cells and all(c[0] == 0 for c in sup_cells)
-    # the load is -Z (purely out-of-plane); in-plane fx,fy are 0 -> dropped + warned,
-    # so there is no usable load and the problem is NOT fully derived (preset fallback)
-    assert prob["bcs"]["loads"] == [] and d["derived"] is False
-    assert any("out-of-plane" in w for w in d["warnings"])
-    assert prob["bcs"]["preset"] == "cantilever"
-    # frame carries origin + cell size + thickness for a later writeback
+    assert prob["bcs"]["loads"][0]["fy"] == -500.0
     assert d["frame"]["thickness"] == 10.0 and d["frame"]["cell_size"][0] == round(120 / 40, 6)
 
 
@@ -736,17 +791,18 @@ def test_derive_3d_needs_user_input_without_bcs(tmp_path: Path):
     assert out["grid"]["nx"] >= 2                       # still reports the grid it would use
 
 
-def test_derive_falls_back_to_preset_without_bcs(tmp_path: Path):
+def test_a_package_without_a_cae_setup_says_so(tmp_path: Path):
+    """No physics to derive from is a question for the user, not a preset."""
     pkg = tmp_path / "bare.aieng"
     with zipfile.ZipFile(pkg, "w") as zf:
         zf.writestr("geometry/topology_map.json", json.dumps(
             {"entities": [{"id": "b", "type": "solid", "bounding_box": [0, 0, 0, 30, 10, 5]}]}))
     prob = derive_topopt_problem_from_package(pkg)
-    assert prob["derivation"]["derived"] is False
-    assert prob["bcs"]["preset"] == "cantilever"
-    assert any("falling back" in w for w in prob["derivation"]["warnings"])
-    # still solves via the preset fallback
-    assert run_topology_optimization(prob)["result"]["compliance_history"]
+    assert prob["status"] == "needs_user_input"
+    assert prob.get("bcs", {}).get("preset") is None
+    assert "no CAE setup" in prob["reason"]
+    assert "cae.setup_static" in prob["recommendation"]
+    assert prob["support_count"] == 0 and prob["load_count"] == 0
 
 
 def test_derive_run_writeback_places_body_in_design_space(tmp_path: Path):
@@ -754,7 +810,8 @@ def test_derive_run_writeback_places_body_in_design_space(tmp_path: Path):
     in the design-space frame, so nelx*su == design width and the body spans the bbox."""
     pytest.importorskip("yaml")
     pkg = tmp_path / "plate.aieng"
-    _write_cae_project(pkg)  # 120 x 80 x 10 plate, origin at 0
+    # in-plane load: a 2D plane-stress problem the idealization can actually carry
+    _write_cae_project(pkg, direction="[0.0, -1.0, 0.0]")  # 120 x 80 x 10 plate, origin at 0
     problem = derive_topopt_problem_from_package(pkg, resolution=12, max_iters=6)
     res = run_topology_optimization(problem)
     node = topology_result_to_shape_ir(res)["parts"][0]

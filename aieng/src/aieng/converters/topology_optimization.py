@@ -38,6 +38,7 @@ from typing import Any, Callable
 import numpy as np
 
 from aieng import FORMAT_VERSION
+from aieng.cae_setup_view import load_cae_setup
 from aieng.converters.shape_ir import _AXIS_INDEX, sample_periodic_catmull_rom
 
 TOPOLOGY_OPTIMIZATION_PATH = "analysis/topology_optimization.json"
@@ -634,24 +635,84 @@ def _read_member_text(zf: zipfile.ZipFile, name: str) -> str | None:
 
 
 def _load_cae_setup(zf: zipfile.ZipFile) -> dict[str, Any]:
-    """CAE setup from simulation/setup.yaml (active) or a JSON setup, else {}."""
-    raw = (
-        _read_member_text(zf, "simulation/setup.yaml")
-        or _read_member_text(zf, "simulation/setup.json")
-        or _read_member_text(zf, "cae/setup.json")
-    )
-    if not raw:
-        return {}
-    if raw.lstrip().startswith("{"):
-        try:
-            return json.loads(raw)
-        except Exception:
-            return {}
-    try:
-        import yaml  # lazy: only needed for YAML setups
-        return yaml.safe_load(raw) or {}
-    except Exception:
-        return {}
+    """The package's CAE setup, whichever authoring path wrote it.
+
+    Reading only ``simulation/setup.yaml`` here made the whole
+    topology-optimization chain unreachable from the documented, key-free agent
+    path (which writes ``simulation/cae_imports/parsed_*.json``) — and it failed
+    invisibly, by falling back to the cantilever preset. See
+    `aieng.cae_setup_view` for the two shapes.
+    """
+    return load_cae_setup(zf)
+
+
+def _cannot_derive_2d(
+    *,
+    solid_node: Any,
+    overall: list[float],
+    warnings: list[str],
+    grid: dict[str, Any],
+    plane: dict[str, Any],
+    frame: dict[str, Any],
+    support_count: int,
+    load_count: int,
+    out_of_plane_axis: str,
+    out_of_plane_only: list[str],
+    setup_present: bool,
+) -> dict[str, Any]:
+    """Say why the 2D problem could not be derived, instead of inventing one.
+
+    The interesting case is not "no CAE setup" but a perfectly good one the 2D
+    idealization cannot express. The projection plane is spanned by the two
+    LARGEST dimensions, so for a plate or bracket the load that matters — the
+    bending load, normal to the plate face — is always along the thinnest axis
+    and is always dropped. Re-picking the plane does not rescue it either: a
+    plane containing that load direction is only as tall as the plate is thick
+    (a 6 mm plate on a 48-cell grid gives 2 cells), which is not a domain worth
+    optimizing. Plane-stress simply cannot carry plate bending; ``dimension=3d``
+    is the answer, and saying so beats substituting a textbook cantilever.
+    """
+    if out_of_plane_only:
+        reason = (
+            f"the load acts along {out_of_plane_axis}, the design space's thinnest axis — "
+            "this is plate/shell bending, which a 2D plane-stress idealization cannot "
+            "represent (the plane is spanned by the two largest dimensions, so the load "
+            "has no in-plane component)"
+        )
+        recommendation = (
+            "re-run with dimension='3d' (experimental structured-voxel SIMP), or supply an "
+            "explicit 2D `problem` if you intend a different idealization"
+        )
+    elif not setup_present:
+        reason = "the package has no CAE setup to derive supports and loads from"
+        recommendation = (
+            "author one first — cae.setup_static { material, fix, load } — or pass an "
+            "explicit `problem`"
+        )
+    else:
+        reason = (
+            f"the CAE setup resolved to {support_count} support(s) and {load_count} load(s) "
+            "on the design space; at least one of each is required"
+        )
+        recommendation = (
+            "check that the fixed faces and the loaded face belong to the design-space "
+            "body, then retry; or pass an explicit `problem`"
+        )
+    return {
+        "status": "needs_user_input",
+        "dimension": "2d",
+        "reason": reason,
+        "recommendation": recommendation,
+        "diagnostics": warnings,
+        "grid": grid,
+        "plane": plane,
+        "frame": frame,
+        "design_space_node": solid_node,
+        "design_space_bbox": overall,
+        "support_count": support_count,
+        "load_count": load_count,
+        "out_of_plane_loads": out_of_plane_only,
+    }
 
 
 def _bbox_center(bbox: Any) -> list[float] | None:
@@ -667,6 +728,21 @@ def _topology_entities(topology_map: Any) -> list[dict[str, Any]]:
         ents = topology_map.get("entities") or topology_map.get("topology") or []
         return [e for e in ents if isinstance(e, dict)]
     return []
+
+
+def _body_names(topology_map: Any) -> dict[str, str]:
+    """body/solid id -> the name an engineer would recognise (else the id)."""
+    names: dict[str, str] = {}
+    for ent in _topology_entities(topology_map):
+        if str(ent.get("type") or "").lower() not in {"solid", "body"}:
+            continue
+        ident = ent.get("id")
+        if ident is None:
+            continue
+        names[str(ident)] = str(
+            ent.get("name") or ent.get("source_ir_node") or ent.get("label") or ident
+        )
+    return names
 
 
 def _index_faces(topology_map: Any) -> tuple[dict[str, dict[str, Any]], list[float] | None, str | None]:
@@ -687,6 +763,9 @@ def _index_faces(topology_map: Any) -> tuple[dict[str, dict[str, Any]], list[flo
                 "bbox": bb,
                 "normal": ent.get("normal") or ent.get("proxy_normal"),
                 "center": ent.get("center") or _bbox_center(bb),
+                # kept so a refusal can name the body a face belongs to, rather
+                # than only the face id the user never chose
+                "body_id": ent.get("body_id"),
             }
         if et in {"solid", "body"} and isinstance(bb, list) and len(bb) >= 6:
             vol = max(bb[3] - bb[0], 0) * max(bb[4] - bb[1], 0) * max(bb[5] - bb[2], 0)
@@ -1236,6 +1315,7 @@ def derive_topopt_problem_from_package(
             warnings.append(f"support '{bc.get('target_feature')}' resolved to no faces/cells — skipped")
 
     loads: list[dict[str, Any]] = []
+    out_of_plane_only: list[str] = []
     for ld in setup_loads:
         fids = _resolve_target_faces(ld.get("target_feature"), feat_to_faces, faces)
         cells = _dedup_cells([
@@ -1251,7 +1331,11 @@ def derive_topopt_problem_from_package(
                 warnings.append(
                     f"load '{ld.get('target_feature')}' is mostly out-of-plane ({axis[w]}); "
                     "the 2D problem keeps only the in-plane component")
-        elif abs(fw) > 0:
+        elif cells and abs(fw) > 0:
+            # Only a load that DID land on cells, and whose force is entirely
+            # out-of-plane, diagnoses the plate-bending case. One that resolved
+            # to no cells is a binding problem and must not borrow that reason.
+            out_of_plane_only.append(str(ld.get("target_feature")))
             warnings.append(
                 f"load '{ld.get('target_feature')}' is purely out-of-plane ({axis[w]}); "
                 "no in-plane component for the 2D problem — skipped")
@@ -1261,9 +1345,27 @@ def derive_topopt_problem_from_package(
     bcs: dict[str, Any] = {"supports": supports, "loads": loads}
     derived = bool(supports and loads)
     if not derived:
-        bcs["preset"] = "cantilever"
-        warnings.append(
-            "insufficient derived BCs (need ≥1 support and ≥1 load) — falling back to the cantilever preset")
+        # Refuse rather than substitute a textbook problem. Returning
+        # `status: ok` with the cantilever preset meant a real bracket was
+        # optimized against a load case that was not its own — and the result
+        # gets written back as the project's geometry by opt.writeback_to_shape_ir.
+        # The 3D derivation in this same module already refuses this way.
+        return _cannot_derive_2d(
+            solid_node=solid_node, overall=overall, warnings=warnings,
+            grid={"nelx": nelx, "nely": nely},
+            plane={"u_axis": axis[u], "v_axis": axis[v], "out_of_plane_axis": axis[w]},
+            frame={
+                "origin": [mins[0], mins[1], mins[2]],
+                "u_axis": axis[u], "v_axis": axis[v],
+                "cell_size": [round(du, 6), round(dv, 6)], "thickness": round(ext[w], 6),
+            },
+            support_count=len(supports), load_count=len(loads),
+            out_of_plane_axis=axis[w], out_of_plane_only=out_of_plane_only,
+            # A setup that exists but resolved to nothing is a binding problem,
+            # not a missing setup — telling the user to author one they already
+            # have would send them the wrong way.
+            setup_present=bool(setup),
+        )
 
     # Advisory engineering guidance from neutral CAE result artifacts (if present).
     # The loads/supports/material/design-space above stay sourced from the CAE setup.
@@ -1358,6 +1460,7 @@ def derive_topopt_problem_3d_from_package(
         setup = _load_cae_setup(zf)
 
     faces, overall, solid_node = _index_faces(topology_map)
+    body_names = _body_names(topology_map)
     if not overall:
         raise ValueError("cannot derive design space: no bounding box in geometry/topology_map.json")
 
@@ -1410,8 +1513,18 @@ def derive_topopt_problem_3d_from_package(
             if mapped:
                 cells.extend(mapped[0])
             else:
+                # Name the body, not just the face id. The design space is the
+                # LARGEST solid, so on the canonical plate+rib bracket the load
+                # face belongs to the rib and lies outside it entirely — a
+                # diagnostic naming only `face_020` leaves the user nowhere to go.
+                owner_id = faces.get(fid, {}).get("body_id")
+                owner = body_names.get(str(owner_id), owner_id) if owner_id else None
+                owned = f" (on {owner})" if owner and owner != solid_node else ""
                 diagnostics.append(
-                    f"load '{ld.get('target_feature')}' face {fid} is not on a design-space boundary")
+                    f"load '{ld.get('target_feature')}' face {fid}{owned} is not on the boundary "
+                    f"of the design space '{solid_node}' (the largest solid). Pass an explicit "
+                    "`problem` with the design_space_node you mean, or model the design envelope "
+                    "as one body.")
         cells = _dedup_cells(cells)
         direction = ld.get("direction") or [0.0, 0.0, -1.0]
         mag = float(ld.get("value_n") or 1.0)
