@@ -1,6 +1,6 @@
 [project]
 name = "aieng-workbench-mcp"
-version = "0.1.0a2"
+version = "0.1.0a3"
 description = "Local-installable AIENG Workbench MCP server plus FastAPI backend runtime for CAD/CAE agents."
 readme = {text = "FastAPI backend service for the aieng engineering platform workbench.", content-type = "text/markdown"}
 license = "MIT"
@@ -57,7 +57,7 @@ dependencies = [
   "PyYAML>=6.0",
   "jsonschema>=4.0",
   "trimesh>=4.0",
-  "aieng-format>=0.1.0a2",
+  "aieng-format>=0.1.0a3",
   "defusedxml>=0.7.1",
   "filelock>=3.20.3",
 ]

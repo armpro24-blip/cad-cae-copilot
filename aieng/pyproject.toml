@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aieng-format"
-version = "0.1.0a2"
+version = "0.1.0a3"
 description = "AI-readable engineering context package format for CAD/CAE agents — converts STEP / CalculiX / FreeCAD artifacts into structured, auditable, evidence-tracked packages."
 readme = "README.md"
 license = {file = "LICENSE"}

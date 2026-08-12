@@ -21,7 +21,16 @@ def test_pyproject_exposes_branded_mcp_entrypoints() -> None:
 
     dependencies = set(project["dependencies"])
     cad_extra = set(project["optional-dependencies"]["cad"])
-    assert "aieng-format>=0.1.0a2" in dependencies
+    # Assert the invariant, not the literal: the backend must require the
+    # aieng-format built alongside it. A hard-coded version here breaks on every
+    # release bump and teaches nothing when it does.
+    core_version = tomllib.loads(
+        (AIENG_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )["project"]["version"]
+    assert f"aieng-format>={core_version}" in dependencies, (
+        f"backend must depend on the sibling aieng-format {core_version}; "
+        f"declared: {sorted(d for d in dependencies if d.startswith('aieng-format'))}"
+    )
     assert "build123d>=0.10.0" not in dependencies
     assert "build123d>=0.10.0" in cad_extra
 

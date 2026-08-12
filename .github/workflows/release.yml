@@ -91,7 +91,7 @@ jobs:
           echo "target:  ${{ steps.target.outputs.target }}"
           echo
           echo "Tag and PEP 440 version are intentionally decoupled here"
-          echo "(tag v0.1.0-alpha.3 ships version 0.1.0a2). Confirm the mapping"
+          echo "(e.g. tag v0.1.0-alpha.4 ships version 0.1.0a3). Confirm the mapping"
           echo "matches the release draft before approving the publish job."
 
       # Fail here with a readable message rather than on a 400 from the index.
@@ -128,7 +128,7 @@ jobs:
           path: dist/
           if-no-files-found: error
 
-  # Strictly ordered: aieng-workbench-mcp declares aieng-format>=0.1.0a2, so
+  # Strictly ordered: aieng-workbench-mcp declares a floor on aieng-format, so
   # publishing the dependent first leaves a window where it cannot be installed.
   publish-aieng-format:
     name: Publish aieng-format
