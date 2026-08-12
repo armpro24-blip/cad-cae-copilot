@@ -55,7 +55,46 @@ def parameter_scope(feature_type: Any) -> str:
     return _SCOPE_BY_FEATURE_TYPE.get(str(feature_type or ""), "local")
 
 
-def build_parameter_index(feature_graph: Any) -> list[dict[str, Any]]:
+def scopes_from_source(source_code: Any, constant_names: Any) -> dict[str, str]:
+    """Live scope per constant, read from the CURRENT source: ``local``/``global``.
+
+    The feature graph is a stored artifact, so it can be older than the binder
+    that wrote it. Measured on a bracket built before the constant→part fix of
+    2026-08-11: `PLATE_THICKNESS` dimensions the plate AND positions the rib, but
+    the stored graph still attached it to `rib_main` as a `named_part` — i.e.
+    `scope: "local"`, "the safe single-part edit". `cad.edit_parameter` resolves
+    its scope-risk gate from that same graph, so editing "the rib's thickness"
+    would have skipped the `confirmScopeRisk` confirmation and resized the plate.
+    `regression_diff` still reports `collateral_change` afterwards, but the whole
+    point of the scope flag is to warn BEFORE.
+
+    Constant→part binding is pure text analysis, so the honest answer is
+    recomputable at read time. Returns only constants whose live usage disagrees
+    with a naive per-feature reading; a constant used by 2+ named parts is
+    ``global`` (shared — edits ripple).
+    """
+    text = str(source_code or "")
+    names = {str(n) for n in (constant_names or []) if n}
+    if not text or not names:
+        return {}
+    try:  # local import: the CAD module pulls in the heavy build123d stack
+        from ..cad_generation import _constants_to_part_labels
+    except Exception:  # noqa: BLE001 - scope enrichment is best-effort
+        return {}
+    try:
+        const_to_labels = _constants_to_part_labels(text, names)
+    except Exception:  # noqa: BLE001
+        return {}
+    return {
+        const: ("global" if len(labels or ()) > 1 else "local")
+        for const, labels in const_to_labels.items()
+        if labels
+    }
+
+
+def build_parameter_index(
+    feature_graph: Any, source_code: Any = None
+) -> list[dict[str, Any]]:
     """Flatten ``feature_graph.features[].parameters`` into a searchable index. Pure.
 
     Each entry: ``{feature_id, feature_name, feature_type, scope, parameter_name,
@@ -65,6 +104,10 @@ def build_parameter_index(feature_graph: Any) -> list[dict[str, Any]]:
     the feature name. ``scope`` records whether editing is ``local`` (one part),
     ``global`` (shared — edits ripple), or ``unscoped``. Returns ``[]`` for a
     missing/malformed graph or one with no editable params.
+
+    Pass ``source_code`` (``geometry/source.py``) to have a stored ``local``
+    scope re-checked against the live constant→part usage — see
+    `scopes_from_source` for why a stored graph can disagree.
     """
     entries: list[dict[str, Any]] = []
     if not isinstance(feature_graph, dict):
@@ -98,6 +141,21 @@ def build_parameter_index(feature_graph: Any) -> list[dict[str, Any]]:
                 "max_value": info.get("max_value"),
                 "search_tokens": sorted(tokens),
             })
+
+    live = scopes_from_source(source_code, {e["cad_parameter_name"] for e in entries})
+    for entry in entries:
+        # Only ever WIDEN: a stored `global`/`unscoped` stays as it is (those
+        # already demand confirmation), but a stored `local` that the current
+        # source shows touching several parts is corrected to `global` and says
+        # so, rather than reading as the safe single-part edit it is not.
+        if entry["scope"] == "local" and live.get(entry["cad_parameter_name"]) == "global":
+            entry["scope"] = "global"
+            entry["scope_source"] = "source_usage"
+            entry["scope_note"] = (
+                f"{entry['cad_parameter_name']} is used by more than one named part in the "
+                "current source — editing it ripples, despite being listed under "
+                f"'{entry['feature_name']}'"
+            )
     return entries
 
 

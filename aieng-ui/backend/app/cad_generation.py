@@ -8878,7 +8878,11 @@ def design_review(
                     from .agent_autopilot.parameter_binding import build_parameter_index
 
                     feature_graph = json.loads(zf.read("graph/feature_graph.json").decode("utf-8"))
-                    parameter_index = build_parameter_index(feature_graph)
+                    source_code = (
+                        zf.read("geometry/source.py").decode("utf-8")
+                        if "geometry/source.py" in names else None
+                    )
+                    parameter_index = build_parameter_index(feature_graph, source_code)
     except Exception:
         # Critique already succeeded; degrade to critique-only findings rather
         # than fail the whole review on a structural-signal read error.
@@ -9082,6 +9086,27 @@ def serve_cad_preview(settings: Any, project_id: str) -> tuple[bytes, str]:
 
 
 # ── parametric edit: fast text replacement in source.py ────────────────────────
+
+def _constant_is_shared_in_source(pkg_path: Any, constant_name: str) -> bool:
+    """Does this constant dimension more than one NAMED part in the live source?
+
+    The scope-risk gate otherwise trusts the stored feature graph's attachment,
+    which can be older than the binder. Best-effort: a package without a
+    readable `geometry/source.py` answers False and the gate behaves as before.
+    """
+    if not constant_name:
+        return False
+    try:
+        with zipfile.ZipFile(pkg_path, "r") as zf:
+            source_code = zf.read("geometry/source.py").decode("utf-8")
+    except Exception:  # noqa: BLE001 - never fail an edit on this check
+        return False
+    try:
+        labels = _constants_to_part_labels(source_code, {constant_name}).get(constant_name)
+    except Exception:  # noqa: BLE001
+        return False
+    return len(labels or ()) > 1
+
 
 def _compute_parameter_edit_preview(
     settings: Any,
@@ -9459,6 +9484,24 @@ def edit_build123d_parameter(
             "scope": "unscoped",
             "reason": "parameter could not be bound to one named part",
             "confirmation_field": "confirmScopeRisk",
+        }
+    elif _constant_is_shared_in_source(pkg_path, cad_parameter_name):
+        # The two checks above read the STORED feature graph, which can predate
+        # the binder that wrote it. Measured on a bracket built before the
+        # constant→part fix of 2026-08-11: PLATE_THICKNESS dimensions the plate
+        # AND positions the rib, yet the graph still attached it to `rib_main` as
+        # a named_part — so this gate saw "local", asked for no confirmation, and
+        # editing "the rib's thickness" resized the plate. regression_diff still
+        # reported `collateral_change`, but afterwards. Constant→part binding is
+        # pure text analysis, so the live answer is available right here.
+        scope_risk = {
+            "scope": "global",
+            "reason": (
+                f"{cad_parameter_name} is used by more than one named part in the current "
+                f"source, despite being listed under '{edited_feature.get('name') or feature_type}'"
+            ),
+            "confirmation_field": "confirmScopeRisk",
+            "detected_from": "source_usage",
         }
     if scope_risk and not confirm_scope_risk:
         return {

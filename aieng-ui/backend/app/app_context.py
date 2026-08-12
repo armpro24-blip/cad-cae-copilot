@@ -562,7 +562,12 @@ def build_app_context(*, active_settings: Any, db_path: Any) -> AppContext:
                 feature_graph = package_inspection.read_package_json(
                     reader, "graph/feature_graph.json"
                 )
-                return build_parameter_index(feature_graph)
+                # The source lets a stored `local` scope be re-checked against
+                # the live constant→part usage (a graph can predate the binder).
+                source_code = package_inspection.read_package_text(
+                    reader, "geometry/source.py"
+                )
+                return build_parameter_index(feature_graph, source_code)
             finally:
                 if owns_reader:
                     reader.close()

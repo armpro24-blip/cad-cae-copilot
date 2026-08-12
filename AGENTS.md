@@ -499,6 +499,25 @@ cad.edit_parameter { project_id, featureId, parameterName, newValue }   [APPROVA
 Use `cad.execute_build123d` (mode=append/replace) only for changes that add or
 remove geometry; use `cad.edit_parameter` for pure dimensional tweaks.
 
+**`scope` is verified against the live source, not just the stored graph.** The
+feature graph is an artifact written once by whatever binder existed at the time,
+and it is served as current forever after — so a project built before a binder
+improvement keeps the old attachment. Measured on a bracket built before the
+constant→part fix: `PLATE_THICKNESS` dimensions the plate *and* positions the
+rib, yet the stored graph filed it under `rib_main` as a `named_part`, i.e.
+`scope: "local"` — "the safe single-part edit". The scope-risk gate reads the
+same graph, so editing "the rib's thickness" asked for no `confirmScopeRisk`
+confirmation and resized the plate. `regression_diff` still reported
+`collateral_change`, but the flag exists to warn **before**.
+
+Constant→part binding is pure text analysis, so both the listing and the gate
+now recompute it from `geometry/source.py` at read time. The rule only ever
+**widens**: a stored `global`/`unscoped` is untouched, and a stored `local`
+whose constant touches several named parts becomes `global` with a `scope_note`
+naming why. Genuinely single-part parameters are unaffected — and the check is
+self-healing, so a future binder improvement reaches old projects without
+rebuilding them.
+
 **Regression diff on every edit (`regression_diff`).** The `cad.edit_parameter`
 response includes a `regression_diff` that compares the before/after topology by
 named part — your safety net against an edit silently warping geometry it
@@ -1150,7 +1169,7 @@ band, or a package with no mesh metadata at all, leaves the tier untouched.
 | `aieng.write_completeness_report` | What is missing before simulation |
 | `cae.prepare_solver_run` | Solver preflight — checks readiness, runs nothing. Returns `recommended_next_calls` with tool/input/reason entries for missing artifacts and stale face references |
 | `cad.get_source` | Accumulated build123d source + `{named_parts, has_base}` — call before an incremental edit |
-| `cad.list_editable_parameters` | List the parameters editable fast via `cad.edit_parameter` (the "point" of point-and-shoot): per-parameter `featureId`/`parameterName`/`cad_parameter_name`/current/min-max + `scope` (`local`/`global`/`unscoped`) + a summary. Answers "what can I change here?" |
+| `cad.list_editable_parameters` | List the parameters editable fast via `cad.edit_parameter` (the "point" of point-and-shoot): per-parameter `featureId`/`parameterName`/`cad_parameter_name`/current/min-max + `scope` (`local`/`global`/`unscoped`) + a summary. `scope` is re-checked against the CURRENT source, so a stored `local` that actually ripples is corrected to `global` with a `scope_note`. Answers "what can I change here?" |
 | `cad.validate_subpart` | Execute a build123d **fragment** in isolation (no package write, no project mutation) and report whether it builds into a usable solid — build success or the exact error, non-empty-solid check, solid/face counts, per-part + total volume/area, union bbox. Verify a sub-structure (sketch→solid, a boolean, one sub-assembly) **before** committing it. `valid` = builds into a non-empty solid, NOT a manifold/watertight guarantee |
 | `cad.validate_targets` | Deterministic geometry **target validator**: pass a list of targets (`named_part_present`, `feature_present`, `part_count`, `overall_size`, `part_size`, `part_center`, `no_floating_parts`, `no_deep_overlap`) and get pass/fail/unknown per target with measured-vs-expected. If no `targets` are passed, auto-loads the CAD brief's `validation_targets`. Verifies the brief's exact promises — catches plausible-but-mispositioned / over-modeled builds. Bbox-level, not GD&T; read-only |
 | `cad.author_brief` | Author the **pre-code CAD brief** + validation-target list (units, model_type, parts, key dimensions) BEFORE `cad.execute_build123d`. Stored as a project sidecar; auto-derives `validation_targets` that `cad.validate_targets` checks the built model against — the plan→build→verify loop. Planning artifact only (no approval, no geometry) |
