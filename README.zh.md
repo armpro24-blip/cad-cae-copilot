@@ -140,14 +140,15 @@ alpha 镜像会在 Docker smoke 通过后从 `main` 发布到 GHCR
 不是生产认证。
 
 **发布版本:** 当前预发布为
-[`v0.1.0-alpha.3`](https://github.com/armpro24-blip/cad-cae-copilot/releases/tag/v0.1.0-alpha.3)。
-只想运行 MCP 服务器、不克隆仓库(Python 3.11+,固定到发布 tag;PyPI 发布
-在计划中、尚未上线):
+[`v0.1.0-alpha.4`](https://github.com/armpro24-blip/cad-cae-copilot/releases/tag/v0.1.0-alpha.4)。
+分发渠道是 Git tag 加 GHCR 镜像 —— **不计划发布到 PyPI**,所以下面的 Git 形式
+就是正式安装路径,不是临时替代。只想运行 MCP 服务器、不克隆仓库
+(Python 3.11+,固定到发布 tag):
 
 ```bash
 uvx \
-  --from "aieng-workbench-mcp[full] @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.3#subdirectory=aieng-ui/backend" \
-  --with "aieng-format @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.3#subdirectory=aieng" \
+  --from "aieng-workbench-mcp[full] @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.4#subdirectory=aieng-ui/backend" \
+  --with "aieng-format @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.4#subdirectory=aieng" \
   aieng-workbench-mcp --approval-mode client --data-dir ~/.aieng-workbench
 ```
 

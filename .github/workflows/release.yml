@@ -3,13 +3,20 @@ name: Release
 # Publishes `aieng-format` and `aieng-workbench-mcp` to (Test)PyPI and cuts the
 # GitHub release. Nothing here fires on an ordinary push or PR.
 #
+# STANDING DECISION (2026-09-01): this project does NOT publish to PyPI. Its
+# channels are the git tag and the GHCR image; the publish jobs below are kept
+# working but unused, and Trusted Publishing has deliberately not been set up,
+# so a dispatch would fail at the publish step. See
+# aieng/docs/release/current_alpha_release_gate.md. Do not point install docs at
+# a package index — neither name is registered there.
+#
 # Owner-gated by design, in two independent ways:
 #   1. It only starts from a manual dispatch — an explicit owner action.
 #      (The former `v*` tag-push trigger was removed for v0.1.0-alpha.3: the
-#      owner chose to tag + release WITHOUT PyPI for now, and an automatic
-#      publish attempt without Trusted Publishing configured would just fail
-#      red on every tag. Re-add `push: tags: ["v*"]` once PyPI is set up if
-#      tag-driven publishing is wanted again.)
+#      owner chose to tag + release WITHOUT PyPI, and an automatic publish
+#      attempt without Trusted Publishing configured would just fail red on
+#      every tag. Re-add `push: tags: ["v*"]` only if that decision is
+#      reversed and PyPI is set up.)
 #   2. Each publish job is bound to a GitHub Environment (`pypi` / `testpypi`).
 #      Add a required reviewer to those environments and the job pauses for an
 #      approval click. See aieng/docs/release/v0.1.0-alpha_publish_runbook.md.

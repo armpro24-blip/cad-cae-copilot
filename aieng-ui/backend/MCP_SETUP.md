@@ -47,9 +47,10 @@ Choose one tier:
    blocker. The container starts backend, viewer, and MCP HTTP/SSE together.
 
 Headless run directly from this Git repository without cloning it first —
-**this is the current primary install path** (pinned to the published release
-tag; PyPI publication is planned but not yet live, so a bare
-`uvx aieng-workbench-mcp` does not resolve yet):
+**this is the install path** (pinned to the published release tag). PyPI
+publication is **not planned**, so a bare `uvx aieng-workbench-mcp` does not
+resolve; the name is also unregistered on PyPI, so do not install it from
+there:
 
 ```bash
 uvx \
@@ -60,14 +61,7 @@ uvx \
   --data-dir ~/.aieng-workbench
 ```
 
-(Drop the `@v0.1.0-alpha.4` pins to track `main` instead.) Once the packages
-are on PyPI, the short form becomes available:
-
-```bash
-uvx "aieng-workbench-mcp[full]" \
-  --approval-mode client \
-  --data-dir ~/.aieng-workbench
-```
+(Drop the `@v0.1.0-alpha.4` pins to track `main` instead.)
 
 Use `--approval-mode block` for planning/inspection-only sessions where no
 approval-gated CAD/package/solver mutation may execute. Use `--approval-mode
@@ -121,9 +115,9 @@ Two behavioural differences matter if you write client code against this server:
 blocks), and its `ToolAnnotations` fields are snake_case with camelCase aliases.
 The legacy FreeCAD adapter under `legacy/` stays pinned to `mcp<2`.
 
-PyPI publication is planned but not yet live, so the per-client snippets below
-use the Git `uvx --from ... --with ...` no-clone form pinned to the published
-release tag. If dependency resolution for native CAD wheels fails on your
+PyPI publication is not planned, so the per-client snippets below use the Git
+`uvx --from ... --with ...` no-clone form pinned to the published release tag —
+that is the supported form, not a placeholder. If dependency resolution for native CAD wheels fails on your
 platform, use the Docker tier.
 
 ### Claude Code snippets
@@ -243,10 +237,10 @@ For Docker/full viewer mode, prefer MCP-over-HTTP if your client supports it:
 }
 ```
 
-### Pre-publish local wheel install (no PyPI)
+### Local wheel install
 
-Until both packages are published, you can install the built wheels into a clean
-venv from a local checkout:
+The same wheels CI builds, installed into a clean venv from a local checkout —
+useful for verifying the packaged form before tagging a release:
 
 ```bash
 cd aieng && python -m build

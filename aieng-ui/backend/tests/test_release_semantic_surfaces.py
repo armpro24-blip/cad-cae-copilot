@@ -20,6 +20,7 @@ the affirmative phrasings below do not occur as substrings of those negations.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -129,3 +130,104 @@ def test_readmes_explain_proof_not_just_screenshots() -> None:
     assert "STEP/STL/GLB 导出" in chinese
     assert "稳定的 `@face:*` 指针" in chinese
     assert "静态渲染图" in chinese
+
+
+# ── install snippets must name a channel that exists ─────────────────────────
+#
+# Distributions this project does NOT publish. `aieng/README.md` carried
+# `pip install aieng-format` as its first Quick Start line for the whole alpha:
+# the name is unregistered on PyPI, so anyone following it would have installed
+# whatever a stranger uploads under that name — a documented path nothing
+# exercises, with a supply-chain edge on it.
+#
+# Delete a name from this tuple on the day it is actually published, and the
+# guard stops objecting to docs that advertise it. Keeping the list explicit is
+# what lets the rule say something about a CORRECT input instead of banning the
+# phrase forever.
+_UNPUBLISHED_DISTRIBUTIONS: tuple[str, ...] = (
+    "aieng-format",
+    "aieng-workbench-mcp",
+)
+
+# Spellings that resolve against a public index. The Git/tag forms
+# (`pip install "aieng-format @ git+https://…"`, `uvx --from "… @ git+https://…"`)
+# name the same distribution but pin a source, so they are matched and then
+# excused by the `git+` check below rather than listed as separate patterns.
+_INDEX_INSTALL = re.compile(
+    r"""^(?:pip\s+install|uvx(?:\s+--from)?)\s+["']?(?:[a-z0-9_.-]+\[[^\]]*\]|[a-z0-9_.-]+)""",
+    re.IGNORECASE,
+)
+_FENCE = re.compile(r"^\s*```")
+
+
+def _install_commands(text: str) -> list[str]:
+    """Command lines inside fenced code blocks, joined across `\\` continuations.
+
+    Only code blocks, and only at the start of a line: prose that MENTIONS a
+    command in order to warn against it ("do not run `pip install aieng-format`")
+    is not an instruction, and a rule that cannot tell the difference fires on
+    every correct document — which buries the one real finding with it.
+    """
+    commands: list[str] = []
+    in_fence = False
+    pending = ""
+    for raw in text.splitlines():
+        if _FENCE.match(raw):
+            in_fence = not in_fence
+            pending = ""
+            continue
+        if not in_fence:
+            continue
+        line = raw.strip()
+        fragment = line.rstrip("\\").strip()
+        if pending:
+            pending = pending + " " + fragment
+        elif _INDEX_INSTALL.match(line):
+            pending = fragment
+        else:
+            continue
+        if not line.endswith("\\"):
+            commands.append(pending)
+            pending = ""
+    if pending:
+        commands.append(pending)
+    return commands
+
+
+@pytest.mark.parametrize("doc_path", _existing_alpha_files(), ids=lambda p: p.name)
+def test_no_surface_advertises_an_unpublished_distribution(doc_path: Path) -> None:
+    """An install command must point at a channel that actually has the package."""
+    offenders: list[str] = []
+    for command in _install_commands(doc_path.read_text(encoding="utf-8")):
+        match = _INDEX_INSTALL.match(command)
+        if not match:
+            continue
+        named = match.group(0).split()[-1].strip("\"'").split("[")[0]
+        if named not in _UNPUBLISHED_DISTRIBUTIONS:
+            continue
+        # A source-pinned install names the distribution but resolves from Git,
+        # which is this project's actual channel.
+        if "git+" in command:
+            continue
+        offenders.append(command)
+
+    rel = doc_path.relative_to(_REPO_ROOT).as_posix()
+    assert not offenders, (
+        f"{rel} tells the reader to install an unpublished distribution from a "
+        f"public index: {offenders}. These names are unregistered, so the command "
+        "resolves to a stranger's upload. Use the git+ / tag form, or remove a "
+        "name from _UNPUBLISHED_DISTRIBUTIONS once it is genuinely published."
+    )
+
+
+def test_the_release_gate_records_the_distribution_decision() -> None:
+    """The docs above are only honest while the gate doc says why (#273/#152)."""
+    gate = (
+        _REPO_ROOT / "aieng" / "docs" / "release" / "current_alpha_release_gate.md"
+    ).read_text(encoding="utf-8").lower()
+
+    assert "not planned" in gate, "the gate doc must state the PyPI decision"
+    assert "ghcr" in gate and "git tag" in gate, (
+        "the gate doc must name the channels that ARE published, or 'not planned' "
+        "reads as an outstanding gap rather than a decision"
+    )
