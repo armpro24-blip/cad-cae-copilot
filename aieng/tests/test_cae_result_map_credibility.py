@@ -300,3 +300,33 @@ def test_no_evidence_and_evidence_of_no_run_are_recorded_differently() -> None:
     assert absent["solver_executed"] is None and absent["read_from_package"] is False
     assert negative["solver_executed"] is False and negative["read_from_package"] is True
     assert _map()["credibility"]["tier"] == _map(solver_executed=False)["credibility"]["tier"]
+
+
+def test_the_reader_distinguishes_no_record_from_a_run_that_did_not_finish(tmp_path) -> None:
+    """One level deeper than the provenance fix: the reader itself.
+
+    `bool(completed_runs)` answered False both when the package recorded NO
+    solver run and when it recorded one that never completed. The mapper then
+    filed the first as `read_from_package: True` — "the package says no run
+    completed" — when the package had said nothing at all.
+    """
+    import itertools
+    import json
+    import zipfile
+
+    from aieng.cae_result_summary import read_solver_evidence
+
+    counter = itertools.count()
+
+    def _evidence(runs: list[dict[str, Any]]) -> Any:
+        pkg = tmp_path / f"case_{next(counter)}.aieng"
+        with zipfile.ZipFile(pkg, "w") as zf:
+            zf.writestr("analysis/computed_metrics.json", json.dumps(_CM))
+            for index, run in enumerate(runs):
+                zf.writestr(f"simulation/runs/r{index}/solver_run.json", json.dumps(run))
+        with zipfile.ZipFile(pkg) as zf:
+            return read_solver_evidence(zf)
+
+    assert _evidence([])["solver_executed"] is None, "no record is not a negative answer"
+    assert _evidence([{"state": "failed", "solved": False}])["solver_executed"] is False
+    assert _evidence([{"state": "completed", "solved": True}])["solver_executed"] is True

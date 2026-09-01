@@ -1116,7 +1116,11 @@ class SolverEvidence(TypedDict):
     contract nobody checks.
     """
 
-    solver_executed: bool
+    #: True when a run completed, False when runs exist but none completed, and
+    #: None when the package records no solver run at all. The last two are
+    #: different facts — "it did not finish" vs "nothing was ever recorded" —
+    #: and a consumer that collapses them cannot say which it saw.
+    solver_executed: bool | None
     mesh_accuracy_band: str | None
     solver_run_count: int
     completed_run_count: int
@@ -1137,7 +1141,7 @@ def read_solver_evidence(zf: zipfile.ZipFile) -> SolverEvidence:
     runs = _read_solver_runs(zf)
     completed = [run for run in runs if _solver_run_completed(run)]
     return {
-        "solver_executed": bool(completed),
+        "solver_executed": bool(completed) if runs else None,
         "mesh_accuracy_band": _read_mesh_accuracy_band(zf),
         "solver_run_count": len(runs),
         "completed_run_count": len(completed),
