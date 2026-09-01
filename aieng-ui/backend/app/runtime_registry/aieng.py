@@ -1090,9 +1090,12 @@ def register_aieng_tools(rt: Any, active_settings: Any, app_context: Any, _schem
         "aieng.refresh_semantics",
         _tool_refresh_semantics,
         description=(
-            "Re-validate the package and refresh semantic state (face labels, feature graph, "
-            "stale-artifact flags). Call this after any geometry edit to clear EDIT IMPACT warnings "
-            "before re-running the CAE pipeline."
+            "Re-run the .aieng schema + rule validation and report it, grouped by the "
+            "artifact that failed (`validation_summary`). Read-only with respect to the "
+            "package: it does NOT re-extract semantic labels, rebuild the feature graph, "
+            "or clear stale-artifact flags — a stale EDIT IMPACT is cleared by a "
+            "successful CAD write, and stale CAE bindings are re-verified by "
+            "cae.prepare_solver_run or rebound via cae.apply_setup_patch."
         ),
         input_schema=_schema("aieng.refresh_semantics"),
     )

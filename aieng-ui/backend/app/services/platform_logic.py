@@ -286,6 +286,56 @@ def import_aieng_file(settings: Settings, project_id: str) -> dict[str, Any]:
     }
 
 
+def summarize_validation_failures(result: dict[str, Any]) -> dict[str, Any]:
+    """Group a validation report's failures by the artifact that produced them.
+
+    `ok: false` plus 117 undifferentiated messages is not an actionable answer.
+    Measured on eight real packages, the failures cluster hard by member —
+    `simulation/cae_mapping.json` (36), `manifest.json` (23), … — so naming the
+    members and counting them is the difference between "something is wrong" and
+    "these six artifacts do not match their schemas".
+    """
+    failures = [
+        message
+        for message in (result.get("messages") or [])
+        if isinstance(message, dict) and "fail" in str(message.get("level", "")).lower()
+    ]
+    by_member: dict[str, dict[str, Any]] = {}
+    for message in failures:
+        text = str(message.get("text") or "")
+        member = _failure_group(text)
+        entry = by_member.setdefault(member, {"member": member, "failures": 0, "first": text[:200]})
+        entry["failures"] += 1
+    return {
+        "failure_count": len(failures),
+        "failing_artifacts": sorted(
+            by_member.values(), key=lambda e: (-int(e["failures"]), str(e["member"]))
+        ),
+    }
+
+
+#: A package member path, wherever it appears in a message.
+_MEMBER_TOKEN = re.compile(r"[\w./-]+\.(?:json|yaml|yml|step|stl|glb|py|md|inp|frd)\b")
+
+
+def _failure_group(text: str) -> str:
+    """The artifact a failure is about, or the rule family when it is not one.
+
+    Schema failures lead with the member (`manifest.json schema error at $: …`),
+    but the rule checks do not: `required resource geometry/x.json missing`
+    carries the member mid-sentence, and `units are missing or incomplete` names
+    no member at all. Bucketing all of those as "other" would hide exactly the
+    ones a reader most needs named, so look for a member anywhere first and fall
+    back to the rule's leading word (`units`, `feature`, `topology`, `CAE`)
+    rather than to a single opaque pile.
+    """
+    match = _MEMBER_TOKEN.search(text)
+    if match:
+        return match.group(0)
+    head = text.split(" ", 1)[0].strip()
+    return head or "other"
+
+
 def validate_aieng_file(settings: Settings, project_id: str) -> dict[str, Any]:
     project = get_project(settings, project_id)
     package_path = resolve_project_path(settings, project_id, project.get("aieng_file"))
@@ -293,10 +343,21 @@ def validate_aieng_file(settings: Settings, project_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=".aieng package not found")
     result = aieng_bridge.validate_package(package_path, aieng_root=settings.aieng_root)
     project["last_validation_ok"] = result.get("ok")
-    project["status"] = "validated" if result.get("ok") else "validation_failed"
-    project["last_error"] = None if result.get("ok") else "package validation reported failures"
+    # Deliberately NOT touching `status` or `last_error`.
+    #
+    # Format conformance and "is there a viewable model" are different axes, and
+    # conflating them made a read-only re-validation destructive: measured, every
+    # one of eight real agent-built packages fails this validation (writer/schema
+    # drift, #513), so calling this tool turned a `viewer_ready_glb` project into
+    # `validation_failed` — which the sidebar renders as "Needs attention" — while
+    # fixing nothing. The verdict belongs in `last_validation_ok`, where a caller
+    # can read it, not in the lifecycle field the UI trusts.
+    #
+    # `status: "validated"` was also the wrong word regardless: this repo's own
+    # honesty tests list "validated" among the claim-advancing terms a status may
+    # not assert. Schema conformance is not engineering validation.
     save_project(settings, project)
-    return result
+    return {**result, "validation_summary": summarize_validation_failures(result)}
 
 
 def _step_to_stl_via_build123d(step_path: Path, stl_path: Path) -> dict[str, Any]:
