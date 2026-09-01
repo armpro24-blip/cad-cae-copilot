@@ -52,6 +52,13 @@ def _solver_block(name: str, version: str | None, adapter: str) -> dict[str, Any
     return {"name": name, "version": version, "adapter": adapter}
 
 
+# The id stamped on a load case whose source declared none. Exported because
+# the mapper must be able to tell a placeholder from a real id — a default that
+# looks declared is indistinguishable from data, and this one manufactured a
+# phantom second load case in analysis/cae_result_map.json.
+DEFAULT_LOAD_CASE_ID = "load_case_1"
+
+
 def normalize_calculix_computed_metrics(
     native: dict[str, Any], *, solver: str = "calculix", solver_version: str | None = None,
     adapter: str = "calculix_frd_v1",
@@ -70,7 +77,15 @@ def normalize_calculix_computed_metrics(
                 "result_type": rtype, "metric": name,
                 "max": mv.get("value"), "min": None, "average": None, "unit": mv.get("unit"),
             })
-        load_cases.append({"id": str(lc.get("id") or "load_case_1"), "results": results})
+        declared_id = lc.get("id")
+        entry = {"id": str(declared_id or DEFAULT_LOAD_CASE_ID), "results": results}
+        if not declared_id:
+            # A placeholder must not read as a declaration. Downstream, the
+            # result map listed the source's real id AND this placeholder as two
+            # load cases of one analysis, so its scalar extrema could not be
+            # joined to its own clusters.
+            entry["id_is_placeholder"] = True
+        load_cases.append(entry)
     return {
         "format": COMPUTED_METRICS_FORMAT,
         "schema_version": CAE_CONTRACT_VERSION,
@@ -84,7 +99,7 @@ def normalize_calculix_computed_metrics(
 
 def normalize_calculix_field_regions(
     native: dict[str, Any], *, solver: str = "calculix", solver_version: str | None = None,
-    adapter: str = "calculix_frd_v1", default_load_case: str = "load_case_1",
+    adapter: str = "calculix_frd_v1", default_load_case: str = DEFAULT_LOAD_CASE_ID,
 ) -> dict[str, Any]:
     """CalculiX results/field_regions.json -> neutral analysis/field_regions.json.
 
@@ -103,6 +118,7 @@ def normalize_calculix_field_regions(
             "id": str(c.get("id") or f"region_{i:03d}"),
             "result_type": rtype,
             "load_case_id": str(c.get("load_case_id") or native.get("load_case_id") or default_load_case),
+            "load_case_id_is_placeholder": not (c.get("load_case_id") or native.get("load_case_id")),
             "center": {"x": float(loc.get("x", 0.0)), "y": float(loc.get("y", 0.0)), "z": float(loc.get("z", 0.0))},
             "bbox": c.get("bbox"),
             "value": {"peak": mag.get("value"), "min": None, "max": mag.get("value"), "unit": mag.get("unit")},
