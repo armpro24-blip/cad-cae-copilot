@@ -303,7 +303,7 @@ def summarize_validation_failures(result: dict[str, Any]) -> dict[str, Any]:
     by_member: dict[str, dict[str, Any]] = {}
     for message in failures:
         text = str(message.get("text") or "")
-        member = text.split(" ", 1)[0] if "/" in text.split(" ", 1)[0] or text.startswith("manifest") else "other"
+        member = _failure_group(text)
         entry = by_member.setdefault(member, {"member": member, "failures": 0, "first": text[:200]})
         entry["failures"] += 1
     return {
@@ -312,6 +312,28 @@ def summarize_validation_failures(result: dict[str, Any]) -> dict[str, Any]:
             by_member.values(), key=lambda e: (-int(e["failures"]), str(e["member"]))
         ),
     }
+
+
+#: A package member path, wherever it appears in a message.
+_MEMBER_TOKEN = re.compile(r"[\w./-]+\.(?:json|yaml|yml|step|stl|glb|py|md|inp|frd)\b")
+
+
+def _failure_group(text: str) -> str:
+    """The artifact a failure is about, or the rule family when it is not one.
+
+    Schema failures lead with the member (`manifest.json schema error at $: …`),
+    but the rule checks do not: `required resource geometry/x.json missing`
+    carries the member mid-sentence, and `units are missing or incomplete` names
+    no member at all. Bucketing all of those as "other" would hide exactly the
+    ones a reader most needs named, so look for a member anywhere first and fall
+    back to the rule's leading word (`units`, `feature`, `topology`, `CAE`)
+    rather than to a single opaque pile.
+    """
+    match = _MEMBER_TOKEN.search(text)
+    if match:
+        return match.group(0)
+    head = text.split(" ", 1)[0].strip()
+    return head or "other"
 
 
 def validate_aieng_file(settings: Settings, project_id: str) -> dict[str, Any]:

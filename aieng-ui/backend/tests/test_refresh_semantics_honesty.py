@@ -192,3 +192,32 @@ def test_the_guide_no_longer_prescribes_it_as_the_stale_fix() -> None:
         "the numbered recovery must not start with a step that changes nothing"
     )
     assert "cae.prepare_solver_run" in recipe
+
+
+def test_a_failure_that_names_no_member_is_still_grouped_usefully() -> None:
+    """"other: 12" hides exactly what a reader needs named.
+
+    Schema failures lead with the member; the rule checks do not — one carries
+    the path mid-sentence, another names no artifact at all. Both must land
+    somewhere a person can act on.
+    """
+    from app.services.platform_logic import summarize_validation_failures
+
+    summary = summarize_validation_failures({"messages": [
+        {"level": "FAIL", "text": "manifest.json schema error at $: 'model_id' is required"},
+        {"level": "FAIL", "text": "required resource geometry/topology_map.json missing"},
+        {"level": "FAIL", "text": "units are missing or incomplete"},
+        {"level": "FAIL", "text": "feature feat_x geometry_refs must be an object or array"},
+        {"level": "FAIL", "text": "feature feat_y geometry_refs must be an object or array"},
+        {"level": "PASS", "text": "manifest.json exists"},
+    ]})
+
+    groups = {entry["member"]: entry["failures"] for entry in summary["failing_artifacts"]}
+    assert summary["failure_count"] == 5, "PASS messages are not failures"
+    assert groups == {
+        "feature": 2,                        # rule family, not "other"
+        "manifest.json": 1,
+        "geometry/topology_map.json": 1,     # member found mid-sentence
+        "units": 1,
+    }, groups
+    assert "other" not in groups
