@@ -353,11 +353,21 @@ def test_create_server_raises_for_wrong_extension(tmp_path):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.skipif(not HAS_MCP, reason="mcp package not installed")
-def test_create_server_returns_fastmcp_instance(tmp_path):
-    from mcp.server.fastmcp import FastMCP
+def test_create_server_returns_server_instance(tmp_path: Path) -> None:
+    """The server type, on whichever SDK major is installed.
+
+    `mcp` 2.0 renamed `FastMCP` to `MCPServer` and made the old import path raise
+    a guidance stub, so asserting against the 1.x name pinned this test — and the
+    core library — to a superseded SDK line (#463).
+    """
+    try:
+        from mcp.server.mcpserver import MCPServer as ServerType  # mcp >= 2.0
+    except ModuleNotFoundError:
+        from mcp.server.fastmcp import FastMCP as ServerType  # mcp 1.x
+
     pkg = _make_package(tmp_path)
     server = create_server(pkg)
-    assert isinstance(server, FastMCP)
+    assert isinstance(server, ServerType)
 
 
 @pytest.mark.skipif(not HAS_MCP, reason="mcp package not installed")

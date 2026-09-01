@@ -2150,5 +2150,23 @@ cheap derived fact at read time; it is self-healing when the logic improves.
 | `AIENG_CAD_MAX_CPU_SECONDS` | POSIX-only CPU-time (`RLIMIT_CPU`) cap for the CAD execution subprocess (default = build timeout + 30s; `0` disables). Hard backstop behind the wall-clock timeout |
 | `AIENG_CAD_MAX_FILE_MB` | POSIX-only single-file write-size (`RLIMIT_FSIZE`) cap for the CAD execution subprocess (default `512`; `0` disables) |
 
+**MCP SDK majors.** The server runs on `mcp` 1.x and 2.x from one codebase, so
+the dependency is capped only at `<3` and a fresh install takes whichever of the
+two is current. The cap is exactly what CI proves: the `MCP SDK 1.x` and
+`MCP SDK 2.x` lanes run the whole backend + core suites under one pinned release
+of each major, and the packaging smoke keeps a free resolve alongside them as the
+canary for a major nobody has ported to. Raise the cap only together with a new
+lane — a lane, not a hope. 2.0
+renamed `FastMCP` to `MCPServer` and moved every module the server touches —
+importing an old path there raises a guidance stub rather than working. That
+whole surface is resolved once in `aieng-ui/backend/app/mcp_sdk_compat.py`;
+import the SDK through it, never from a versioned path (a test enforces this, so
+the next rename stays a one-file change). Two differences reach client code:
+2.x wraps tool output in a `CallToolResult` where 1.x returned a bare list of
+content blocks, and `ToolAnnotations` fields became snake_case with camelCase
+aliases (construction is unchanged; attribute reads move). `FastMCP.get_context()`
+is gone — annotate a handler parameter with `Context` and the SDK injects it on
+both majors.
+
 Full wiring (Claude Code / Copilot / Codex): `aieng-ui/backend/MCP_SETUP.md`.
 CAD execution boundary, threat model, and deployment hardening: `aieng-ui/backend/docs/cad_execution_boundary.md`.

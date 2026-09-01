@@ -73,9 +73,11 @@ benchmark = [
 # Manual install: pip install cadquery
 # Do not add cadquery to this list until cross-platform CI is confirmed.
 geometry = []
-# Upper bound: mcp 2.0.0 removed `mcp.server.fastmcp`, which aieng/mcp/server.py
-# is built on. Lift only together with the FastMCP -> mcp.server.mcpserver port.
-mcp = ["mcp>=1.0,<2"]
+# aieng/mcp/server.py runs on both majors (1.x `FastMCP`, 2.x `MCPServer`), so
+# no upper bound below 3. Capped at <3 because that is what CI proves: the
+# `mcp-sdk-majors` job runs the MCP suites under one pinned release of each.
+# Raise the cap only after adding the next major to that matrix.
+mcp = ["mcp>=1.0,<3"]
 optimization = ["scipy>=1.10"]
 bayesian = ["scikit-optimize>=0.9"]
 

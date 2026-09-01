@@ -87,6 +87,69 @@ jobs:
         # run it whole.
         run: cd ../../aieng && pytest tests -q
 
+  mcp-sdk-majors:
+    # The codebase claims to run on mcp 1.x AND 2.x from one source (#463). The
+    # `backend` job above resolves `mcp` freely, so it proves whichever major pip
+    # happens to pick — leaving the other one untested, which is precisely the
+    # coverage-boundary hole that let #462/#463 happen. One lane per supported
+    # major closes it; the packaging smoke keeps the free resolve as the separate
+    # canary for a future major nobody has ported to.
+    #
+    # Whole suites, not an MCP-named allowlist: the SDK reaches the server, the
+    # tool registry, the approval broker and the packaged smoke, and a hand-kept
+    # file list is the same trap the backend job's comment describes.
+    name: MCP SDK ${{ matrix.mcp-major }}.x
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mcp-major: ["1", "2"]
+    defaults:
+      run:
+        working-directory: aieng-ui/backend
+    env:
+      # Makes the packaged-wheel smoke inside the suite pin the same major and
+      # assert it actually got it, instead of silently duplicating the other lane.
+      AIENG_SMOKE_MCP_MAJOR: ${{ matrix.mcp-major }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: aieng-ui/backend/pyproject.toml
+
+      - name: Install backend pinned to mcp ${{ matrix.mcp-major }}.x
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ../../aieng
+          pip install -e .[dev]
+          if [ "${{ matrix.mcp-major }}" = "1" ]; then
+            pip install "mcp>=1.25.0,<2"
+          else
+            pip install "mcp>=2,<3"
+          fi
+
+      - name: Confirm the lane got the major it asked for
+        # Without this the lane can silently become a duplicate of the other one.
+        run: |
+          python - <<'PY'
+          import os, sys
+          from importlib.metadata import version
+          got = version("mcp").split(".")[0]
+          want = os.environ["AIENG_SMOKE_MCP_MAJOR"]
+          print(f"mcp resolved: {version('mcp')}")
+          sys.exit(0 if got == want else f"wanted mcp {want}.x, got {got}.x")
+          PY
+
+      - name: Backend test suite
+        run: pytest tests -q
+
+      - name: aieng core library suite
+        run: cd ../../aieng && pytest tests -q
+
   vscode-extension:
     name: VS Code extension (test + package + smoke)
     runs-on: ubuntu-latest

@@ -311,8 +311,13 @@ def create_server(package_path: str | Path) -> Any:
     if pkg.suffix != ".aieng":
         raise ValueError("package path must end with .aieng")
 
+    # `mcp` 2.0 renamed FastMCP to MCPServer and moved the module; importing the
+    # old path there raises a guidance stub, so try the new name first.
     try:
-        from mcp.server.fastmcp import FastMCP
+        try:
+            from mcp.server.mcpserver import MCPServer as FastMCP  # mcp >= 2.0
+        except ModuleNotFoundError:
+            from mcp.server.fastmcp import FastMCP  # mcp 1.x
     except ImportError as exc:
         raise ImportError(
             "The 'mcp' package is required for the MCP server. "

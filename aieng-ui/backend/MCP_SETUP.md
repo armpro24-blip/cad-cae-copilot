@@ -107,6 +107,20 @@ The install extras are intentionally explicit:
 | `aieng-workbench-mcp[llm]` | Adds Anthropic/OpenAI SDKs for compatibility endpoints. BYO MCP agents do not need this. |
 | `aieng-workbench-mcp[full]` | CAD + LLM extras; closest to the local backend environment. |
 
+**MCP SDK version.** The server runs on both `mcp` 1.x and 2.x, so the
+dependency is capped only at `<3` (`mcp>=1.25.0,<3`) and a fresh install picks up
+whichever of the two is current. CI runs the whole suite under one pinned release
+of each major (the `MCP SDK 1.x` / `MCP SDK 2.x` lanes), which is why the cap sits
+where it does; the packaging smoke resolves `mcp` freely alongside them as the
+canary for a new major. 2.0 renamed `FastMCP` to `MCPServer` and moved every module the server
+touches; that whole surface is resolved once in
+[`app/mcp_sdk_compat.py`](app/mcp_sdk_compat.py) — import the SDK through it
+rather than from a versioned path, and a future rename stays a one-file change.
+Two behavioural differences matter if you write client code against this server:
+2.x wraps tool output in a `CallToolResult` (1.x returned a bare list of content
+blocks), and its `ToolAnnotations` fields are snake_case with camelCase aliases.
+The legacy FreeCAD adapter under `legacy/` stays pinned to `mcp<2`.
+
 PyPI publication is planned but not yet live, so the per-client snippets below
 use the Git `uvx --from ... --with ...` no-clone form pinned to the published
 release tag. If dependency resolution for native CAD wheels fails on your

@@ -48,9 +48,10 @@ classifiers = [
 dependencies = [
   "fastapi>=0.110",
   "uvicorn[standard]>=0.27",
-  # Upper bound: mcp 2.0.0 removed `mcp.server.fastmcp`, which app/mcp_server.py
-  # is built on. Lift only together with the FastMCP -> mcp.server.mcpserver port.
-  "mcp>=1.25.0,<2",
+  # app/mcp_server.py runs on both majors through app.mcp_sdk_compat. Capped at
+  # <3 because that is what CI proves (the `mcp-sdk-majors` matrix); raise the
+  # cap only together with a lane for the next major.
+  "mcp>=1.25.0,<3",
   "pydantic>=2.10",
   "pydantic-settings>=2.7.0",
   "python-multipart>=0.0.9",

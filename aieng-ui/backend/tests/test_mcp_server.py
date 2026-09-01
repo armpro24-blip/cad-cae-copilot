@@ -13,6 +13,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 import pytest
@@ -40,11 +41,31 @@ def _mcp_name(tool_name: str) -> str:
 
 
 def _tool_text(call_result: Any) -> str:
-    """Extract the text payload returned by FastMCP call_tool."""
-    if isinstance(call_result, list) and call_result:
-        first = call_result[0]
+    """Extract the text payload returned by ``call_tool``, on either SDK major.
+
+    mcp 1.x returned a bare list of content blocks; 2.x returns a
+    ``CallToolResult`` carrying them under ``.content``. Both are unwrapped here
+    so the assertions stay about the payload rather than the envelope.
+    """
+    content = getattr(call_result, "content", call_result)
+    if isinstance(content, (list, tuple)) and content:
+        first = content[0]
         return getattr(first, "text", str(first))
-    return str(call_result)
+    return str(content)
+
+
+def _hint(annotations: Any, name: str) -> Any:
+    """Read a tool-annotation hint on either SDK major.
+
+    mcp 1.x named the fields in camelCase; 2.x renamed them to snake_case while
+    keeping the camelCase serialization ALIAS — so construction is unchanged
+    (the server still passes `readOnlyHint=...`) but attribute reads move.
+    """
+    snake = re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
+    for attr in (name, snake):
+        if hasattr(annotations, attr):
+            return getattr(annotations, attr)
+    raise AttributeError(f"no {name}/{snake} on {type(annotations).__name__}")
 
 
 def _read_guide(mcp, topic: str) -> None:
@@ -266,17 +287,17 @@ def test_mcp_tools_advertise_standard_safety_annotations(mcp_server) -> None:
     read_only = tools[_mcp_name("aieng.inspect_package")].annotations
 
     assert cad_write is not None
-    assert cad_write.readOnlyHint is False
-    assert cad_write.destructiveHint is False
+    assert _hint(cad_write, "readOnlyHint") is False
+    assert _hint(cad_write, "destructiveHint") is False
     assert plan_confirmation is not None
-    assert plan_confirmation.readOnlyHint is False
-    assert plan_confirmation.destructiveHint is True
+    assert _hint(plan_confirmation, "readOnlyHint") is False
+    assert _hint(plan_confirmation, "destructiveHint") is True
     assert gated is not None
-    assert gated.readOnlyHint is False
-    assert gated.destructiveHint is True
+    assert _hint(gated, "readOnlyHint") is False
+    assert _hint(gated, "destructiveHint") is True
     assert read_only is not None
-    assert read_only.readOnlyHint is True
-    assert read_only.destructiveHint is False
+    assert _hint(read_only, "readOnlyHint") is True
+    assert _hint(read_only, "destructiveHint") is False
 
 
 # ── FastMCP call_tool dispatch (real client path) ─────────────────────────────
@@ -713,7 +734,7 @@ def test_finalize_result_plain_dict_returns_string() -> None:
 def test_finalize_result_with_thumbnail_returns_text_and_image() -> None:
     import base64
 
-    from mcp.server.fastmcp import Image
+    from app.mcp_sdk_compat import Image
 
     from app.mcp_server import _finalize_result
 

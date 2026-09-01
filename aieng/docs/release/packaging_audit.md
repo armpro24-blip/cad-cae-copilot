@@ -73,7 +73,7 @@ Recommended fix:
 
 Observed facts:
 - `benchmark` extra includes unbounded `anthropic`, `openai`, and `inspect-ai>=0.3.220`
-- `mcp` extra includes `mcp>=1.0`
+- `mcp` extra includes `mcp>=1.0,<3`
 - `geometry = []` is an empty placeholder extra
 
 Risk:
