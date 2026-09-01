@@ -104,6 +104,7 @@ def test_the_evidence_behind_the_stamp_is_recorded() -> None:
         "solver_executed": True,
         "mesh_accuracy_band": "marginal",
         "read_from_package": True,
+        "results_present": True,
     }
     assert _map()["provenance"]["solver_evidence"]["read_from_package"] is False
 
@@ -273,3 +274,29 @@ def test_the_map_and_the_summary_agree_about_the_evidence(tmp_path) -> None:
         recorded = build_cae_result_map_for_package(pkg)["provenance"]["solver_evidence"]
         assert recorded["solver_executed"] == evidence["solver_executed"]
         assert recorded["mesh_accuracy_band"] == evidence["mesh_accuracy_band"]
+
+
+def test_a_recorded_run_with_nothing_to_map_makes_no_solver_claim() -> None:
+    """`solver_run.json` is the package's claim; results are the evidence.
+
+    A package carrying a completed run but no metrics and no regions would
+    otherwise stamp an EMPTY map as an executed-solver result.
+    """
+    result = map_cae_results(
+        computed_metrics={"schema_version": "0.1", "load_cases": []},
+        field_regions={"schema_version": "0.1", "regions": []},
+        topology_map=_TOPOLOGY, object_registry={}, solver_executed=True,
+    )
+    assert result["credibility"]["tier"] == "unverified"
+    assert result["provenance"]["solver_evidence"]["results_present"] is False
+    assert any("no solver claim is made" in n for n in result["notes"])
+
+
+def test_no_evidence_and_evidence_of_no_run_are_recorded_differently() -> None:
+    """Both reach `unverified`; they are still not the same fact."""
+    absent = _map()["provenance"]["solver_evidence"]
+    negative = _map(solver_executed=False)["provenance"]["solver_evidence"]
+
+    assert absent["solver_executed"] is None and absent["read_from_package"] is False
+    assert negative["solver_executed"] is False and negative["read_from_package"] is True
+    assert _map()["credibility"]["tier"] == _map(solver_executed=False)["credibility"]["tier"]

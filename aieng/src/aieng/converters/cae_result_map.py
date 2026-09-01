@@ -221,6 +221,8 @@ def map_cae_results(
         + [{"region_id": u.get("region_id"), "reason": u.get("reason")} for u in unmapped]
     )
 
+    has_results = bool(overall or mapped or unmapped)
+
     notes = [
         "Observational, solver-neutral CAE->Shape IR correlation. This mapping "
         "step itself runs no solver or mesher; the credibility stamp below "
@@ -230,6 +232,11 @@ def map_cae_results(
         notes.append("No field regions present — only scalar extrema were mapped.")
     if not objects:
         notes.append("No object registry — regions could not be tied to Shape IR nodes.")
+    if solver_executed is True and not has_results:
+        notes.append(
+            "A completed solver run is recorded but this package carries no "
+            "metrics or field regions to map, so no solver claim is made."
+        )
 
     return {
         "format": "aieng.cae_result_map",
@@ -256,15 +263,24 @@ def map_cae_results(
             "mapping_methods": sorted(methods),
             "unsupported_or_uncertain": uncertain,
             "solver_evidence": {
-                "solver_executed": bool(solver_executed),
+                # Recorded as given: None ("no evidence supplied") and False
+                # ("the package says no run completed") reach the same tier but
+                # are not the same fact, and an audit trail that conflates them
+                # cannot be read back.
+                "solver_executed": solver_executed,
                 "mesh_accuracy_band": mesh_accuracy_band,
                 "read_from_package": solver_executed is not None,
+                "results_present": has_results,
             },
         },
         "notes": notes,
         "credibility": classify_credibility(
             "solver",
-            solver_executed=bool(solver_executed),
+            # `solver_executed is True` is what earns the claim, and only when
+            # there is a result here to be credible ABOUT: a package carrying a
+            # completed solver_run.json but no metrics or regions would
+            # otherwise stamp an empty map as an executed-solver result.
+            solver_executed=(solver_executed is True and has_results),
             mesh_accuracy_band=mesh_accuracy_band,
         ),
     }

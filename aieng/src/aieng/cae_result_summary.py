@@ -13,7 +13,7 @@ import tempfile
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 import yaml
 
@@ -1108,7 +1108,21 @@ def _legacy_rest_summary_to_computed_metrics(
     }
 
 
-def read_solver_evidence(zf: zipfile.ZipFile) -> dict[str, Any]:
+class SolverEvidence(TypedDict):
+    """What a package can say about its own solver run.
+
+    Typed because it crosses a module boundary — `converters.cae_result_map`
+    reads it to decide a credibility tier, and an untyped dict there is a
+    contract nobody checks.
+    """
+
+    solver_executed: bool
+    mesh_accuracy_band: str | None
+    solver_run_count: int
+    completed_run_count: int
+
+
+def read_solver_evidence(zf: zipfile.ZipFile) -> SolverEvidence:
     """The package's own answer to "did a solver run, and on what mesh?".
 
     Public because more than one artifact carries a credibility stamp and every
