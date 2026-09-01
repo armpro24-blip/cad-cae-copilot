@@ -13,8 +13,15 @@ The MCP transport layer requires the `mcp` Python package:
 
 ```bash
 pip install "mcp>=1.0,<3"
-# or, using the optional dependency group:
-pip install "aieng-format[mcp]"
+```
+
+`aieng-format` itself is not on PyPI (see the release gate doc) — install it
+from a checkout or a release tag, with the `mcp` extra:
+
+```bash
+pip install -e "./aieng[mcp]"
+# or, without cloning:
+pip install "aieng-format[mcp] @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.4#subdirectory=aieng"
 ```
 
 ## Starting the server

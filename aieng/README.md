@@ -40,13 +40,19 @@ Context should come from the package. Execution and engineering validation still
 
 ## Quick Start
 
-```bash
-# Install from PyPI (alpha)
-pip install aieng-format
+> **Not on PyPI, by decision.** `aieng-format` is distributed from this
+> repository (source checkout, a release tag via `pip`/`uvx`, or the GHCR
+> image) — publishing to PyPI is not planned. The name is unregistered there,
+> so do **not** run `pip install aieng-format`: it would resolve to whatever
+> someone else uploads under that name, not to this project.
 
-# Or install from source in editable mode
+```bash
+# Install from a source checkout, editable
 cd aieng
 pip install -e .
+
+# …or from a release tag, without cloning
+pip install "aieng-format @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.4#subdirectory=aieng"
 
 # Create a package from a STEP file
 aieng import-step examples/bracket.step --out build/bracket_001.aieng

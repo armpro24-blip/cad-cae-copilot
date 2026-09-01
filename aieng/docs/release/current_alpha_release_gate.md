@@ -25,16 +25,20 @@ record.
 These actions must be performed by a human owner with the relevant package and
 release credentials. Do not infer completion from green CI alone.
 
-1. **One-time:** configure PyPI/TestPyPI Trusted Publishing and the `pypi` /
-   `testpypi` GitHub Environments. Until this is done nothing can publish at
-   all. See the runbook's *Automated path*.
-2. Publish `aieng-format` and `aieng-workbench-mcp` as explicit alpha/pre-release
-   artifacts — `gh workflow run release.yml -f target=testpypi` for the dry run,
-   then push the `v*` tag for PyPI.
-3. Update install snippets only after the real published artifact names and
-   versions are confirmed.
-4. Record baseline embedding-depth metrics.
-5. Confirm the GitHub release the workflow created reads correctly for the tag.
+1. Record baseline embedding-depth metrics.
+2. Confirm the GitHub release the workflow created reads correctly for the tag.
+
+**PyPI is out of scope, by owner decision (2026-09-01).** Distribution is the
+Git tag plus the GHCR image; `aieng-format` and `aieng-workbench-mcp` are not
+published to PyPI or TestPyPI and are not planned to be. Neither name is
+registered there, so an install snippet naming a public index would point at
+someone else's upload — the READMEs and `MCP_SETUP.md` therefore document the
+`pip`/`uvx`-from-tag form as the install path, not as a stopgap. The publish
+jobs in [`release.yml`](../../../.github/workflows/release.yml) remain, unused
+and dispatch-only: they need Trusted Publishing configured before they could
+run at all, which is the one-time owner action nobody is taking. Reversing the
+decision means doing that setup, then updating the snippets and the guard list
+in `aieng-ui/backend/tests/test_release_semantic_surfaces.py`.
 
 Steps that used to be listed here and are now mechanised by
 [`.github/workflows/release.yml`](../../../.github/workflows/release.yml):
@@ -49,13 +53,14 @@ sit behind environments that can require an approval click.
 | Channel | State |
 |---|---|
 | GHCR `ghcr.io/armpro24-blip/aieng-workbench` | **published** — `latest` plus immutable `sha-*` tags, pushed by `docker-smoke.yml` on every green `main` |
-| PyPI `aieng-format` | not published |
-| PyPI `aieng-workbench-mcp` | not published |
-| TestPyPI (both) | not published |
-| Git tag / GitHub release | none exist in this repository |
+| PyPI `aieng-format` | **not published, and not planned** — name unregistered |
+| PyPI `aieng-workbench-mcp` | **not published, and not planned** — name unregistered |
+| TestPyPI (both) | not published, and not planned |
+| Git tag / GitHub release | **published** — `v0.1.0-alpha.3` and `v0.1.0-alpha.4` prereleases |
 
-The Docker path is therefore already externally usable; PyPI is the only
-unpublished distribution channel.
+Both shipped channels — the Git tag and the GHCR image — are externally usable,
+so there is no unpublished channel blocking use. PyPI is a channel this project
+has chosen not to use, not an outstanding gap.
 
 ## Minimum Pre-Tag Verification
 
@@ -80,16 +85,17 @@ Required remote workflows for the release commit:
 - Packaging smoke
 - Docker smoke, when the release includes the Docker published-image path
 
-## Post-Publish Install Verification
+## Post-Release Install Verification
 
-Use a clean environment and published artifact path. Replace versions with the
-actual published alpha versions.
+Use a clean environment and the **published channel** — the release tag. There
+is no index install to verify (see the channel table above); replace the tag
+with the one just cut.
 
 ```bash
 python -m venv .tmp-alpha-install
 .tmp-alpha-install\Scripts\python -m pip install --upgrade pip
-.tmp-alpha-install\Scripts\python -m pip install --pre aieng-format==<published-alpha>
-.tmp-alpha-install\Scripts\python -m pip install --pre aieng-workbench-mcp==<published-alpha>
+.tmp-alpha-install\Scripts\python -m pip install "aieng-format @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.4#subdirectory=aieng"
+.tmp-alpha-install\Scripts\python -m pip install "aieng-workbench-mcp @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.4#subdirectory=aieng-ui/backend"
 .tmp-alpha-install\Scripts\python -c "import aieng; print(aieng.FORMAT_VERSION)"
 .tmp-alpha-install\Scripts\python -c "from importlib.resources import files; print(files('aieng.schemas').joinpath('manifest.schema.json').is_file())"
 ```

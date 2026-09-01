@@ -155,14 +155,15 @@ The alpha image is published to GHCR from `main` after the Docker smoke passes
 production-certified.
 
 **Releases:** the current pre-release is
-[`v0.1.0-alpha.3`](https://github.com/armpro24-blip/cad-cae-copilot/releases/tag/v0.1.0-alpha.3).
-To run just the MCP server without cloning (Python 3.11+, pinned to the release
-tag; PyPI publication is planned but not yet live):
+[`v0.1.0-alpha.4`](https://github.com/armpro24-blip/cad-cae-copilot/releases/tag/v0.1.0-alpha.4).
+Distribution is the Git tag plus the GHCR image — **PyPI publication is not
+planned**, so the Git form below is the install path, not a stopgap. To run just
+the MCP server without cloning (Python 3.11+, pinned to the release tag):
 
 ```bash
 uvx \
-  --from "aieng-workbench-mcp[full] @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.3#subdirectory=aieng-ui/backend" \
-  --with "aieng-format @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.3#subdirectory=aieng" \
+  --from "aieng-workbench-mcp[full] @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.4#subdirectory=aieng-ui/backend" \
+  --with "aieng-format @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.4#subdirectory=aieng" \
   aieng-workbench-mcp --approval-mode client --data-dir ~/.aieng-workbench
 ```
 
