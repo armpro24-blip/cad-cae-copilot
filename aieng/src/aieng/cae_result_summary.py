@@ -138,7 +138,9 @@ def generate_cae_result_summary(package_path: str | Path) -> dict[str, Any]:
         if computed_metrics is None:
             computed_metrics = _legacy_rest_summary_to_computed_metrics(legacy_rest_summary)
         solver_runs = _read_solver_runs(zf)
-        mesh_accuracy_band = _read_mesh_accuracy_band(zf)
+        # Same reader the result map uses, so the two credibility stamps cannot
+        # drift apart again.
+        mesh_accuracy_band = read_solver_evidence(zf)["mesh_accuracy_band"]
         design_targets = _read_design_targets(zf)
 
     # Artifact presence used by the Phase 35 PR 2 design-target evaluator to
@@ -1103,6 +1105,28 @@ def _legacy_rest_summary_to_computed_metrics(
             "Metrics normalized from legacy simulation/results_summary.json; "
             "this is not MCP cae.run_solver execution evidence."
         ],
+    }
+
+
+def read_solver_evidence(zf: zipfile.ZipFile) -> dict[str, Any]:
+    """The package's own answer to "did a solver run, and on what mesh?".
+
+    Public because more than one artifact carries a credibility stamp and every
+    one of them must derive it from the same evidence. `analysis/cae_result_map.json`
+    used to hard-code `solver_executed=True` instead, which made the honesty
+    invariant in `classify_credibility` unreachable on that path: measured on the
+    #368 cantilever, a package with its solver-run evidence removed still stamped
+    `executed_solver_result` while this module's summary said
+    `imported_computed_metrics`. Two callers of one classifier disagreeing about
+    honesty is a defect in the one that claims more.
+    """
+    runs = _read_solver_runs(zf)
+    completed = [run for run in runs if _solver_run_completed(run)]
+    return {
+        "solver_executed": bool(completed),
+        "mesh_accuracy_band": _read_mesh_accuracy_band(zf),
+        "solver_run_count": len(runs),
+        "completed_run_count": len(completed),
     }
 
 

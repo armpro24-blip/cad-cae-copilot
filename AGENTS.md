@@ -1144,6 +1144,17 @@ returned **48% of the analytical root stress** — non-conservative — and were
 stamped `executed_solver_result` with no warning. A `reliable` or `marginal`
 band, or a package with no mesh metadata at all, leaves the tier untouched.
 
+**A producer must READ its evidence, not assert it.** The classifier can only
+downgrade a claim its caller has not already decided. `analysis/cae_result_map.json`
+passed `solver_executed=True` as a literal, so on that path the invariant was
+unreachable: measured on the #368 cantilever, a package with its solver-run
+evidence removed still stamped `executed_solver_result` while the result summary
+— same package, same classifier — said `imported_computed_metrics`. Every
+artifact carrying a `credibility` stamp derives its flags from
+`cae_result_summary.read_solver_evidence(zf)` (completed `simulation/runs/*/solver_run.json`
+plus the mesh band). If you add another, use that reader; a stamp with no
+evidence behind it downgrades to `unverified`, which is the honest answer.
+
 ---
 
 ## Tool taxonomy

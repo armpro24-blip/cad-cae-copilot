@@ -23,7 +23,11 @@ from typing import Any
 
 from aieng import FORMAT_VERSION
 
-from .cae_result_contract import CAE_CONTRACT_VERSION, load_neutral_cae_artifacts
+from .cae_result_contract import (
+    CAE_CONTRACT_VERSION,
+    DEFAULT_LOAD_CASE_ID,
+    load_neutral_cae_artifacts,
+)
 from .credibility import classify_credibility
 
 CAE_RESULT_MAP_PATH = "analysis/cae_result_map.json"
@@ -60,6 +64,20 @@ def _resolve_entity(solids: list[dict[str, Any]], point: tuple[float, float, flo
     return nearest, ("nearest_center" if nearest is not None else "none")
 
 
+def _is_placeholder_id(holder: dict[str, Any], lc_id: str, flag: str) -> bool:
+    """Was this load-case id stamped in for a missing one?
+
+    Prefers the normalizer's explicit flag. Artifacts written before that flag
+    existed carry no such evidence, so fall back to recognising the exported
+    placeholder value — recomputed at read time, which makes old packages
+    self-healing instead of permanently mis-labelled.
+    """
+    flagged = holder.get(flag)
+    if isinstance(flagged, bool):
+        return flagged
+    return lc_id == DEFAULT_LOAD_CASE_ID
+
+
 def _node_for_entity(objects: list[dict[str, Any]], entity_id: str) -> tuple[str | None, str | None, str]:
     matches = [o for o in objects if entity_id in (o.get("topology_entities") or [])]
     if len(matches) == 1:
@@ -75,11 +93,21 @@ def map_cae_results(
     field_regions: dict[str, Any] | None,
     topology_map: dict[str, Any] | None,
     object_registry: dict[str, Any] | None,
+    solver_executed: bool | None = None,
+    mesh_accuracy_band: str | None = None,
 ) -> dict[str, Any]:
     """Correlate NEUTRAL CAE results with Shape IR nodes. Pure; neutral dicts in.
 
     ``computed_metrics`` is a neutral computed_metrics doc (load_cases[].results[]);
     ``field_regions`` is a neutral field_regions doc (regions[]).
+
+    ``solver_executed`` and ``mesh_accuracy_band`` are the package's solver
+    evidence, and they decide the credibility stamp. They are parameters rather than
+    something this pure function guesses: the neutral artifacts say what the
+    numbers ARE, not whether a solver produced them. Omitted, the stamp
+    downgrades to ``unverified`` — the honest answer when no evidence was
+    supplied. Callers holding the package should pass
+    ``cae_result_summary.read_solver_evidence(zf)``.
     """
     now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     computed_metrics = computed_metrics or {}
@@ -91,12 +119,15 @@ def map_cae_results(
     units: dict[str, str] = {}
     overall: list[dict[str, Any]] = []
     load_case_ids: list[str] = []
+    declared_ids: list[str] = []
     for lc in computed_metrics.get("load_cases") or []:
         if not isinstance(lc, dict):
             continue
-        lc_id = str(lc.get("id") or "load_case_1")
+        lc_id = str(lc.get("id") or DEFAULT_LOAD_CASE_ID)
         if lc_id not in load_case_ids:
             load_case_ids.append(lc_id)
+        if lc_id not in declared_ids and not _is_placeholder_id(lc, lc_id, "id_is_placeholder"):
+            declared_ids.append(lc_id)
         for r in lc.get("results") or []:
             if not isinstance(r, dict):
                 continue
@@ -113,7 +144,7 @@ def map_cae_results(
                 "unit": r.get("unit"),
             })
 
-    default_lc = load_case_ids[0] if load_case_ids else "load_case_1"
+    default_lc = load_case_ids[0] if load_case_ids else DEFAULT_LOAD_CASE_ID
 
     mapped: list[dict[str, Any]] = []
     unmapped: list[dict[str, Any]] = []
@@ -123,6 +154,20 @@ def map_cae_results(
             continue
         rtype = str(region.get("result_type") or "unknown")
         lc_id = str(region.get("load_case_id") or default_lc)
+        # A region carrying the normalizer's PLACEHOLDER id is not a second load
+        # case — measured on the #368 cantilever, the map listed
+        # `value_demo_load_case_001` (from computed_metrics) and `load_case_1`
+        # (the placeholder on every cluster) as two load cases of one analysis,
+        # with the same 7.1956 MPa peak in both halves and no way to join them.
+        # Align it only when the metrics declare exactly one real id, and record
+        # that the alignment happened.
+        aligned_from: str | None = None
+        if (
+            len(declared_ids) == 1
+            and lc_id != declared_ids[0]
+            and _is_placeholder_id(region, lc_id, "load_case_id_is_placeholder")
+        ):
+            aligned_from, lc_id = lc_id, declared_ids[0]
         if lc_id not in load_case_ids:
             load_case_ids.append(lc_id)
         center = region.get("center") or {}
@@ -141,6 +186,8 @@ def map_cae_results(
             "location": {"x": point[0], "y": point[1], "z": point[2]},
             "node_count": region.get("node_count"),
         }
+        if aligned_from is not None:
+            base["load_case_id_source"] = f"aligned_from_placeholder:{aligned_from}"
         solid, method = _resolve_entity(solids, point) if solids else (None, "none")
         if solid is None:
             unmapped.append({**base, "reason": "no topology solid near the result location"})
@@ -174,7 +221,11 @@ def map_cae_results(
         + [{"region_id": u.get("region_id"), "reason": u.get("reason")} for u in unmapped]
     )
 
-    notes = ["Observational, solver-neutral CAE->Shape IR correlation; no solver/mesher executed."]
+    notes = [
+        "Observational, solver-neutral CAE->Shape IR correlation. This mapping "
+        "step itself runs no solver or mesher; the credibility stamp below "
+        "reflects the package's own solver evidence, not this step."
+    ]
     if not (field_regions.get("regions")):
         notes.append("No field regions present — only scalar extrema were mapped.")
     if not objects:
@@ -204,9 +255,18 @@ def map_cae_results(
             "field_regions_schema": field_regions.get("schema_version"),
             "mapping_methods": sorted(methods),
             "unsupported_or_uncertain": uncertain,
+            "solver_evidence": {
+                "solver_executed": bool(solver_executed),
+                "mesh_accuracy_band": mesh_accuracy_band,
+                "read_from_package": solver_executed is not None,
+            },
         },
         "notes": notes,
-        "credibility": classify_credibility("solver", solver_executed=True),
+        "credibility": classify_credibility(
+            "solver",
+            solver_executed=bool(solver_executed),
+            mesh_accuracy_band=mesh_accuracy_band,
+        ),
     }
 
 
@@ -218,15 +278,24 @@ def build_cae_result_map_for_package(package_path: str | Path) -> dict[str, Any]
         return {"format": "aieng.cae_result_map", "format_version": FORMAT_VERSION,
                 "error": f"package not found: {package_path}", "mapped_results": [], "unmapped_regions": []}
     neutral = load_neutral_cae_artifacts(package_path)
+    # Imported here rather than at module scope: cae_result_summary is a
+    # top-level sibling and this module is imported during package conversion.
+    from ..cae_result_summary import read_solver_evidence
+
     with zipfile.ZipFile(package_path, "r") as zf:
         names = set(zf.namelist())
         topology_map = json.loads(zf.read(_TOPOLOGY_MEMBER).decode("utf-8")) if _TOPOLOGY_MEMBER in names else {}
         object_registry = json.loads(zf.read(_OBJECT_REGISTRY_MEMBER).decode("utf-8")) if _OBJECT_REGISTRY_MEMBER in names else {}
+        # The same reader the result summary uses — one answer to "did a solver
+        # run", not two.
+        evidence = read_solver_evidence(zf)
     result = map_cae_results(
         computed_metrics=neutral["computed_metrics"],
         field_regions=neutral["field_regions"],
         topology_map=topology_map,
         object_registry=object_registry,
+        solver_executed=evidence["solver_executed"],
+        mesh_accuracy_band=evidence["mesh_accuracy_band"],
     )
     result["provenance"]["artifact_source"] = neutral["source"]
     return result
