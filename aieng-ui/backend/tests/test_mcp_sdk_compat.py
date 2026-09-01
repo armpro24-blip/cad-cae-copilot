@@ -30,16 +30,39 @@ def test_the_compat_module_exports_the_whole_surface() -> None:
     assert mcp_sdk_compat.MCP_SDK_MAJOR in (1, 2)
 
 
+# The core library ships its own tiny MCP server and its own tests; both import
+# the SDK. Scanning only the backend left exactly that blind spot — CI caught a
+# 1.x-only import in `aieng/tests/test_mcp_server.py` that this guard had walked
+# straight past.
+_SCANNED_TREES = (
+    _BACKEND / "app",
+    _BACKEND / "tests",
+    _REPO / "aieng" / "src",
+    _REPO / "aieng" / "tests",
+)
+
+# The core library has no dependency on the backend, so it cannot import the
+# compat module; it does the same try/except two-step inline. Exempt those exact
+# files by PATH — a bare basename would also pardon the backend's own
+# `server.py`, which is a wider exemption than the reason for it.
+_ALLOWED_DIRECT_IMPORTERS = {
+    _BACKEND / "app" / "mcp_sdk_compat.py",
+    _REPO / "aieng" / "src" / "aieng" / "mcp" / "server.py",
+    _REPO / "aieng" / "tests" / "test_mcp_server.py",
+}
+
+
 def test_no_module_imports_the_versioned_paths_directly() -> None:
     """One import site, so the next rename is a one-file change.
 
     `mcp.server.fastmcp` (1.x) and `mcp.server.mcpserver` (2.x) may appear only
-    inside the compat module — anywhere else and a rename silently strands that
-    file on one major.
+    where a fallback is written deliberately — anywhere else and a rename
+    silently strands that file on one major.
     """
     offenders: list[str] = []
-    for path in list(_BACKEND.glob("app/**/*.py")) + list(_BACKEND.glob("tests/**/*.py")):
-        if path.name == "mcp_sdk_compat.py":
+    paths = [p for tree in _SCANNED_TREES for p in tree.glob("**/*.py")]
+    for path in paths:
+        if path.resolve() in {p.resolve() for p in _ALLOWED_DIRECT_IMPORTERS}:
             continue
         text = path.read_text(encoding="utf-8")
         for line in text.splitlines():
