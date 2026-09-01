@@ -1340,7 +1340,7 @@ and freeform/NURBS fitting remains future work.
 | `aieng.convert` | Import STEP/FCStd/Shape IR into a `.aieng` package. Shape IR compiles by `representation`: `brep_build123d` (default) → build123d STEP/B-Rep; `nurbs_brep` → OCP NURBS B-Rep surfaces (per-patch `bspline` faces); `implicit_sdf` → fogleman/sdf mesh; `manifold_mesh` → manifold3d CSG mesh. B-Rep reps give analytic per-face topology; mesh reps give region-level faces. Publishes a viewer preview |
 | `aieng.apply_shape_ir_patch` | **[APPROVAL]** Apply a surgical patch to a project's Shape IR (set_parameter / move_control_point / add_node / remove_node / replace_node / connect / disconnect / change_representation_backend). Atomic + validated; on success recompiles through runtime routing and refreshes verification + object registry. `dry_run` previews without writing |
 | `aieng.generate_preview` | Regenerate GLB/STL web preview from current STEP |
-| `aieng.refresh_semantics` | Re-validate and re-extract semantic labels |
+| `aieng.refresh_semantics` | Re-run the schema + rule validation and report it, grouped by failing artifact. Does **not** re-extract semantics or clear stale flags — see below |
 | `aieng.update_validation_status` | Write per-category validation flags |
 | `aieng.write_evidence_scaffold` | Initialize `results/evidence_index.json` scaffold |
 | `aieng.delete_project` | **[APPROVAL]** Permanently delete a project — its directory + chat sessions/messages. Irreversible |
@@ -1499,7 +1499,7 @@ can click to highlight them.
 ```
 1. aieng.agent_context     { project_id }
 2. cad.edit_parameter      { project_id, featureId, parameterName, newValue }  [APPROVAL]
-3. aieng.refresh_semantics { project_id }
+3. cae.prepare_solver_run  { project_id }   (re-verifies the CAE bindings against the new geometry)
 4. (re-run the CAE pipeline if geometry changed)
 ```
 
@@ -1545,14 +1545,27 @@ After a geometry edit, `aieng.agent_context` reports an **`edit_impact`** block 
 `stale`, the geometry revision and the last validated one, the tool that
 triggered it, and the `@artifact:` references needing revalidation. When it is
 stale the same fact is raised as a top-level `warnings` entry and a
-`next_decision_focus` item, because a hard blocker buried in a sub-block is not a
-blocker. Treat these as hard blockers before running a simulation. Typical fix:
+`next_decision_focus` item, because a signal buried in a sub-block is not a
+signal. Treat it as "the bindings must be re-verified before this run means
+anything":
 ```text
-1. aieng.refresh_semantics   { project_id }
+1. cae.prepare_solver_run    { project_id }   (re-verifies every @face: binding)
 2. cae.generate_solver_input { project_id }
 3. cae.run_solver            { project_id }   [APPROVAL REQUIRED]
 ```
-(A fresh `cad.execute_build123d` automatically clears stale state.)
+The flag is cleared by a **successful CAD write** — `cad.execute_build123d`,
+`cad.replace_part`, `cad.remove_part`. Note `cad.edit_parameter` sets it and
+does not clear it, so a parametric edit leaves it standing until the next build;
+that is harmless, because the preflight re-verifies bindings by face signature
+rather than trusting the flag (see the CAE guide).
+
+**`aieng.refresh_semantics` does not clear it, despite its name.** It runs the
+package's schema + rule validation and reports; it touches no semantic artifact
+and no stale flag. It used to be documented here as step 1 of the fix, which
+made the recipe a no-op — and, until it was fixed, calling it also overwrote a
+`viewer_ready_glb` project with `validation_failed` (the sidebar's "Needs
+attention"), because every agent-built package currently fails that validation
+on writer/schema drift (#513).
 
 **Every tool that changes geometry records it**, `opt.writeback_to_shape_ir`
 included — it replaces the whole body with the optimized one, so it marks every
@@ -2135,7 +2148,7 @@ cheap derived fact at read time; it is self-healing when the logic improves.
 | Including `export_step(...)` in build123d code | Omit exports — the runner adds them |
 | `result.export_step(path)` (build123d <0.9 API) | Use `export_step(result, path)`, or just omit |
 | `cae.run_solver` without preflight | Call `cae.prepare_solver_run` first |
-| Referencing stale artifacts after an edit | `aieng.refresh_semantics` then regenerate |
+| Referencing stale artifacts after an edit | `cae.prepare_solver_run` re-verifies the bindings; regenerate the deck, then run |
 | Raw face indices instead of `@face:id` | Use pointer IDs from `aieng.agent_context` |
 | Judging geometry from one view (iso) only | Inspect all 4 views in the contact sheet (front/side/top/iso) — alignment errors hide in iso |
 | Monochrome parts → can't tell which is which | Set `.color = Color(r,g,b)` on each labelled part |
