@@ -12,11 +12,12 @@ name: Release
 #
 # Owner-gated by design, in two independent ways:
 #   1. It only starts from a manual dispatch — an explicit owner action.
-#      (The former `v*` tag-push trigger was removed for v0.1.0-alpha.3: the
-#      owner chose to tag + release WITHOUT PyPI, and an automatic publish
-#      attempt without Trusted Publishing configured would just fail red on
-#      every tag. Re-add `push: tags: ["v*"]` only if that decision is
-#      reversed and PyPI is set up.)
+#      (The former `v*` tag-push trigger was removed for v0.1.0-alpha.3, when a
+#      tag implied a PyPI publish that would fail red without Trusted
+#      Publishing. That reason is gone — `target: none` now cuts a release and
+#      publishes nothing — so re-adding `push: tags: ["v*"]` is safe whenever
+#      auto-releasing on tag is actually wanted. It stays off because creating
+#      a public release should be a deliberate act.)
 #   2. Each publish job is bound to a GitHub Environment (`pypi` / `testpypi`).
 #      Add a required reviewer to those environments and the job pauses for an
 #      approval click. See aieng/docs/release/v0.1.0-alpha_publish_runbook.md.
@@ -30,10 +31,10 @@ on:
   workflow_dispatch:
     inputs:
       target:
-        description: "Index to publish to"
+        description: "Index to publish to (`none` = cut the release, publish nothing)"
         type: choice
-        options: [testpypi, pypi]
-        default: testpypi
+        options: [none, testpypi, pypi]
+        default: none
       create_github_release:
         description: "Also create the GitHub release"
         type: boolean
@@ -63,8 +64,10 @@ jobs:
       - name: Resolve publish target
         id: target
         run: |
+          # A tag push defaults to publishing NOTHING: PyPI is out of scope
+          # (#273), and a tag must still be able to cut a release.
           if [ "${{ github.event_name }}" = "push" ]; then
-            echo "target=pypi" >> "$GITHUB_OUTPUT"
+            echo "target=none" >> "$GITHUB_OUTPUT"
           else
             echo "target=${{ inputs.target }}" >> "$GITHUB_OUTPUT"
           fi
@@ -103,6 +106,7 @@ jobs:
 
       # Fail here with a readable message rather than on a 400 from the index.
       - name: Check the version is not already published
+        if: steps.target.outputs.target != 'none'
         run: |
           set -euo pipefail
           version="${{ steps.version.outputs.version }}"
@@ -140,6 +144,7 @@ jobs:
   publish-aieng-format:
     name: Publish aieng-format
     needs: build
+    if: needs.build.outputs.target != 'none'
     runs-on: ubuntu-latest
     environment: ${{ needs.build.outputs.target }}
     permissions:
@@ -158,6 +163,7 @@ jobs:
   publish-aieng-workbench-mcp:
     name: Publish aieng-workbench-mcp
     needs: [build, publish-aieng-format]
+    if: needs.build.outputs.target != 'none'
     runs-on: ubuntu-latest
     environment: ${{ needs.build.outputs.target }}
     permissions:
@@ -180,6 +186,7 @@ jobs:
   verify-published-install:
     name: Verify install from ${{ needs.build.outputs.target }}
     needs: [build, publish-aieng-workbench-mcp]
+    if: needs.build.outputs.target != 'none'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/setup-python@v5
@@ -225,15 +232,47 @@ jobs:
           "
           /tmp/verify/bin/aieng-workbench-mcp-smoke
 
+  # Cutting the release must NOT depend on publishing to an index. It used to:
+  # this job needed `verify-published-install`, which needs the publish jobs,
+  # which need Trusted Publishing that is deliberately not configured — so the
+  # documented release automation could not produce a release at all, and both
+  # alphas were cut by hand. `!cancelled()` lets it run when the publish chain
+  # is skipped (target `none`) while still refusing to run if it failed.
   github-release:
     name: GitHub release
     needs: [build, verify-published-install]
-    if: github.event_name == 'push' || inputs.create_github_release
+    #
+    # The two ways the publish chain can be incomplete are NOT the same:
+    #   target == 'none'  -> it was skipped deliberately, cut the release;
+    #   target != 'none'  -> it must have SUCCEEDED. A failed publish job also
+    #                        leaves verify-published-install `skipped` (its own
+    #                        `needs` failed), so accepting `skipped` outright
+    #                        would publish a release announcing a publish that
+    #                        failed. Skipped and failed are different answers.
+    if: >-
+      !cancelled()
+      && needs.build.result == 'success'
+      && (github.event_name == 'push' || inputs.create_github_release)
+      && (
+           (needs.build.outputs.target == 'none'
+             && needs.verify-published-install.result == 'skipped')
+           || (needs.build.outputs.target != 'none'
+             && needs.verify-published-install.result == 'success')
+         )
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+
+      # Attached to the release, the wheels are an install path that needs
+      # neither an index nor a git clone — and the only per-artifact download
+      # counter this project's channels can offer (#510). Without them a tag
+      # install leaves no trace at all.
+      - uses: actions/download-artifact@v4
+        with:
+          name: dists
+          path: dist/
 
       - name: Create release
         env:
@@ -243,11 +282,17 @@ jobs:
         run: |
           set -euo pipefail
           notes="aieng/docs/release/github_release_draft_${TAG}.md"
+          assets=$(find dist -type f \( -name '*.whl' -o -name '*.tar.gz' \) | sort)
+          if [ -z "$assets" ]; then
+            echo "::error::no dists to attach; the build job produced nothing"
+            exit 1
+          fi
+          echo "attaching:"; echo "$assets"
           if [ -f "$notes" ]; then
             echo "using drafted notes: $notes"
-            gh release create "$TAG" --prerelease --title "$TAG" --notes-file "$notes"
+            gh release create "$TAG" --prerelease --title "$TAG" --notes-file "$notes" $assets
           else
             echo "::warning::no drafted notes at $notes; generating from commits"
-            gh release create "$TAG" --prerelease --title "$TAG" --generate-notes
+            gh release create "$TAG" --prerelease --title "$TAG" --generate-notes $assets
           fi
-          gh release view "$TAG" --json url --jq .url
+          gh release view "$TAG" --json url,assets --jq '{url, assets: [.assets[].name]}'

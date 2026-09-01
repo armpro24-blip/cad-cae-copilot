@@ -108,16 +108,18 @@ docker pull ghcr.io/armpro24-blip/aieng-workbench:<release-tag-or-sha-tag>
 
 ## Embedding-Depth Baseline
 
-Record the first baseline immediately after publication. Unknown values are
-acceptable at tag time, but they should be explicit rather than silently omitted.
+Captured, with the gaps named, in
+[`embedding_depth_baseline.md`](embedding_depth_baseline.md) — first baseline
+2026-09-01, recapture with
+`python scripts/capture_embedding_depth_baseline.py`.
 
-| Signal | Baseline value | Source | Date |
-|---|---:|---|---|
-| `aieng-format` published installs/downloads | unknown | PyPI/TestPyPI stats or owner note | TBD |
-| `aieng-workbench-mcp` published installs/downloads | unknown | PyPI/TestPyPI stats or owner note | TBD |
-| GHCR pulls | unknown | GHCR package page or owner note | TBD |
-| External-agent packaged-path runs | 1+ expected | dogfood evidence packet | TBD |
-| `.aieng` packages created from published path | unknown | dogfood/project evidence | TBD |
+The table that used to sit here read "installs" as PyPI download counts, so
+every row was `unknown / TBD` and would have stayed that way forever: PyPI is
+not a channel this project uses. Five of the ten signals genuinely have no
+counter, and the baseline doc says which and why rather than reporting a zero.
+The one that was cheap to fix is fixed — `release.yml` now attaches the built
+wheels to the release, which is both an index-free install path and the only
+per-artifact download counter these channels can offer.
 
 ## Honesty Boundary
 
