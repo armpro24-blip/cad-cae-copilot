@@ -41,8 +41,7 @@ from typing import Any
 
 import anyio
 import anyio.to_thread
-from mcp.server.fastmcp import FastMCP, Image
-from mcp.server.fastmcp.utilities.func_metadata import ArgModelBase, FuncMetadata
+from .mcp_sdk_compat import ArgModelBase, Context, FastMCP, FuncMetadata, Image
 from mcp.types import ToolAnnotations
 from pydantic import ConfigDict
 
@@ -762,13 +761,7 @@ def _register_agent_skill_prompts(mcp: FastMCP) -> None:
     and pull e.g. ``aieng-cad-authoring`` to load the authoring playbook on demand.
     Read-only; always registered.
     """
-    try:
-        from mcp.server.fastmcp.prompts import Prompt
-    except Exception:  # pragma: no cover - prompts API unavailable
-        try:
-            from mcp.server.fastmcp.prompts.base import Prompt  # type: ignore
-        except Exception:
-            return
+    from .mcp_sdk_compat import Prompt
     for skill_dir in _agent_skill_dirs():
         try:
             text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
@@ -1003,17 +996,20 @@ def _build_mcp_server(name: str = "aieng-workbench", *, compact_surface: bool | 
                         return err
                 return await _execute_off_loop(args)
 
-            async def _handler_elicit(**kwargs: Any) -> Any:
+            async def _handler_elicit(ctx: Context | None = None, **kwargs: Any) -> Any:
                 # Headless approval (#228): ask the connecting client to prompt the
                 # user via MCP elicitation; no workbench viewer required.
+                #
+                # `ctx` is injected by the SDK: both majors detect a parameter
+                # annotated with `Context` and pass the live request context in
+                # (`Tool.context_kwarg`). 1.x also offered `mcp.get_context()`
+                # from a contextvar; 2.x removed it, so this is the portable
+                # spelling — and the honest one, since the context belongs to the
+                # request rather than to the server.
                 early, args = _preflight(dict(kwargs))
                 if early is not None:
                     return early
                 if requires_approval:
-                    try:
-                        ctx = mcp.get_context()
-                    except Exception:  # pragma: no cover - defensive
-                        ctx = None
                     decision = await _elicit_permission_decision(name_, args, ctx=ctx)
                     err, args = _apply_decision(decision, args)
                     if err is not None:

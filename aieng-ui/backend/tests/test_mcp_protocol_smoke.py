@@ -17,6 +17,8 @@ module verifies the same protocol/assertion logic locally and deterministically:
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
+from typing import Any
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -106,18 +108,44 @@ def test_agent_context_recommendations_resolve_to_registered_tools() -> None:
     assert "compare_targets" not in refs
 
 
-def test_inproc_mcp_handshake_lists_tools_and_reads_readme() -> None:
-    """A real MCP client session against the FastMCP server completes the
-    handshake, lists the canonical tools, and a read-only call returns content."""
-    from mcp.shared.memory import (
-        create_connected_server_and_client_session as connect,
-    )
+@asynccontextmanager
+async def _connected_client(mcp: Any):
+    """A real client session speaking MCP to `mcp` over in-memory streams.
 
+    mcp 1.x shipped `create_connected_server_and_client_session`; 2.x dropped that
+    convenience and keeps only the primitive it was built on
+    (`create_client_server_memory_streams`), and renamed the low-level server
+    attribute. Both are assembled here so the handshake this test exercises is
+    the real protocol on either SDK major.
+    """
+    import anyio
+    from mcp import ClientSession
+    from mcp.shared.memory import create_client_server_memory_streams
+
+    server = getattr(mcp, "_lowlevel_server", None) or mcp._mcp_server
+    async with create_client_server_memory_streams() as (client_streams, server_streams):
+        client_read, client_write = client_streams
+        server_read, server_write = server_streams
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(
+                lambda: server.run(
+                    server_read, server_write, server.create_initialization_options()
+                )
+            )
+            async with ClientSession(read_stream=client_read, write_stream=client_write) as client:
+                await client.initialize()
+                yield client
+            tg.cancel_scope.cancel()
+
+
+def test_inproc_mcp_handshake_lists_tools_and_reads_readme() -> None:
+    """A real MCP client session against the server completes the handshake,
+    lists the canonical tools, and a read-only call returns content."""
     from app.mcp_server import _build_mcp_server
 
     async def _run() -> None:
         mcp = _build_mcp_server()
-        async with connect(mcp._mcp_server) as client:
+        async with _connected_client(mcp) as client:
             listed = await client.list_tools()
             names = {tool.name for tool in listed.tools}
             missing = _CANONICAL_MCP_TOOLS - names

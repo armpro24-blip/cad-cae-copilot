@@ -153,6 +153,19 @@ def test_installed_mcp_wheel_smoke(tmp_path: Path) -> None:
     )
     assert version_check.stdout.strip().startswith("0.1.0a")
 
+    # This install resolves `mcp` freely, so it is the canary for the exact break
+    # #463 fixed: an unbounded transitive dep shipping a major version. Report
+    # which major an external agent actually gets — the port supports both, and a
+    # future break should say WHICH side it landed on rather than only "import
+    # failed".
+    sdk_major = subprocess.run(
+        [python_bin.as_posix(), "-c",
+         "from importlib.metadata import version; print(version('mcp').split('.')[0])"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert sdk_major in {"1", "2"}, f"unexpected mcp major resolved: {sdk_major!r}"
+    print(f"[packaging smoke] external install resolved mcp major {sdk_major}")
+
     assert smoke_cli.exists()
     smoke_result = subprocess.run(
         [smoke_cli.as_posix()],

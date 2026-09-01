@@ -75,7 +75,7 @@ benchmark = [
 geometry = []
 # Upper bound: mcp 2.0.0 removed `mcp.server.fastmcp`, which aieng/mcp/server.py
 # is built on. Lift only together with the FastMCP -> mcp.server.mcpserver port.
-mcp = ["mcp>=1.0,<2"]
+mcp = ["mcp>=1.0"]
 optimization = ["scipy>=1.10"]
 bayesian = ["scikit-optimize>=0.9"]
 

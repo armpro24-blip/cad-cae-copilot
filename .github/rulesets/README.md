@@ -58,6 +58,11 @@ checks that caught the `mcp` 2.0.0 break (see #462/#463) — a dependency shippi
 a major version that removed `mcp.server.fastmcp` and left the MCP server, the
 product's primary agent-facing surface, unable to import from a clean install.
 
+They keep earning that place after the port (#463): the MCP wheel smoke installs
+into a clean venv and resolves `mcp` **unpinned**, so it is the one check that
+sees what an external agent actually gets. It now asserts the resolved SDK major
+and prints it, so a future break says which side of the rename it landed on.
+
 Context names must match the job `name:` **exactly**. If a job is renamed, this
 file and the applied ruleset both need updating, or the required check silently
 never reports and every PR blocks.

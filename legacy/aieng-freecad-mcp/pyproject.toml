@@ -47,7 +47,9 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "mcp>=1.25.0",
+    # Legacy FreeCAD adapter: still on the 1.x FastMCP API and not part of the
+    # active runtime, so it stays pinned rather than being ported (#463).
+    "mcp>=1.25.0,<2",
     "pydantic>=2.10.0",
     "pydantic-settings>=2.7.0",
     "PyYAML>=6.0",

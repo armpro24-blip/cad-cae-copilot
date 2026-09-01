@@ -76,7 +76,7 @@ def test_closed_loop_skill_teaches_credibility_and_surrogate_bands() -> None:
 def test_agent_skills_exposed_as_mcp_prompts_dev_skills_excluded() -> None:
     """The modeling/CAE agent skills are registered as MCP prompts (portable skill
     discovery for any client); dev skills (.claude/skills, e.g. superpowers) are NOT."""
-    from mcp.server.fastmcp import FastMCP
+    from app.mcp_sdk_compat import FastMCP
 
     import app.mcp_server as ms
 
@@ -94,14 +94,15 @@ def test_agent_skills_exposed_as_mcp_prompts_dev_skills_excluded() -> None:
 def test_agent_skill_prompt_renders_skill_body() -> None:
     import asyncio
 
-    from mcp.server.fastmcp import FastMCP
+    from app.mcp_sdk_compat import FastMCP
 
     import app.mcp_server as ms
 
     mcp = FastMCP("test-skill-prompts")
     ms._register_agent_skill_prompts(mcp)
     prompt = next(p for p in mcp._prompt_manager.list_prompts() if p.name == "aieng-cad-authoring")  # type: ignore[attr-defined]
-    messages = asyncio.run(prompt.render())
+    # Pass both explicitly: 1.x defaults them to None, 2.x made them required.
+    messages = asyncio.run(prompt.render(None, None))
     assert messages, "prompt should render at least one message"
     text = messages[0].content.text  # type: ignore[union-attr]
     assert "cad.execute_build123d" in text  # the skill body, not just frontmatter

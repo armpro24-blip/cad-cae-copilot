@@ -21,10 +21,17 @@ _ENV_KEYS = (
 
 
 def _tool_text(call_result: Any) -> str:
-    if isinstance(call_result, list) and call_result:
-        first = call_result[0]
+    """Text payload of a tool call, on either SDK major.
+
+    mcp 1.x returned a bare list of content blocks; 2.x wraps them in a
+    ``CallToolResult`` under ``.content``. This is the packaged entry point an
+    external agent runs first, so it must read both.
+    """
+    content = getattr(call_result, "content", call_result)
+    if isinstance(content, (list, tuple)) and content:
+        first = content[0]
         return getattr(first, "text", str(first))
-    return str(call_result)
+    return str(content)
 
 
 def _json_tool_result(call_result: Any) -> dict[str, Any]:
