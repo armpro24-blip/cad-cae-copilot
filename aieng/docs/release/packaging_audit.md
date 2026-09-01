@@ -95,7 +95,7 @@ Risk:
 - This is legal, but can confuse evaluators and PyPI users.
 
 Recommended fix:
-- Document `pip install aieng-format` / `import aieng` explicitly if this package is published.
+- `import aieng` is documented; an index-install line is deliberately absent — this package is not published to PyPI (see `current_alpha_release_gate.md`).
 
 ## Packaging inconsistencies
 

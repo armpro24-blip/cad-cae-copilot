@@ -105,8 +105,8 @@ criterion the run could not measure never silently passes.
 
 Unchanged from alpha.3 — Docker image, or `uvx` from a tag pin; see
 [`MCP_SETUP.md`](../../../aieng-ui/backend/MCP_SETUP.md). PyPI publication is
-still pending owner setup (#273); the git-pin and container paths are the
-supported ones.
+not planned (#273) — the git-pin and container paths are the channels, not a
+stopgap.
 
 ## Honesty boundaries (unchanged)
 

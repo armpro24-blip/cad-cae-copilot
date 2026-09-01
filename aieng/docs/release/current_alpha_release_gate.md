@@ -85,16 +85,17 @@ Required remote workflows for the release commit:
 - Packaging smoke
 - Docker smoke, when the release includes the Docker published-image path
 
-## Post-Publish Install Verification
+## Post-Release Install Verification
 
-Use a clean environment and published artifact path. Replace versions with the
-actual published alpha versions.
+Use a clean environment and the **published channel** — the release tag. There
+is no index install to verify (see the channel table above); replace the tag
+with the one just cut.
 
 ```bash
 python -m venv .tmp-alpha-install
 .tmp-alpha-install\Scripts\python -m pip install --upgrade pip
-.tmp-alpha-install\Scripts\python -m pip install --pre aieng-format==<published-alpha>
-.tmp-alpha-install\Scripts\python -m pip install --pre aieng-workbench-mcp==<published-alpha>
+.tmp-alpha-install\Scripts\python -m pip install "aieng-format @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.4#subdirectory=aieng"
+.tmp-alpha-install\Scripts\python -m pip install "aieng-workbench-mcp @ git+https://github.com/armpro24-blip/cad-cae-copilot.git@v0.1.0-alpha.4#subdirectory=aieng-ui/backend"
 .tmp-alpha-install\Scripts\python -c "import aieng; print(aieng.FORMAT_VERSION)"
 .tmp-alpha-install\Scripts\python -c "from importlib.resources import files; print(files('aieng.schemas').joinpath('manifest.schema.json').is_file())"
 ```
