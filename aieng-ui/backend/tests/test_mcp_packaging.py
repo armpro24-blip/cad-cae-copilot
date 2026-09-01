@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import pytest
 import shutil
 import subprocess
@@ -145,6 +146,21 @@ def test_installed_mcp_wheel_smoke(tmp_path: Path) -> None:
         check=True,
     )
 
+    # A free resolve proves only whichever major pip happened to pick, so the
+    # OTHER supported major would be untested — the same coverage-boundary hole
+    # that produced #463 in the first place. `AIENG_SMOKE_MCP_MAJOR` lets CI run
+    # one lane per major (see the `mcp-sdk-majors` job); unset, it keeps the free
+    # resolve, which is the honest default for a local run and still the canary
+    # for an unbounded transitive dep shipping a new major.
+    wanted_major = os.environ.get("AIENG_SMOKE_MCP_MAJOR", "").strip()
+    if wanted_major:
+        spec = {"1": "mcp>=1.25.0,<2", "2": "mcp>=2,<3"}.get(wanted_major)
+        assert spec, f"AIENG_SMOKE_MCP_MAJOR must be 1 or 2, got {wanted_major!r}"
+        subprocess.run(
+            [python_bin.as_posix(), "-m", "pip", "install", "--quiet", spec],
+            check=True,
+        )
+
     version_check = subprocess.run(
         [python_bin.as_posix(), "-c", "import aieng_workbench_mcp; print(aieng_workbench_mcp.__version__)"],
         capture_output=True,
@@ -153,16 +169,16 @@ def test_installed_mcp_wheel_smoke(tmp_path: Path) -> None:
     )
     assert version_check.stdout.strip().startswith("0.1.0a")
 
-    # This install resolves `mcp` freely, so it is the canary for the exact break
-    # #463 fixed: an unbounded transitive dep shipping a major version. Report
-    # which major an external agent actually gets — the port supports both, and a
-    # future break should say WHICH side it landed on rather than only "import
-    # failed".
     sdk_major = subprocess.run(
         [python_bin.as_posix(), "-c",
          "from importlib.metadata import version; print(version('mcp').split('.')[0])"],
         capture_output=True, text=True, check=True,
     ).stdout.strip()
+    if wanted_major:
+        assert sdk_major == wanted_major, (
+            f"asked for mcp {wanted_major}.x but the venv resolved {sdk_major}.x — "
+            "this lane would silently duplicate the other one"
+        )
     assert sdk_major in {"1", "2"}, f"unexpected mcp major resolved: {sdk_major!r}"
     print(f"[packaging smoke] external install resolved mcp major {sdk_major}")
 

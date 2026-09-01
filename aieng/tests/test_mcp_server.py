@@ -353,7 +353,7 @@ def test_create_server_raises_for_wrong_extension(tmp_path):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.skipif(not HAS_MCP, reason="mcp package not installed")
-def test_create_server_returns_server_instance(tmp_path):
+def test_create_server_returns_server_instance(tmp_path: Path) -> None:
     """The server type, on whichever SDK major is installed.
 
     `mcp` 2.0 renamed `FastMCP` to `MCPServer` and made the old import path raise

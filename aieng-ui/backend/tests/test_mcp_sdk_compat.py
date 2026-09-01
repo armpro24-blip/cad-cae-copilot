@@ -8,10 +8,13 @@ exercised the packaged form against an unpinned resolve.
 
 These tests keep the surface consolidated and the version-sensitive spots
 honest. They are cheap and static on purpose: the real cross-version proof is
-running the suite under both majors, which CI does via the packaging smoke.
+running the whole suite under both majors, which CI does in the `MCP SDK 1.x` /
+`MCP SDK 2.x` lanes. The packaging smoke keeps a free `mcp` resolve alongside
+them, as the canary for a future major nobody has ported to.
 """
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -52,6 +55,34 @@ _ALLOWED_DIRECT_IMPORTERS = {
 }
 
 
+# Every way of reaching a versioned path, not just the one the port happened to
+# use. A guard that only knows `from X import Y` is a guard whose own boundary
+# was never checked — which is the same shape as the blind spot that let a
+# 1.x-only import in the core's tests walk past the first version of this file.
+_VERSIONED_IMPORT = re.compile(
+    r"""(?:
+          \b(?:from|import)\s+mcp\.server\.(?:fastmcp|mcpserver)\b
+        | (?:import_module|__import__)\s*\(\s*["']mcp\.server\.(?:fastmcp|mcpserver)
+        )""",
+    re.VERBOSE,
+)
+
+
+def _versioned_import_offenders(paths: list[Path]) -> list[str]:
+    """Lines reaching a version-specific SDK path, outside the exempt files."""
+    allowed = {p.resolve() for p in _ALLOWED_DIRECT_IMPORTERS}
+    offenders: list[str] = []
+    for path in paths:
+        if path.resolve() in allowed:
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.lstrip().startswith("#"):
+                continue
+            if _VERSIONED_IMPORT.search(line):
+                offenders.append(f"{path}: {line.strip()}")
+    return offenders
+
+
 def test_no_module_imports_the_versioned_paths_directly() -> None:
     """One import site, so the next rename is a one-file change.
 
@@ -59,20 +90,45 @@ def test_no_module_imports_the_versioned_paths_directly() -> None:
     where a fallback is written deliberately — anywhere else and a rename
     silently strands that file on one major.
     """
-    offenders: list[str] = []
     paths = [p for tree in _SCANNED_TREES for p in tree.glob("**/*.py")]
-    for path in paths:
-        if path.resolve() in {p.resolve() for p in _ALLOWED_DIRECT_IMPORTERS}:
-            continue
-        text = path.read_text(encoding="utf-8")
-        for line in text.splitlines():
-            if line.lstrip().startswith("#"):
-                continue
-            if re.search(r"\bfrom mcp\.server\.(fastmcp|mcpserver)\b", line):
-                offenders.append(f"{path.relative_to(_REPO)}: {line.strip()}")
+    offenders = [
+        o.replace(f"{_REPO}{os.sep}", "") for o in _versioned_import_offenders(paths)
+    ]
     assert offenders == [], (
         "import these through app.mcp_sdk_compat instead:\n  " + "\n  ".join(offenders)
     )
+
+
+def test_the_guard_catches_every_way_of_writing_the_import(tmp_path: Path) -> None:
+    """The check's own coverage boundary, checked.
+
+    Both defects this file exists to prevent were boundary defects: the port
+    scattered imports the guard did not scan, and the guard matched only the
+    import spelling the port itself had used. So plant each spelling.
+    """
+    # Composed rather than written literally: a literal would be flagged by the
+    # very guard under test — it scans this tree — and exempting this file to
+    # allow the fixtures would pardon a real regression in it too.
+    old, new = "mcp.server." + "fastmcp", "mcp.server." + "mcpserver"
+    spellings = (
+        f"from {old} import FastMCP",
+        f"from {new} import MCPServer",
+        f"import {old}",
+        f"import {new} as srv",
+        f'importlib.import_module("{old}")',
+        f"__import__('{new}')",
+    )
+    for index, line in enumerate(spellings):
+        planted = tmp_path / f"planted_{index}.py"
+        planted.write_text(line + "\n", encoding="utf-8")
+        assert _versioned_import_offenders([planted]), f"guard missed: {line}"
+
+    innocent = tmp_path / "innocent.py"
+    innocent.write_text(
+        f"from app.mcp_sdk_compat import FastMCP\n# from {old} import FastMCP\n",
+        encoding="utf-8",
+    )
+    assert _versioned_import_offenders([innocent]) == []
 
 
 def test_the_server_no_longer_calls_get_context() -> None:

@@ -12,7 +12,7 @@ MCP is an optional access interface over `.aieng` package resources. It is not t
 The MCP transport layer requires the `mcp` Python package:
 
 ```bash
-pip install "mcp>=1.0"
+pip install "mcp>=1.0,<3"
 # or, using the optional dependency group:
 pip install "aieng-format[mcp]"
 ```

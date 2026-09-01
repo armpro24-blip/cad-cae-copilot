@@ -108,8 +108,11 @@ The install extras are intentionally explicit:
 | `aieng-workbench-mcp[full]` | CAD + LLM extras; closest to the local backend environment. |
 
 **MCP SDK version.** The server runs on both `mcp` 1.x and 2.x, so the
-dependency is unpinned (`mcp>=1.25.0`) and a fresh install picks up whichever is
-current. 2.0 renamed `FastMCP` to `MCPServer` and moved every module the server
+dependency is capped only at `<3` (`mcp>=1.25.0,<3`) and a fresh install picks up
+whichever of the two is current. CI runs the whole suite under one pinned release
+of each major (the `MCP SDK 1.x` / `MCP SDK 2.x` lanes), which is why the cap sits
+where it does; the packaging smoke resolves `mcp` freely alongside them as the
+canary for a new major. 2.0 renamed `FastMCP` to `MCPServer` and moved every module the server
 touches; that whole surface is resolved once in
 [`app/mcp_sdk_compat.py`](app/mcp_sdk_compat.py) — import the SDK through it
 rather than from a versioned path, and a future rename stays a one-file change.
