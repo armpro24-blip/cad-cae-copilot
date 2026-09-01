@@ -22,6 +22,7 @@ import importlib.util
 import re
 import sys
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -78,9 +79,10 @@ def test_the_github_release_survives_a_skipped_publish_chain() -> None:
         "always() it is skipped whenever that chain is skipped — which is every "
         "release under the current distribution decision"
     )
-    assert "verify-published-install.result != 'failure'" in condition, (
-        "relaxing the gate must not let a FAILED verification through — skipped "
-        "and failed are different answers"
+    assert "verify-published-install.result" in condition, (
+        "relaxing the gate must still inspect the verification's outcome; see "
+        "test_a_failed_publish_does_not_get_a_release_announcing_it for which "
+        "outcomes are acceptable on which path"
     )
 
 
@@ -105,7 +107,7 @@ def test_the_release_attaches_the_built_dists() -> None:
 
 # ── the baseline the release gate points at ──────────────────────────────────
 
-def _capture_module():
+def _capture_module() -> ModuleType:
     spec = importlib.util.spec_from_file_location("_capture", _CAPTURE_SCRIPT)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
@@ -173,3 +175,50 @@ def test_the_release_gate_points_at_the_baseline_instead_of_the_dead_table() -> 
         "the old metrics table sourced every row from an index this project does "
         "not publish to, so every row was permanently 'unknown / TBD'"
     )
+
+
+def test_a_failed_publish_does_not_get_a_release_announcing_it() -> None:
+    """Skipped-because-deliberate and skipped-because-upstream-failed differ.
+
+    The first version of this gate accepted any non-`failure` verify result. But
+    a FAILED publish job leaves `verify-published-install` *skipped* (its own
+    `needs` failed), so that gate would have cut a release announcing a publish
+    that never happened — while the test above, which only checks the
+    `!= 'failure'` clause, passed. Same coverage-boundary shape as the defect
+    this file documents, one level up.
+    """
+    condition = _jobs()["github-release"].get("if", "")
+    normalised = " ".join(condition.split())
+
+    assert "target == 'none'" in normalised and "result == 'skipped'" in normalised, (
+        "the no-publish path must require the verify job to be SKIPPED"
+    )
+    assert "target != 'none'" in normalised and "result == 'success'" in normalised, (
+        "the publish path must require the verify job to have SUCCEEDED, not "
+        "merely to have avoided the 'failure' conclusion"
+    )
+
+
+def test_the_capture_cli_renders_every_documented_form(monkeypatch, capsys) -> None:
+    """The three documented invocations, without touching the network."""
+    import json as _json
+
+    capture = _capture_module()
+    monkeypatch.setattr(capture, "_gh_api", lambda path: None)
+
+    for argv, expect in (
+        ([], "Embedding-depth baseline — captured"),
+        (["--markdown"], "| Signal | Value | Window | Source |"),
+    ):
+        assert capture.main(argv) == 0
+        assert expect in capsys.readouterr().out
+
+    assert capture.main(["--json"]) == 0
+    payload = _json.loads(capsys.readouterr().out)
+    assert payload["channels"]["not_used"] == ["PyPI", "TestPyPI"]
+    # Every API call was refused, so every signal must say so rather than
+    # reporting a number — the script's one behavioural rule, end to end.
+    assert all(
+        entry.get("unmeasurable_reason") for entry in payload["signals"].values()
+    ), payload["signals"]
+    assert all(entry["value"] is None for entry in payload["signals"].values())

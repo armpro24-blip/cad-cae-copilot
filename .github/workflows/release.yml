@@ -241,11 +241,24 @@ jobs:
   github-release:
     name: GitHub release
     needs: [build, verify-published-install]
+    #
+    # The two ways the publish chain can be incomplete are NOT the same:
+    #   target == 'none'  -> it was skipped deliberately, cut the release;
+    #   target != 'none'  -> it must have SUCCEEDED. A failed publish job also
+    #                        leaves verify-published-install `skipped` (its own
+    #                        `needs` failed), so accepting `skipped` outright
+    #                        would publish a release announcing a publish that
+    #                        failed. Skipped and failed are different answers.
     if: >-
       !cancelled()
       && needs.build.result == 'success'
-      && needs.verify-published-install.result != 'failure'
       && (github.event_name == 'push' || inputs.create_github_release)
+      && (
+           (needs.build.outputs.target == 'none'
+             && needs.verify-published-install.result == 'skipped')
+           || (needs.build.outputs.target != 'none'
+             && needs.verify-published-install.result == 'success')
+         )
     runs-on: ubuntu-latest
     permissions:
       contents: write

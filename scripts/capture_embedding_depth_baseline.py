@@ -162,7 +162,9 @@ def _traffic() -> list[Signal]:
 def _release_assets() -> list[Signal]:
     """Downloads of files attached to a release — the only per-artifact counter
     the no-PyPI channel set can offer."""
-    data = _gh_api(f"repos/{REPO}/releases")
+    # per_page: the endpoint defaults to 30, which would silently stop counting
+    # once the project has more releases than that.
+    data = _gh_api(f"repos/{REPO}/releases?per_page=100")
     if not isinstance(data, list):
         return [
             Signal(
