@@ -192,7 +192,7 @@ The package format uses a `format_version` field in structured JSON members
 (e.g. `graph/constraints.json`, `results/evidence_index.json`). Current
 version: `"0.1.0"`.
 
-Schema definitions live in `aieng/schemas/`.
+Schema definitions live in `aieng/src/aieng/schemas/`.
 
 ---
 

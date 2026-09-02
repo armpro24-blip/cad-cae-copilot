@@ -139,12 +139,12 @@ def test_face_signatures_and_face_ids_survive() -> None:
 
 
 def test_the_finalized_document_satisfies_the_packaged_schema() -> None:
-    """Against the schema the library actually serves, not the stale copy.
+    """Against the schema the library actually serves.
 
-    `aieng/schemas/` is a second, diverged tree that nothing loads —
-    `validate.py` reads `aieng/src/aieng/schemas` via importlib.resources. A test
-    validating against the wrong copy is green about a file the product does not
-    use.
+    There used to be a second copy of every schema at the repo root that nothing
+    loaded, diverged from this one in 14 files; a test validating against it was
+    green about a file the product does not use. Removed in #517 — this is now
+    the only tree, and `validate.py` reads it through importlib.resources.
     """
     jsonschema = pytest.importorskip("jsonschema")
 

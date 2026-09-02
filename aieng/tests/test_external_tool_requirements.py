@@ -63,14 +63,14 @@ def _inject_requirements(pkg, data_dict):
 # ---------------------------------------------------------------------------
 
 def test_schema_is_valid_json_schema():
-    schema_path = Path("schemas/external_tool_requirements.schema.json")
+    schema_path = (Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "external_tool_requirements.schema.json")
     assert schema_path.exists()
     schema = json.loads(schema_path.read_text())
     Draft202012Validator.check_schema(schema)
 
 
 def test_minimal_valid_requirements_conforms_to_schema():
-    schema = json.loads(Path("schemas/external_tool_requirements.schema.json").read_text())
+    schema = json.loads((Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "external_tool_requirements.schema.json").read_text())
     validator = Draft202012Validator(schema)
     spec = {
         "format_version": "0.1.0",
@@ -98,7 +98,7 @@ def test_minimal_valid_requirements_conforms_to_schema():
 
 
 def test_schema_rejects_external_tools_execute_false():
-    schema = json.loads(Path("schemas/external_tool_requirements.schema.json").read_text())
+    schema = json.loads((Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "external_tool_requirements.schema.json").read_text())
     validator = Draft202012Validator(schema)
     spec = {
         "format_version": "0.1.0",
@@ -122,7 +122,7 @@ def test_schema_rejects_external_tools_execute_false():
 
 
 def test_schema_rejects_aieng_core_executes_true():
-    schema = json.loads(Path("schemas/external_tool_requirements.schema.json").read_text())
+    schema = json.loads((Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "external_tool_requirements.schema.json").read_text())
     validator = Draft202012Validator(schema)
     spec = {
         "format_version": "0.1.0",
@@ -146,7 +146,7 @@ def test_schema_rejects_aieng_core_executes_true():
 
 
 def test_schema_rejects_empty_writeback_requirements():
-    schema = json.loads(Path("schemas/external_tool_requirements.schema.json").read_text())
+    schema = json.loads((Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "external_tool_requirements.schema.json").read_text())
     validator = Draft202012Validator(schema)
     spec = {
         "format_version": "0.1.0",
@@ -170,7 +170,7 @@ def test_schema_rejects_empty_writeback_requirements():
 
 
 def test_schema_rejects_empty_forbidden_core_actions():
-    schema = json.loads(Path("schemas/external_tool_requirements.schema.json").read_text())
+    schema = json.loads((Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "external_tool_requirements.schema.json").read_text())
     validator = Draft202012Validator(schema)
     spec = {
         "format_version": "0.1.0",
@@ -263,7 +263,7 @@ def test_writer_conforms_to_schema(tmp_path):
     pkg = _make_package(tmp_path)
     write_external_tool_requirements_package(pkg)
     req = _read_requirements(pkg)
-    schema = json.loads(Path("schemas/external_tool_requirements.schema.json").read_text())
+    schema = json.loads((Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "external_tool_requirements.schema.json").read_text())
     errors = list(Draft202012Validator(schema).iter_errors(req))
     assert errors == [], f"schema errors: {errors}"
 

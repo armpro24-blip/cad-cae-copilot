@@ -53,7 +53,7 @@ def _make_package_with_context(tmp_path: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 def test_tool_trace_schema_valid_json():
-    schema_path = Path(__file__).parent.parent / "schemas" / "tool_trace.schema.json"
+    schema_path = Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "tool_trace.schema.json"
     schema = json.loads(schema_path.read_text())
     required = schema.get("required", [])
     for field in ("format_version", "tool_trace_id", "entries", "claim_policy"):
@@ -61,13 +61,13 @@ def test_tool_trace_schema_valid_json():
 
 
 def test_tool_trace_schema_format_version_const():
-    schema_path = Path(__file__).parent.parent / "schemas" / "tool_trace.schema.json"
+    schema_path = Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "tool_trace.schema.json"
     schema = json.loads(schema_path.read_text())
     assert schema["properties"]["format_version"]["const"] == "0.1.0"
 
 
 def test_tool_trace_schema_claim_policy_consts():
-    schema_path = Path(__file__).parent.parent / "schemas" / "tool_trace.schema.json"
+    schema_path = Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "tool_trace.schema.json"
     schema = json.loads(schema_path.read_text())
     policy_props = schema["$defs"]["ClaimPolicy"]["properties"]
     assert policy_props["external_tools_execute"]["const"] is True
@@ -75,7 +75,7 @@ def test_tool_trace_schema_claim_policy_consts():
 
 
 def test_tool_trace_schema_tool_role_enum():
-    schema_path = Path(__file__).parent.parent / "schemas" / "tool_trace.schema.json"
+    schema_path = Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "tool_trace.schema.json"
     schema = json.loads(schema_path.read_text())
     role_enum = schema["$defs"]["ToolRef"]["properties"]["tool_role"]["enum"]
     for role in ("agent_runtime", "cad_runtime", "cae_runtime", "cae_preprocessor", "solver", "postprocessor", "manufacturing_checker"):
@@ -83,7 +83,7 @@ def test_tool_trace_schema_tool_role_enum():
 
 
 def test_tool_trace_schema_exit_status_enum():
-    schema_path = Path(__file__).parent.parent / "schemas" / "tool_trace.schema.json"
+    schema_path = Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "tool_trace.schema.json"
     schema = json.loads(schema_path.read_text())
     es_enum = schema["$defs"]["StepRecord"]["properties"]["exit_status"]["enum"]
     for status in ("success", "failure", "skipped"):

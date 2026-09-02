@@ -742,7 +742,7 @@ for CNC/3D-printing or FEA, so structure (named features, manufacturable
 geometry, protected mounting interfaces) matters as much as silhouette.
 
 Use the **canonical feature vocabulary** from
-`aieng/schemas/feature_graph.schema.json` for part labels — the
+`aieng/src/aieng/schemas/feature_graph.schema.json` for part labels — the
 `_topology_to_feature_graph` heuristic in the workbench recognizes these
 names and tags them with semantic intent in the feature graph an agent
 can query later:
@@ -1785,7 +1785,7 @@ contact physics. When present, the backend best-effort writes
 `diagnostics/assembly_validation.json`, `assembly/part_registry.json`,
 `assembly/connection_graph.json`, and a solver-neutral `simulation/assembly_cae_setup_draft.json`
 (auto on recompile, or via `POST /api/projects/{id}/assembly/process`). Schema:
-`aieng/schemas/assembly_ir.schema.json`. Single-part packages are unaffected.
+`aieng/src/aieng/schemas/assembly_ir.schema.json`. Single-part packages are unaffected.
 
 **Authoring the IR (no approval).** An agent builds the IR incrementally from a
 package's named CAD parts (these tools mutate only assembly metadata, no

@@ -94,7 +94,7 @@ Repository test status at tag time:
   is present in a legacy package. These code paths are quarantined: no alpha
   CLI or MCP surface exposes them, and no evidence import advances claim
   state. They will be retired in a follow-up alpha.
-- The package ships `aieng/schemas/claim_map.schema.json` for backwards
+- The package ships `aieng/src/aieng/schemas/claim_map.schema.json` for backwards
   compatibility with packages already containing a `claim_map.json`. It is
   not promoted as part of the alpha contract.
 - Benchmark fixtures under `benchmark_runs/` still contain

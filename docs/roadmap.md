@@ -175,10 +175,10 @@ git log (commits `c40a208`, `8ac64cd`, `4e52754`, `f3df0f0`, `71f65e0`,
 `aieng-ui/` (`662ec9b`).
 
 **Delivered:**
-- **PR 1 — Schema / docs / examples:** `aieng/schemas/design_targets.schema.json`
+- **PR 1 — Schema / docs / examples:** `aieng/src/aieng/schemas/design_targets.schema.json`
   supports dual format (legacy `0.1.0` and modern `0.1.1` with `target_id`,
   `target_type`, `comparator`, `threshold`, `priority`, `scope`,
-  `protected_features`); `aieng/schemas/design_target_comparison.schema.json`
+  `protected_features`); `aieng/src/aieng/schemas/design_target_comparison.schema.json`
   defines the comparison block; `aieng/examples/design_targets/bracket_mass_reduction/design_targets.yaml`
   is the canonical example; `aieng/docs/design_targets.md` documents the contract.
 - **PR 2 — Validation + comparison logic:** `_validate_design_targets()` and

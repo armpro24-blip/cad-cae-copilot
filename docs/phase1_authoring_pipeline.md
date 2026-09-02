@@ -107,7 +107,7 @@ This structure lets downstream agents answer: *What did the user ask for? What d
 
 ### `modeling_plan.schema.json`
 
-**Path:** `aieng/schemas/modeling_plan.schema.json`
+**Path:** `aieng/src/aieng/schemas/modeling_plan.schema.json`
 
 Kernel-agnostic CAD operation IR. Schema version `0.1.0`, JSON Schema Draft 2020-12.
 

@@ -48,7 +48,7 @@ The plan is **frozen** after creation. The `authoring/modeling_plan.json` inside
 
 ## 3. Schema Version
 
-- **Schema file**: `aieng/schemas/modeling_plan.schema.json`
+- **Schema file**: `aieng/src/aieng/schemas/modeling_plan.schema.json`
 - **Schema version**: `0.1.0`
 - **JSON Schema Draft**: `2020-12`
 

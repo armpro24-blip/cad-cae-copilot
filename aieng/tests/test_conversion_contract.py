@@ -17,7 +17,7 @@ from aieng.converters.cli_runners import list_converter_capabilities
 from aieng.validate import validate_package
 
 
-SCHEMAS_DIR = Path(__file__).resolve().parents[1] / "schemas"
+SCHEMAS_DIR = Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas"
 
 
 def test_capability_level_names_are_complete():

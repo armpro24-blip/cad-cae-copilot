@@ -126,7 +126,7 @@ A structured patch proposal:
 }
 ```
 
-Validated against [`aieng/schemas/patch_proposal.schema.json`](../schemas/patch_proposal.schema.json). Executed via the stub adapter (no FreeCAD needed). One evidence record and one trace record appended. `claim_map.json` unchanged. `claims_advanced: false`.
+Validated against [`aieng/src/aieng/schemas/patch_proposal.schema.json`](../src/aieng/schemas/patch_proposal.schema.json). Executed via the stub adapter (no FreeCAD needed). One evidence record and one trace record appended. `claim_map.json` unchanged. `claims_advanced: false`.
 
 **Expected visual before/after result:**
 
@@ -163,7 +163,7 @@ The report should explicitly say: *the edit produced evidence that a parameter w
 - **Input:** the same prompt + path to `package.aieng/` + a description of the MCP tools available.
 - **Implementation (Milestone 0):**
   1. Read the canned model output from `scenarios/bracket-thickness/replays/aieng.json`. This is the agent's *decision* — which feature, which parameter, which value — encoded as a structured patch proposal.
-  2. Validate the proposal against `aieng/schemas/patch_proposal.schema.json`.
+  2. Validate the proposal against `aieng/src/aieng/schemas/patch_proposal.schema.json`.
   3. Invoke the existing adapter's stub-executor path (via `aieng_freecad_mcp`) to **really** apply the patch to the copied workspace package: writes evidence, writes trace, marks references as `needs_review`, leaves `claim_map.json` untouched.
 - **Output shape:** structured patch JSON + adapter result + appended evidence/trace files on disk.
 - **Why use the real stub adapter, not pure replay:** the demo's credibility comes from showing real evidence/trace files. Pure replay would mean the gallery is faking the artifacts the trust story depends on. The stub executor exists in the adapter precisely to make this cheap.
@@ -394,7 +394,7 @@ aieng-gallery/
 
 **Must not copy or duplicate:**
 
-- Canonical schemas from `aieng/schemas/`. Always read from the installed `aieng` package.
+- Canonical schemas from `aieng/src/aieng/schemas/`. Always read from the installed `aieng` package.
 - Adapter logic from `aieng_freecad_mcp/src/`. Always call into the installed package.
 - Claim-policy enforcement. The gallery relies on the adapter's existing `persistence.py` and `claims.py` to enforce immutability — it must not add a second claim layer.
 - FreeCAD-specific path resolution. The gallery has no FreeCAD knowledge.
@@ -407,7 +407,7 @@ Acceptance criteria for Milestone 0:
 
 1. **Quickstart works clean.** A `git clone` + `pip install -e .` + `python -m aieng_gallery run bracket-thickness` succeeds on a machine with **no FreeCAD installed** and **no LLM API key set**.
 2. **Report HTML is generated** at `results/bracket-thickness/<timestamp>/report.html` and contains all 12 sections from §9.
-3. **Patch proposal validates** against `aieng/schemas/patch_proposal.schema.json` (via `jsonschema`). Test: `test_lane_aieng.py::test_patch_proposal_is_schema_valid`.
+3. **Patch proposal validates** against `aieng/src/aieng/schemas/patch_proposal.schema.json` (via `jsonschema`). Test: `test_lane_aieng.py::test_patch_proposal_is_schema_valid`.
 4. **Evidence and trace are visible** in the report and in the workspace package: at least one new entry each in `results/evidence_index.json` and `provenance/tool_trace.json`.
 5. **`claim_map.json` is unchanged.** Test: `test_evidence_discipline.py::test_claim_map_hash_unchanged` asserts byte-equal SHA-256 of `results/claim_map.json` before and after the run.
 6. **`claims_advanced: false`** is present in every trace entry written by the lane, and is rendered as a highlighted badge in the report.
@@ -429,7 +429,7 @@ Tests bundled in Milestone 0 (and only these):
 | Risk | Mitigation |
 |---|---|
 | **Demo becomes too complex.** | One scenario, one command, no extras in the default install. Reject any PR that adds a required dependency to the demo path. |
-| **`.aieng` becomes too FreeCAD-specific via gallery fixtures.** | Scenario `package.aieng/` fixtures must validate against `aieng/schemas/`. Any FreeCAD-shaped string (e.g. `Body.Pad.Length`) appears only inside optional adapter-local provenance fields, never in required canonical fields. CI lint: regex check on canonical resource files. |
+| **`.aieng` becomes too FreeCAD-specific via gallery fixtures.** | Scenario `package.aieng/` fixtures must validate against `aieng/src/aieng/schemas/`. Any FreeCAD-shaped string (e.g. `Body.Pad.Length`) appears only inside optional adapter-local provenance fields, never in required canonical fields. CI lint: regex check on canonical resource files. |
 | **Visual demo hides evidence/claim discipline.** | The "Evidence ≠ claim" banner is part of the report template and cannot be styled away. The claim-discipline pane shows the SHA-256 hash before/after. If hashes differ, the report renders an error block. |
 | **Raw lane is made artificially bad to flatter the `.aieng` lane.** | Replay files are reviewed for plausibility. Document a "raw lane fairness rule" in `docs/add-a-scenario.md`: the raw response must be what a competent general-purpose LLM might plausibly output without engineering context — not an obvious strawman. |
 | **Users misunderstand evidence as validation.** | Banner + explicit per-scenario "what not to claim" list, surfaced both in the report and in the scenario README. |

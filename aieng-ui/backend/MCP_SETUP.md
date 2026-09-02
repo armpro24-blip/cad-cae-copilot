@@ -823,7 +823,7 @@ through every prompt.
 ### Engineering audit (manufacturability check)
 
 For mechanical parts (brackets, housings, fixtures, manifolds), label parts with
-the canonical types from `aieng/schemas/feature_graph.schema.json` —
+the canonical types from `aieng/src/aieng/schemas/feature_graph.schema.json` —
 `base_plate` / `mounting_hole` / `mounting_hole_pattern` / `rib` / `boss` /
 `flange` / `interface_face` / `wall` / `cover`. Then call **`cad.critique`** to
 get a deterministic engineering audit: minimum wall thickness (3mm CNC default),

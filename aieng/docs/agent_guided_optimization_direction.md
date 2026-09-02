@@ -345,7 +345,7 @@ assembly evidence.
 - **Sampling cost.** Grid search explodes combinatorially; the sampler must cap
   candidate count and `log` what was dropped (no silent truncation).
 - **No JSON schema for design-study problem today** — validation is in-code. New
-  artifacts SHOULD add real JSON schemas under `aieng/schemas/` for durability.
+  artifacts SHOULD add real JSON schemas under `aieng/src/aieng/schemas/` for durability.
 
 ---
 

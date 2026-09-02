@@ -341,7 +341,7 @@ def test_topology_schema_accepts_ocp_metadata():
     import json
     from jsonschema import Draft202012Validator
 
-    schema = json.loads(Path("schemas/topology_map.schema.json").read_text(encoding="utf-8"))
+    schema = json.loads((Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "topology_map.schema.json").read_text(encoding="utf-8"))
     ocp_map = {
         "format_version": "0.1.0",
         "metadata": {
@@ -375,7 +375,7 @@ def test_topology_schema_accepts_ocp_metadata_with_cylinder():
     import json
     from jsonschema import Draft202012Validator
 
-    schema = json.loads(Path("schemas/topology_map.schema.json").read_text(encoding="utf-8"))
+    schema = json.loads((Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "topology_map.schema.json").read_text(encoding="utf-8"))
     ocp_map = {
         "format_version": "0.1.0",
         "metadata": {

@@ -130,7 +130,7 @@ class TestDesignTargetComparisonSchema:
         from pathlib import Path
         import jsonschema
 
-        schema_path = Path(__file__).resolve().parents[1] / "schemas" / "design_target_comparison.schema.json"
+        schema_path = Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "design_target_comparison.schema.json"
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
 
         sample = {
@@ -176,7 +176,7 @@ class TestDesignTargetComparisonSchema:
         from pathlib import Path
         import jsonschema
 
-        schema_path = Path(__file__).resolve().parents[1] / "schemas" / "design_target_comparison.schema.json"
+        schema_path = Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "design_target_comparison.schema.json"
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
 
         bad = {
@@ -203,6 +203,8 @@ class TestDesignTargetComparisonSchema:
 
 _SCHEMA_PATH = (
     Path(__file__).resolve().parents[1]
+    / "src"
+    / "aieng"
     / "schemas"
     / "design_target_comparison.schema.json"
 )

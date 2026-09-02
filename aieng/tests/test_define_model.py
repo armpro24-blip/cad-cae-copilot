@@ -186,7 +186,7 @@ def test_define_completeness_report_explains_definition_missingness(tmp_path):
 
 
 def test_model_definition_schema_accepts_example_file():
-    schema_path = Path("schemas/model_definition.schema.json")
+    schema_path = (Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "model_definition.schema.json")
     example_path = Path("examples/definition_simple_bracket.yaml")
 
     assert schema_path.exists()

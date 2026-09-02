@@ -1,7 +1,7 @@
 """Compute hashes for the AIENG version surface.
 
 Run this script after changing MCP tool schemas, artifact schemas, or skill prompts,
-then bump the relevant surface version in aieng/schemas/version_surface.json.
+then bump the relevant surface version in aieng/src/aieng/schemas/version_surface.json.
 
 Usage:
     python scripts/update_version_surface.py

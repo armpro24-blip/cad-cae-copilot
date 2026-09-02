@@ -78,7 +78,7 @@ def _category(report: dict, name: str) -> dict:
 
 
 def test_completeness_schema_has_claim_policy_consts():
-    schema = json.loads(Path("schemas/completeness_report.schema.json").read_text(encoding="utf-8"))
+    schema = json.loads((Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "completeness_report.schema.json").read_text(encoding="utf-8"))
     policy = schema["$defs"]["ClaimPolicy"]["properties"]
     assert policy["best_effort_conversion"]["const"] is True
     assert policy["missingness_explicit"]["const"] is True

@@ -15,7 +15,7 @@ from aieng.modeling_plan.validate import (
 
 
 def _schema_path() -> Path:
-    return Path(__file__).resolve().parent.parent / "schemas" / "modeling_plan.schema.json"
+    return Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "modeling_plan.schema.json"
 
 
 def _make_plan(**overrides) -> dict:

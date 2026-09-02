@@ -215,7 +215,7 @@ def test_legacy_level_fields_are_optional_in_schema(tmp_path: Path):
     must still validate against the schema."""
     jsonschema = pytest.importorskip("jsonschema")
     from pathlib import Path as P
-    schema_path = P(__file__).resolve().parents[1] / "schemas" / "conversion_manifest.schema.json"
+    schema_path = P(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "conversion_manifest.schema.json"
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
 
     from aieng.converters.base import CONVERTER_CLAIM_POLICY
