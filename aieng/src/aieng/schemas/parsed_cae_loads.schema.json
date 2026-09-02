@@ -6,9 +6,7 @@
   "required": [
     "format",
     "format_version",
-    "source_file",
-    "loads",
-    "parser"
+    "loads"
   ],
   "properties": {
     "format": {
@@ -29,9 +27,7 @@
         "type": "object",
         "required": [
           "id",
-          "target",
-          "dof",
-          "value"
+          "target"
         ],
         "properties": {
           "id": {
@@ -47,9 +43,39 @@
           },
           "value": {
             "type": "number"
+          },
+          "type": {
+            "type": "string"
+          },
+          "value_n": {
+            "$comment": "Magnitude of an authored force, with `direction`.",
+            "type": "number"
+          },
+          "direction": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 3,
+            "maxItems": 3
           }
         },
-        "additionalProperties": false
+        "additionalProperties": false,
+        "anyOf": [
+          {
+            "required": [
+              "dof",
+              "value"
+            ]
+          },
+          {
+            "required": [
+              "value_n",
+              "direction"
+            ]
+          }
+        ],
+        "$comment": "Either form is complete: `dof` + `value` is how a solver deck states a load, `value_n` + `direction` is how an engineer does, and the deck generator decomposes the latter into the former."
       }
     },
     "parser": {
@@ -69,7 +95,26 @@
         }
       },
       "additionalProperties": false
+    },
+    "authored_by": {
+      "$comment": "The tool that authored this setup, e.g. `cae.setup_static`.",
+      "type": "string",
+      "minLength": 1
     }
   },
-  "additionalProperties": false
+  "additionalProperties": false,
+  "$comment": "The document must declare WHERE its content came from, one way or the other: `parser` + `source_file` for a deck that was parsed, or `authored_by` for a setup the workbench wrote itself. Neither is optional, and an authored setup must not claim a `source_file` it never read \u2014 the synthesised source_solver_deck.inp supplies the mesh, not these loads. See #513.",
+  "anyOf": [
+    {
+      "required": [
+        "parser",
+        "source_file"
+      ]
+    },
+    {
+      "required": [
+        "authored_by"
+      ]
+    }
+  ]
 }

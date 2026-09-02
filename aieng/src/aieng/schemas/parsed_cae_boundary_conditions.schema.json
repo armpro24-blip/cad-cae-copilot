@@ -6,9 +6,7 @@
   "required": [
     "format",
     "format_version",
-    "source_file",
-    "boundary_conditions",
-    "parser"
+    "boundary_conditions"
   ],
   "properties": {
     "format": {
@@ -51,6 +49,10 @@
           },
           "value": {
             "type": "number"
+          },
+          "type": {
+            "$comment": "Read by the deck generator to pick the *BOUNDARY DOF range.",
+            "type": "string"
           }
         },
         "additionalProperties": false
@@ -73,7 +75,26 @@
         }
       },
       "additionalProperties": false
+    },
+    "authored_by": {
+      "$comment": "The tool that authored this setup, e.g. `cae.setup_static`.",
+      "type": "string",
+      "minLength": 1
     }
   },
-  "additionalProperties": false
+  "additionalProperties": false,
+  "$comment": "The document must declare WHERE its content came from, one way or the other: `parser` + `source_file` for a deck that was parsed, or `authored_by` for a setup the workbench wrote itself. Neither is optional, and an authored setup must not claim a `source_file` it never read \u2014 the synthesised source_solver_deck.inp supplies the mesh, not these loads. See #513.",
+  "anyOf": [
+    {
+      "required": [
+        "parser",
+        "source_file"
+      ]
+    },
+    {
+      "required": [
+        "authored_by"
+      ]
+    }
+  ]
 }

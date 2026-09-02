@@ -58,17 +58,23 @@ from aieng.validate import validate_package  # noqa: E402
 # that method can be trusted, which is strictly more informative than the lean
 # document it used to write.
 _BASELINE: dict[str, int] = {
-    # 18 -> 0: both writers now go through
-    # `aieng.simulation.cae_mapping_writer.finalize_cae_mapping`, which fills the
-    # provenance the schema asks for. Kept at 0 rather than deleted so a
-    # reappearing failure trips the regression check.
-    "simulation/cae_mapping.json": 0,
-    "simulation/cae_imports/parsed_loads.json": 7,
-    "simulation/cae_imports/parsed_materials.json": 5,
-    "simulation/cae_imports/parsed_boundary_conditions.json": 5,
+    # Everything at 0 has been paid down. Kept rather than deleted so a
+    # reappearing failure trips the regression check instead of going unnoticed.
+    "simulation/cae_mapping.json": 0,          # was 18 (#518)
+    "simulation/cae_imports/parsed_loads.json": 0,               # was 7
+    "simulation/cae_imports/parsed_materials.json": 0,           # was 5
+    "simulation/cae_imports/parsed_boundary_conditions.json": 0, # was 5
+    "geometry/topology_map.json": 0,           # was 1: "0.1" vs the pinned "0.1.0"
+    "graph/feature_graph.json": 0,             # was 1: `model_kind` now declared
+    # What is left needs a DECISION, not a fill-in:
+    #
+    # manifest.json — the workbench records solver runs as a nested
+    # `simulation.runs.<id>` map while the schema declares each resource entry as
+    # a path string. Pinned by a test in test_package_manifest_upgrade.py.
     "manifest.json": 1,
-    "geometry/topology_map.json": 1,
-    "graph/feature_graph.json": 1,
+    # CAE — `maps_to.feature_id` holds the BC/load id rather than a feature-graph
+    # feature id. Three live readers correlate on that value, so changing its
+    # meaning is a design change with reader impact.
     "CAE": 2,
 }
 

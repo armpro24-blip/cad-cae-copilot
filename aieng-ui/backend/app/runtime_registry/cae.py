@@ -883,14 +883,28 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
              "dof_start": 1, "dof_end": 3, "value": 0}
             for i, fid in enumerate(fix_hit["face_ids"])
         ]
+        from aieng.simulation.cae_setup_writer import authored_setup_document
+
+        # Canonical mm-N-MPa-tonne up front. `_canonical_material` exists to
+        # translate the documented SI/flat form, and it leaves an already-
+        # canonical material untouched — writing the target form here means new
+        # packages carry one shape instead of two (#513).
+        from .. import simulation_runner as _sr
+
+        material_record = _sr._canonical_material(material_record)
+
+        # `authored_by`, not a `source_file`: these were written from engineering
+        # intent, never parsed from the synthesised source deck.
         patches: list[dict[str, Any]] = [
             {"action_type": "create_file", "path": "simulation/solver_settings.json",
              "content": solver_settings},
             {"action_type": "create_file", "path": "simulation/cae_imports/parsed_materials.json",
-             "content": {"materials": [material_record]}},
+             "content": authored_setup_document(
+                 "materials", [material_record], authored_by="cae.setup_static")},
             {"action_type": "create_file",
              "path": "simulation/cae_imports/parsed_boundary_conditions.json",
-             "content": {"boundary_conditions": boundary_conditions}},
+             "content": authored_setup_document(
+                 "boundary_conditions", boundary_conditions, authored_by="cae.setup_static")},
         ]
         loads: list[dict[str, Any]] = []
         if load_hit is not None:
@@ -903,7 +917,8 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             patches.append({
                 "action_type": "create_file",
                 "path": "simulation/cae_imports/parsed_loads.json",
-                "content": {"loads": loads},
+                "content": authored_setup_document(
+                    "loads", loads, authored_by="cae.setup_static"),
             })
 
         patch_result = _tool_cae_apply_setup_patch(

@@ -95,7 +95,14 @@
             "type": "object"
           },
           "parameter_source": {
-            "enum": ["mock", "ocp_extracted", "user_provided", "agent_defined", "cadquery_parametric", "converter_extracted"],
+            "enum": [
+              "mock",
+              "ocp_extracted",
+              "user_provided",
+              "agent_defined",
+              "cadquery_parametric",
+              "converter_extracted"
+            ],
             "description": "Origin of the parameter values: mock placeholder, OCP measurement, user correction, agent definition, an executable parametric CAD source, or a CAD/CAE converter that lifted parameters from the source document (Phase 20)."
           },
           "editable": {
@@ -126,7 +133,11 @@
             "description": "Human-readable explanation of why this feature is or is not executable for write-back."
           },
           "parameter_confidence": {
-            "enum": ["high", "medium", "low"],
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ],
             "description": "Confidence that the parameter values reflect real engineering intent."
           },
           "intent": {
@@ -229,7 +240,11 @@
             "type": "string"
           },
           "confidence": {
-            "enum": ["low", "medium", "high"]
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ]
           },
           "standard_part_metadata": {
             "type": "object",
@@ -277,7 +292,11 @@
                 "type": "boolean"
               },
               "hole_depth_kind": {
-                "enum": ["through", "blind", "unknown"]
+                "enum": [
+                  "through",
+                  "blind",
+                  "unknown"
+                ]
               },
               "counterbore": {
                 "type": "object",
@@ -291,7 +310,11 @@
                 "type": "object",
                 "properties": {
                   "status": {
-                    "enum": ["known", "unknown", "ambiguous"]
+                    "enum": [
+                      "known",
+                      "unknown",
+                      "ambiguous"
+                    ]
                   },
                   "thickness_mm": {
                     "type": "number"
@@ -327,6 +350,15 @@
       "type": "object",
       "description": "Recognition provenance, limitations, and non-authoritative metadata for feature candidates.",
       "additionalProperties": true
+    },
+    "model_kind": {
+      "$comment": "Which feature heuristics ran: `mechanical` applies the bolt-pattern and base-plate recognisers, `organic` skips them so a limb cylinder is not labelled a mounting hole. Documented in AGENTS.md and echoed back by cad.execute_build123d; the schema had simply not caught up (#513).",
+      "type": "string",
+      "enum": [
+        "auto",
+        "organic",
+        "mechanical"
+      ]
     }
   },
   "additionalProperties": false,
