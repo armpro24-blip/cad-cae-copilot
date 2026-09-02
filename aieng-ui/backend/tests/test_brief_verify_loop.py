@@ -186,5 +186,12 @@ def test_diagnose_is_ready_when_the_brief_is_met(project) -> None:
     _brief(project_id, rib_height=25)
 
     result = _tool("cad.diagnose", {"project_id": project_id})
+
+    assert result["verdict"] == "ready", result.get("blocking_issues")
+    assert result["blocking_issues"] == []
     assert result["snapshot"]["brief_targets"]["fail"] == 0
     assert "brief_targets_failing" not in result["triggers"]
+    # `high_risk` stays true for a multi-part model — that is a risk FLAG, not a
+    # blocker, and conflating the two would make `ready` unreachable for any
+    # assembly.
+    assert result["high_risk"] is True and result["triggers"] == ["multi_part"]
