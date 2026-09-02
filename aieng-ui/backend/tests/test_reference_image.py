@@ -216,6 +216,95 @@ class TestTheStatedContract:
         result = cad_generation.set_reference_image(settings, project_id, {"image_path": str(blob)})
         assert result["code"] == "image_too_large", result
 
+    @pytest.mark.parametrize("url", [
+        "  https://example.invalid/x.png  ",
+        "".join((chr(9), "https://example.invalid/x.png", chr(10))),
+    ])
+    def test_surrounding_whitespace_does_not_make_a_url_unsupported(
+        self, project, url: str
+    ) -> None:
+        """A `split(":")` scheme check rejected these; `urlsplit` + strip does not.
+
+        It must get PAST the scheme check — `example.invalid` then fails to
+        resolve, which is the honest answer for a host that does not exist.
+        """
+        settings, project_id = project
+        result = cad_generation.set_reference_image(settings, project_id, {"image_url": url})
+        assert result["code"] != "unsupported_scheme", result
+
+    @pytest.mark.parametrize("url,label", [
+        ("http://127.0.0.1:8000/x.png", "loopback"),
+        ("http://localhost:8000/x.png", "loopback by name"),
+        ("http://169.254.169.254/latest/meta-data/", "cloud metadata"),
+        ("http://10.0.0.1/x.png", "private"),
+        ("http://192.168.1.1/x.png", "private"),
+        ("http://[::1]/x.png", "loopback v6"),
+    ])
+    def test_a_non_public_destination_is_refused(self, project, url: str, label: str) -> None:
+        """The response body never reaches the caller — but the error code does.
+
+        `fetch_failed` vs `invalid_image` distinguishes a closed port from an
+        open one, which is a port-scanning oracle pointed at whatever the
+        backend can reach. Refusing before connecting removes it.
+        """
+        settings, project_id = project
+        result = cad_generation.set_reference_image(settings, project_id, {"image_url": url})
+        assert result["code"] == "blocked_address", f"{label}: {result}"
+
+    def test_a_redirect_to_a_blocked_address_is_refused(self, project) -> None:
+        """Checking only the URL the caller passed is the classic bypass.
+
+        Served over real HTTP from a loopback listener, which the URL check
+        itself would refuse — so the request is made through the opener the
+        fetch uses, with the first hop's guard satisfied by construction.
+        """
+        import http.server
+        import threading
+        import urllib.error
+        import urllib.request
+
+        class Redirector(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                self.send_response(302)
+                self.send_header("Location", "http://169.254.169.254/x.png")
+                self.end_headers()
+
+            def log_message(self, *_args):  # noqa: D102 - keep the test output clean
+                return
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Redirector)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            opener = urllib.request.build_opener(cad_generation._ReferenceRedirectGuard)
+            with pytest.raises(urllib.error.HTTPError) as excinfo:
+                opener.open(f"http://127.0.0.1:{server.server_port}/start", timeout=5)
+            assert "redirect refused" in str(excinfo.value)
+            assert "169.254.169.254" in str(excinfo.value)
+        finally:
+            server.shutdown()
+
+    @pytest.mark.filterwarnings("ignore::PIL.Image.DecompressionBombWarning")
+    def test_a_decompression_bomb_is_refused_before_it_is_decoded(
+        self, project, tmp_path: Path
+    ) -> None:
+        """The byte cap does not bound the decoded size.
+
+        A flat-colour PNG is a few hundred KB on disk and gigapixels in memory,
+        so it passes a 25 MB check and then allocates until something dies.
+        `Image.open` is lazy, so the dimensions are known before that happens.
+        """
+        settings, project_id = project
+        bomb = tmp_path / "bomb.png"
+        Image.new("L", (12000, 12000), 0).save(bomb, optimize=True)
+        assert bomb.stat().st_size < 25 * 1024 * 1024, "must pass the byte cap to be a real test"
+
+        result = cad_generation.set_reference_image(settings, project_id, {"image_path": str(bomb)})
+        assert result["code"] == "image_too_large", result
+        assert "MP" in result["message"], "say it was the pixel count, not the bytes"
+        # PIL warns at ~89 MP and raises at twice that; refusing at 80 MP means
+        # the caller gets this message rather than a generic `invalid_image`.
+        assert result["code"] != "invalid_image"
+
     @pytest.mark.parametrize("payload,code", [
         ({}, "missing_input"),
         ({"image_path": "definitely/not/here.png"}, "file_not_found"),
@@ -223,6 +312,14 @@ class TestTheStatedContract:
     def test_the_other_refusals_stay_specific(self, project, payload: dict, code: str) -> None:
         settings, project_id = project
         assert cad_generation.set_reference_image(settings, project_id, payload)["code"] == code
+
+    def test_a_directory_is_refused_as_not_a_file(self, project, tmp_path: Path) -> None:
+        """`exists()` is true for a directory, and for a FIFO that blocks forever."""
+        settings, project_id = project
+        folder = tmp_path / "a_folder"
+        folder.mkdir()
+        result = cad_generation.set_reference_image(settings, project_id, {"image_path": str(folder)})
+        assert result["code"] == "not_a_file", result
 
     def test_a_non_image_file_is_refused(self, project, tmp_path: Path) -> None:
         settings, project_id = project

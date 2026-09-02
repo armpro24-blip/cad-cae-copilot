@@ -21,6 +21,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.request
 import zipfile
 from collections import Counter
 from collections.abc import Callable, Iterator
@@ -8301,10 +8303,109 @@ def _read_reference_image_bytes(pkg_path: Path | None) -> bytes | None:
     return None
 
 
+class _ReferenceRedirectGuard(urllib.request.HTTPRedirectHandler):
+    """Re-check every redirect hop, not just the URL the caller passed.
+
+    Validating only the first host is the classic bypass: a public URL that
+    302s to `127.0.0.1` reaches it anyway.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001, D102
+        refusal = _reference_url_refusal(newurl)
+        if refusal is not None:
+            raise urllib.error.HTTPError(
+                newurl, code, f"redirect refused: {refusal['message']}", headers, fp
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _reference_url_refusal(image_url: str) -> dict[str, Any] | None:
+    """Why this URL may not be fetched, or None if it may.
+
+    `urlopen` also speaks file:// and ftp://, so without a scheme check the
+    parameter reads any local file the backend can — while its own docstring and
+    error message promise HTTP(S). A contract a tool states and does not enforce
+    is worse than no contract, and this one is reached from
+    `cad.search_reference_image`, whose URLs come from a web search.
+
+    The address check is the other half. The response body never reaches the
+    caller (it must decode as an image or the call fails), but the *error code*
+    does, and `fetch_failed` vs `invalid_image` distinguishes a closed port from
+    an open one — a port-scanning oracle aimed at whatever the backend can
+    reach. Refusing loopback / private / link-local destinations removes it,
+    including the cloud metadata address.
+    """
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(image_url)
+    if parts.scheme.lower() not in ("http", "https"):
+        return {
+            "status": "error",
+            "code": "unsupported_scheme",
+            "message": (
+                f"image_url must be http:// or https:// (got "
+                f"{parts.scheme + ':' if parts.scheme else 'no scheme'}). "
+                "Use image_path for a local file."
+            ),
+        }
+    if not parts.hostname:
+        return {
+            "status": "error",
+            "code": "unsupported_scheme",
+            "message": "image_url has no host. Use image_path for a local file.",
+        }
+    return _blocked_address_refusal(parts.hostname)
+
+
+def _blocked_address_refusal(hostname: str) -> dict[str, Any] | None:
+    """Refuse a host that resolves anywhere but the public internet.
+
+    Honest boundary: this resolves the name and checks the addresses it gets,
+    which does NOT close DNS rebinding — a name may resolve differently between
+    this check and the connection. It removes the straightforward cases (an
+    explicit `127.0.0.1`, `169.254.169.254`, an internal hostname) and is not a
+    substitute for network policy on a deployment that cares.
+    """
+    import ipaddress
+    import socket
+
+    try:
+        resolved = socket.getaddrinfo(hostname, None)
+    except OSError as exc:
+        return {
+            "status": "error",
+            "code": "fetch_failed",
+            "message": f"Could not resolve {hostname}: {exc}",
+        }
+
+    for _family, _type, _proto, _canon, sockaddr in resolved:
+        try:
+            address = ipaddress.ip_address(sockaddr[0])
+        except ValueError:  # pragma: no cover - getaddrinfo returned a non-IP
+            continue
+        if (address.is_private or address.is_loopback or address.is_link_local
+                or address.is_reserved or address.is_multicast
+                or address.is_unspecified):
+            return {
+                "status": "error",
+                "code": "blocked_address",
+                "message": (
+                    f"image_url resolves to {address}, which is not a public "
+                    "internet address. Use image_path for a file on this host."
+                ),
+            }
+    return None
+
+
 #: Cap on the bytes a reference image may occupy before decoding. Generous for
 #: a photo or drawing (the stored copy is downscaled to fit 800x800), and small
 #: enough that a mistyped URL cannot read an unbounded body into memory.
 _REFERENCE_IMAGE_MAX_BYTES = 25 * 1024 * 1024
+
+#: Cap on the DECODED size, which the byte cap does not bound: a highly
+#: compressible image is small on the wire and enormous in memory. 80 MP is far
+#: above any photo or drawing a reference would be.
+_REFERENCE_IMAGE_MAX_PIXELS = 80_000_000
 
 
 def set_reference_image(
@@ -8321,9 +8422,12 @@ def set_reference_image(
     will tile the reference in a rightmost column for visual comparison.
 
     Payload keys (exactly one of image_url / image_path is required):
-        image_url:   http:// or https:// URL to fetch (timeout 15s, 25 MB cap)
-        image_path:  local file path
+        image_url:   http:// or https:// URL to fetch, resolving to a public
+                     address (timeout 15s)
+        image_path:  local file path (a regular file)
         description: optional caption stored in reference.json
+
+    Either source is capped at 25 MB on the wire and 80 megapixels decoded.
     """
     from .project_io import get_project, resolve_project_path
 
@@ -8354,23 +8458,10 @@ def set_reference_image(
             ),
         }
     if image_url:
-        scheme = str(image_url).split(":", 1)[0].lower()
-        if scheme not in ("http", "https"):
-            # `urlopen` also speaks file:// and ftp://, so without this the
-            # parameter reads any local file the backend can — while its own
-            # docstring and error message promise HTTP(S). A contract a tool
-            # states and does not enforce is worse than no contract, and this
-            # one is reached from `cad.search_reference_image`, whose URLs come
-            # from a web search.
-            return {
-                "status": "error",
-                "code": "unsupported_scheme",
-                "message": (
-                    f"image_url must be http:// or https:// (got "
-                    f"{scheme + ':' if scheme else 'no scheme'}). "
-                    "Use image_path for a local file."
-                ),
-            }
+        image_url = str(image_url).strip()
+        refusal = _reference_url_refusal(image_url)
+        if refusal is not None:
+            return refusal
 
     # Fetch raw image bytes
     raw_bytes: bytes
@@ -8390,7 +8481,8 @@ def set_reference_image(
                     "Accept": "image/*",
                 },
             )
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            opener = urllib.request.build_opener(_ReferenceRedirectGuard)
+            with opener.open(req, timeout=15) as resp:
                 # Bounded read: the response is an arbitrary remote body, and
                 # the downscale that keeps the package small happens only AFTER
                 # decoding. `read(n + 1)` so an exactly-at-limit body still
@@ -8415,7 +8507,19 @@ def set_reference_image(
                     "code": "file_not_found",
                     "message": f"Local file not found: {image_path_str}",
                 }
-            if p.stat().st_size > _REFERENCE_IMAGE_MAX_BYTES:
+            if not p.is_file():
+                # A FIFO reports st_size 0 and then blocks forever on read; a
+                # directory raises something unhelpful. Neither is an image.
+                return {
+                    "status": "error",
+                    "code": "not_a_file",
+                    "message": f"Not a regular file: {image_path_str}",
+                }
+            # Bounded even though the size is checked below: stat and read are
+            # separate syscalls, and the file can grow between them.
+            with p.open("rb") as handle:
+                raw_bytes = handle.read(_REFERENCE_IMAGE_MAX_BYTES + 1)
+            if len(raw_bytes) > _REFERENCE_IMAGE_MAX_BYTES:
                 return {
                     "status": "error",
                     "code": "image_too_large",
@@ -8425,7 +8529,6 @@ def set_reference_image(
                         "Attach a smaller image, or downscale it first."
                     ),
                 }
-            raw_bytes = p.read_bytes()
             source_descriptor = f"path:{p.name}"
     except Exception as exc:
         return {
@@ -8439,7 +8542,23 @@ def set_reference_image(
         from PIL import Image
         import io as _io
 
-        img = Image.open(_io.BytesIO(raw_bytes)).convert("RGB")
+        img = Image.open(_io.BytesIO(raw_bytes))
+        pixels = img.size[0] * img.size[1]
+        if pixels > _REFERENCE_IMAGE_MAX_PIXELS:
+            # `Image.open` is lazy, so the dimensions are known before any
+            # allocation. The byte cap does not bound this: a 25 MB PNG of flat
+            # colour decodes to gigapixels.
+            return {
+                "status": "error",
+                "code": "image_too_large",
+                "message": (
+                    f"Reference image is {img.size[0]}x{img.size[1]} "
+                    f"({pixels / 1e6:.0f} MP), over the "
+                    f"{_REFERENCE_IMAGE_MAX_PIXELS // 10 ** 6} MP decode limit. "
+                    "Downscale it first."
+                ),
+            }
+        img = img.convert("RGB")
         max_dim = 800
         if max(img.size) > max_dim:
             img.thumbnail((max_dim, max_dim), Image.LANCZOS)

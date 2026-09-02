@@ -1002,20 +1002,22 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                 "type": "string",
                 "description": (
                     "http:// or https:// URL of a reference image "
-                    "(jpg/png/webp). Fetched server-side (25 MB cap), "
-                    "downscaled to fit 800x800, and stored as "
-                    "geometry/reference.png in the .aieng package. Other "
-                    "schemes are refused — use image_path for a local file. "
-                    "Pass exactly one of image_url / image_path."
+                    "(jpg/png/webp). Fetched server-side, downscaled to fit "
+                    "800x800, and stored as geometry/reference.png in the "
+                    ".aieng package. Other schemes are refused, as is a host "
+                    "that resolves to a loopback/private/link-local address — "
+                    "use image_path for a file on this host. Pass exactly one "
+                    "of image_url / image_path."
                 ),
             },
             "image_path": {
                 "type": "string",
                 "description": (
                     "Local file path to a reference image, when it is on the "
-                    "workbench host (e.g. /tmp/optimus_ref.jpg). 25 MB cap. "
-                    "Pass exactly one of image_url / image_path — giving both "
-                    "is refused rather than resolved by precedence."
+                    "workbench host (e.g. /tmp/optimus_ref.jpg). Pass exactly "
+                    "one of image_url / image_path — giving both is refused "
+                    "rather than resolved by precedence. Either source is "
+                    "capped at 25 MB and 80 megapixels."
                 ),
             },
             "description": {
