@@ -51,8 +51,14 @@ _OPS = {
 
 #: Fields that identify a node rather than dimension it. Setting one as a
 #: "parameter" would be inert at best and would break the target lookup at
-#: worst, so it is refused with a pointer at the operation that can.
-_IDENTITY_FIELDS = frozenset({"id", "type", "label"})
+#: worst, so it is refused with a pointer at the operation that can. `name` is
+#: in here because `_node_id` falls back to it when `id` is absent — rewriting
+#: it would move the target out from under the very patch doing the rewriting.
+_IDENTITY_FIELDS = frozenset({"id", "name", "type", "label"})
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 class PatchOpError(Exception):
@@ -148,8 +154,19 @@ def _apply_op(payload: dict[str, Any], op: dict[str, Any]) -> str:
                 "(writing it as a parameter would be inert)"
             )
         if name in node:
-            node[name] = op["value"]
-            return f"set {target}.{name} = {op['value']}"
+            current = node[name]
+            value = op["value"]
+            # Type-preserving, not schema validation: a dimension that is a
+            # number must stay one. Writing `thickness: "thick"` would be
+            # accepted here and fail much later, inside the compiler, with an
+            # error that no longer mentions the patch.
+            if _is_number(current) and not _is_number(value):
+                raise PatchOpError(
+                    f"'{name}' on node '{target}' is numeric ({current!r}); "
+                    f"refusing to set it to {value!r}"
+                )
+            node[name] = value
+            return f"set {target}.{name} = {value}"
         node.setdefault("parameters", {})
         if not isinstance(node["parameters"], dict):
             raise PatchOpError(f"node '{target}' parameters is not an object")
@@ -179,8 +196,12 @@ def _apply_op(payload: dict[str, Any], op: dict[str, Any]) -> str:
             new = [float(v) for v in op["value"]]
         elif "delta" in op:
             delta = op["delta"]
-            if not (isinstance(delta, (list, tuple)) and len(delta) >= dims):
-                raise PatchOpError(f"delta must have {dims} component(s) for this control point")
+            if not (isinstance(delta, (list, tuple)) and len(delta) == dims):
+                got = len(delta) if isinstance(delta, (list, tuple)) else "none"
+                raise PatchOpError(
+                    f"delta must have exactly {dims} component(s) for this control "
+                    f"point; got {got}"
+                )
             new = [float(current[k]) + float(delta[k]) for k in range(dims)]
         else:
             raise PatchOpError("move_control_point requires 'value' or 'delta'")

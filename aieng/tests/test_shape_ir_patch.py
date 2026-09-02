@@ -243,10 +243,46 @@ def test_move_control_point_works_in_the_points_own_dimension() -> None:
 
 
 def test_a_failed_operation_leaves_the_payload_untouched() -> None:
-    """Atomicity, on the real node shape."""
-    result = _patch([
+    """Atomicity, checked on the object actually passed in.
+
+    The first version asserted against the module-level fixture, which `_patch`
+    deep-copies — so it would have passed even if the input were mutated. A test
+    that cannot observe the thing it names proves nothing.
+    """
+    from aieng.converters.shape_ir_patch import apply_shape_ir_patch
+
+    payload = copy.deepcopy(_EXTRUDED_IR)
+    result = apply_shape_ir_patch(payload, {"format_version": "0.1", "operations": [
         {"op": "set_parameter", "target": "region_001", "parameter": "thickness", "value": 30.0},
         {"op": "remove_node", "target": "no_such_node"},
-    ])
+    ]})
+
     assert not result["ok"]
-    assert _EXTRUDED_IR["parts"][0]["thickness"] == 24.0
+    assert payload["parts"][0]["thickness"] == 24.0, "the input payload was mutated"
+
+
+def test_set_parameter_refuses_to_change_a_numeric_fields_type() -> None:
+    """Otherwise it fails later, inside the compiler, far from the patch."""
+    result = _patch([{"op": "set_parameter", "target": "region_001",
+                      "parameter": "thickness", "value": "thick"}])
+    assert not result["ok"]
+    assert "numeric" in json.dumps(result["failed"])
+
+
+def test_set_parameter_refuses_to_rewrite_the_name_it_is_targeted_by() -> None:
+    """`_node_id` falls back to `name`, so rewriting it moves the target."""
+    payload = {**_EXTRUDED_IR, "parts": [
+        {"name": "region_by_name", "type": "extruded_region", "thickness": 4.0,
+         "polygons": [[[0, 0], [1, 0], [1, 1]]]}]}
+    result = _patch([{"op": "set_parameter", "target": "region_by_name",
+                      "parameter": "name", "value": "renamed"}], payload)
+    assert not result["ok"]
+    assert "replace_node" in json.dumps(result["failed"])
+
+
+def test_a_delta_with_the_wrong_component_count_is_refused() -> None:
+    """`>=` silently ignored the extras — the mistake it should have caught."""
+    result = _patch([{"op": "move_control_point", "target": "region_001",
+                      "path": [0, 0], "delta": [1.0, 2.0, 3.0]}])
+    assert not result["ok"]
+    assert "exactly 2" in json.dumps(result["failed"])
