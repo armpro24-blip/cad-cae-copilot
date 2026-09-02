@@ -77,6 +77,44 @@ def build_manifest(model_id: str) -> Manifest:
     )
 
 
+#: Keys a legacy writer emitted that this format never declared. Dropped on
+#: upgrade because they are pure `additionalProperties` violations carrying no
+#: information — `schema_version` duplicated `format_version` and nothing read it.
+LEGACY_MANIFEST_KEYS = frozenset({"schema_version"})
+
+
+def _merge_resources(base: dict[str, Any], extra: Any) -> dict[str, Any]:
+    """Overlay a recorded resources tree onto the default skeleton."""
+    if not isinstance(extra, dict):
+        return base
+    for key, value in extra.items():
+        current = base.get(key)
+        if isinstance(current, dict) and isinstance(value, dict):
+            _merge_resources(current, value)
+        else:
+            base[key] = deepcopy(value)
+    return base
+
+
+def upgrade_manifest(manifest: dict[str, Any] | None, model_id: str) -> dict[str, Any]:
+    """Return a conforming manifest that keeps everything the input carried.
+
+    For packages written before the workbench used this module's
+    :func:`build_manifest` — their manifest was `{"schema_version": "0.1"}` plus
+    whatever `resources` later writers merged in, so it declared no `model_id`
+    and the AI summary writer reported them all as ``unknown_model``.
+
+    Deliberately additive: a field the input already declares WINS, so an
+    upgrade never renames a model or rewrites someone's `created_by` provenance,
+    and unknown extra keys (e.g. the CAD path's `geometry_execution` record) are
+    preserved rather than discarded to make a validator happy. Idempotent.
+    """
+    existing = {k: v for k, v in (manifest or {}).items() if k not in LEGACY_MANIFEST_KEYS}
+    canonical = build_manifest(model_id).to_dict()
+    resources = _merge_resources(canonical["resources"], existing.pop("resources", None))
+    return {**canonical, **existing, "resources": resources}
+
+
 def create_package(
     model_id: str,
     out: str | Path,

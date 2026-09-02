@@ -89,3 +89,6 @@ run-aieng-mcp.cmd
 
 # Local deep-research scratch dir (the canonical .md is tracked at aieng/docs/research/)
 deepresearch_result/
+
+# Local package backups (scripts/backfill_package_manifests.py --backup)
+.backup/
