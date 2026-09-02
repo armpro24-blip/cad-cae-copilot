@@ -155,3 +155,73 @@ def test_the_finalized_document_satisfies_the_packaged_schema() -> None:
 
     for method in (METHOD_POINTER, METHOD_INTENT, METHOD_AI):
         jsonschema.validate(_finalized(method), schema)
+
+
+def test_partially_mapped_keeps_a_real_confidence() -> None:
+    """`partially_mapped` + `confidence: "none"` is rejected by validate.py.
+
+    Something WAS bound, so "none" is both untrue and invalid — defaulting it
+    that way would make this finalizer produce a document the validator refuses.
+    """
+    doc = finalize_cae_mapping(
+        {"mappings": [{**_BC, "mapping_status": "partially_mapped"}]}, method=METHOD_POINTER
+    )
+    assert doc["mappings"][0]["confidence"] == "high"
+
+    for unbound in ("unmapped", "unresolved"):
+        entry = finalize_cae_mapping(
+            {"mappings": [{**_BC, "mapping_status": unbound}]}, method=METHOD_POINTER
+        )["mappings"][0]
+        assert entry["confidence"] == "none", unbound
+
+
+def test_a_malformed_mapping_is_passed_through_not_dropped() -> None:
+    """Discarding it would delete a binding to make a validator happy."""
+    doc = finalize_cae_mapping(
+        {"mappings": [dict(_BC), "not a mapping", None]}, method=METHOD_POINTER
+    )
+    assert len(doc["mappings"]) == 3, "nothing may vanish"
+    assert doc["mappings"][1] == "not a mapping"
+    assert doc["mappings"][2] is None
+
+    wrong_type = finalize_cae_mapping({"mappings": {"oops": True}}, method=METHOD_POINTER)
+    assert wrong_type["mappings"] == {"oops": True}, "left for the validator to report"
+
+    absent = finalize_cae_mapping({}, method=METHOD_POINTER)
+    assert absent["mappings"] == [], "a genuinely absent key gets the required default"
+
+
+def test_an_unknown_method_is_refused_at_the_call_site() -> None:
+    """A caller typo would otherwise surface as a schema failure three steps on."""
+    with pytest.raises(ValueError, match="unknown mapping_method"):
+        finalize_cae_mapping({"mappings": []}, method="resolved_from_vibes")
+
+
+def test_a_populated_maps_to_must_still_identify_something() -> None:
+    """The new descriptive fields must not weaken the identity requirement.
+
+    `minProperties: 1` alone would let `{"description": "top face"}` satisfy the
+    schema while validate.py rejects it for carrying neither `feature_id` nor
+    `interface_id` — adding optional fields quietly loosened a real constraint.
+    """
+    jsonschema = pytest.importorskip("jsonschema")
+
+    schema_path = (
+        Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "cae_mapping.schema.json"
+    )
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+
+    described_only = finalize_cae_mapping(
+        {"mappings": [{"cae_entity": "X", "face_ids": ["f1"],
+                       "maps_to": {"description": "top face"}}]},
+        method=METHOD_POINTER,
+    )
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(described_only, schema)
+
+    identified = finalize_cae_mapping(
+        {"mappings": [{"cae_entity": "X", "face_ids": ["f1"],
+                       "maps_to": {"description": "top face", "feature_id": "feat_1"}}]},
+        method=METHOD_POINTER,
+    )
+    jsonschema.validate(identified, schema)

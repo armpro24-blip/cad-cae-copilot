@@ -108,7 +108,19 @@
                   }
                 },
                 "additionalProperties": false,
-                "minProperties": 1
+                "anyOf": [
+                  {
+                    "required": [
+                      "feature_id"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "interface_id"
+                    ]
+                  }
+                ],
+                "$comment": "The descriptive fields are optional, but a populated maps_to must still identify WHAT it maps to: `minProperties` alone would let `{\"description\": \"top face\"}` through, which validate.py then rejects."
               }
             ]
           },

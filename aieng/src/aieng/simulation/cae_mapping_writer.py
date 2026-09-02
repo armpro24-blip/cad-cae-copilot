@@ -40,7 +40,17 @@ _METHOD_CONFIDENCE = {
     METHOD_AI: "medium",
 }
 
+#: Every method this writer will stamp. A caller typo would otherwise reach the
+#: artifact and be reported as a schema failure three steps later.
+_KNOWN_METHODS = frozenset({METHOD_POINTER, METHOD_INTENT, METHOD_AI, METHOD_USER,
+                            "not_inferred_phase_10a"})
+
 _VALID_CONFIDENCE = {"none", "low", "medium", "high"}
+#: Statuses for which "we bound nothing" is the truthful confidence. NOT
+#: `partially_mapped`: something WAS bound, and `validate.py` rejects that
+#: combination outright — so defaulting it to "none" would make this finalizer
+#: produce a document the validator refuses.
+_UNBOUND_STATUSES = {"unmapped", "unresolved"}
 _ROLE_TO_TYPE = {
     "fixed_support": "boundary_condition_target",
     "load_application": "load_target",
@@ -82,7 +92,7 @@ def finalize_mapping_entry(mapping: dict[str, Any], *, method: str) -> dict[str,
     else:
         entry["confidence"] = (
             "none"
-            if entry["mapping_status"] != "mapped"
+            if entry["mapping_status"] in _UNBOUND_STATUSES
             else _METHOD_CONFIDENCE.get(str(entry.get("mapping_method")), "medium")
         )
     return entry
@@ -102,15 +112,29 @@ def finalize_cae_mapping(
     non-empty per the schema, which suits: the note records what produced the
     mapping.
     """
+    if method not in _KNOWN_METHODS:
+        raise ValueError(
+            f"unknown mapping_method {method!r}; expected one of {sorted(_KNOWN_METHODS)}"
+        )
     doc = {k: v for k, v in (document or {}).items() if k not in _DROP_KEYS}
     doc["format"] = CAE_MAPPING_FORMAT
     doc["format_version"] = CAE_MAPPING_FORMAT_VERSION
     doc["source_files"] = list(source_files if source_files is not None else doc.get("source_files") or [])
 
     mappings = doc.get("mappings")
-    doc["mappings"] = [
-        finalize_mapping_entry(m, method=method) for m in mappings if isinstance(m, dict)
-    ] if isinstance(mappings, list) else []
+    if isinstance(mappings, list):
+        # A malformed entry is PASSED THROUGH, not dropped. Silently discarding
+        # it would delete a load or boundary-condition binding to make a
+        # validator happy — a helper that fills fields in must never be the
+        # thing that loses one.
+        doc["mappings"] = [
+            finalize_mapping_entry(m, method=method) if isinstance(m, dict) else m
+            for m in mappings
+        ]
+    elif mappings is None:
+        doc["mappings"] = []  # genuinely absent; the schema requires the key
+    # else: present but the wrong type — left exactly as it is, for the
+    # validator to report. Coercing it would hide whatever the writer meant.
 
     notes = [n for n in (doc.get("notes") or []) if isinstance(n, str) and n.strip()]
     if not notes:
