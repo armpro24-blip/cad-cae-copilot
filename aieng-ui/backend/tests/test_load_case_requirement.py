@@ -19,7 +19,6 @@ and runs in the `Real CCX Verification` lane.
 
 from __future__ import annotations
 
-import json
 import zipfile
 from pathlib import Path
 
@@ -89,19 +88,25 @@ def _project(settings, label: str, *, with_geometry: bool = True) -> str:
     return project_id
 
 
-def _members(settings, project_id: str, names=_SETUP_MEMBERS) -> dict:
+def _members(settings, project_id: str, names=_SETUP_MEMBERS) -> dict[str, bytes]:
+    """Raw member bytes.
+
+    Comparing parsed values would let two different serialisations of the same
+    setup pass a test whose whole claim is that the bytes match — and they do,
+    measured across all four members.
+    """
     package = project_dir(settings, project_id) / f"{project_id}.aieng"
-    out: dict[str, object] = {}
+    out: dict[str, bytes] = {}
     with zipfile.ZipFile(package) as zf:
         present = set(zf.namelist())
         for member in names:
             if member in present:
-                out[member] = json.loads(zf.read(member))
+                out[member] = zf.read(member)
     return out
 
 
 def test_authoring_records_which_face_it_resolved_and_how_sure_it_is(workbench) -> None:
-    """"Checked when written" is only worth something if the check is recorded."""
+    """A "checked when written" claim is worth nothing unless the check is recorded."""
     project_id = _project(workbench, "resolved")
 
     result = _tool("cae.author_load_case", {

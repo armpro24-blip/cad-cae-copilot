@@ -64,6 +64,10 @@ concurrency:
 
 jobs:
   real-ccx:
+    # Least privilege: this job checks out pull-request code and runs pytest, so
+    # the persisted GITHUB_TOKEN must not be able to write repository resources.
+    permissions:
+      contents: read
     name: Real CalculiX V&V gate
     runs-on: ubuntu-latest
     env:
