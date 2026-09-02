@@ -85,7 +85,7 @@
     }
   },
   "additionalProperties": false,
-  "$comment": "The document must declare WHERE its content came from, one way or the other: `parser` + `source_file` for a deck that was parsed, or `authored_by` for a setup the workbench wrote itself. Neither is optional, and an authored setup must not claim a `source_file` it never read \u2014 the synthesised source_solver_deck.inp supplies the mesh, not these loads. See #513.",
+  "$comment": "The document must declare WHERE its content came from: `parser` + `source_file` for a deck that was parsed, `authored_by` for a setup the workbench wrote itself, or BOTH when a parsed deck was later edited by the authoring path \u2014 which is why this is anyOf rather than oneOf. What it may not do is declare neither, and an authored setup must not claim a `source_file` it never read: the synthesised source_solver_deck.inp supplies the mesh, not these loads. See #513.",
   "anyOf": [
     {
       "required": [
