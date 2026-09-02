@@ -81,58 +81,68 @@ def _failures_by_member(package: Path) -> Counter[str]:
     return counts
 
 
+_WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _settings(tmp_path: Path):
+    """Explicit settings, then `create_app` — the pattern the other backend tests use.
+
+    Not `AIENG_PLATFORM_DATA`: the tool handlers close over the settings they
+    were REGISTERED with, so setting the env var only works when this module
+    happens to trigger the import that builds the app. Run alongside any test
+    that already built one and every `invoke_tool` here resolves against that
+    test's data root instead — which is how this file passed alone and errored
+    in the full suite.
+    """
+    from app.config import Settings
+
+    workspace = tmp_path / "workspace"
+    return Settings(
+        platform_root=tmp_path / "platform",
+        workspace_root=workspace,
+        data_root=tmp_path / "data",
+        aieng_root=_WORKSPACE_ROOT / "aieng",
+        sample_step=workspace / "sample.step",
+    )
+
+
 @pytest.fixture(scope="module")
 def built_package(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """A package produced by the real CAD + CAE authoring path."""
-    import os
+    from app import cad_generation, runtime
+    from app.app_factory import create_app
+    from app.main import default_project, save_project
 
-    data_root = tmp_path_factory.mktemp("conformance") / "data"
-    project_id = "aa11bb22cc33"
-    project_dir = data_root / "projects" / project_id
-    project_dir.mkdir(parents=True)
-    (project_dir / "metadata.json").write_text(
-        json.dumps({"id": project_id, "name": "conformance", "status": "empty",
-                    "aieng_file": None}),
-        encoding="utf-8",
+    settings = _settings(tmp_path_factory.mktemp("conformance"))
+    create_app(settings)  # rebinds the runtime tool registry to these settings
+    project_id = save_project(settings, default_project("conformance"))["id"]
+
+    built = cad_generation.execute_build123d_code(
+        settings, project_id, {"code": _CODE, "timeout": 180}
     )
+    assert built.get("status") == "ok", built
+    runtime.invoke_tool("cae.setup_static", {
+        "project_id": project_id,
+        "material": "Al6061-T6",
+        "fix": "bottom",
+        "load": {"at": "top", "force_n": 500, "direction": "-Z"},
+    })
+    # Best effort: the mesh + deck stages need the optional mesh stack, and they
+    # are what write `simulation/cae_mapping.json`. Where they run, the ratchet
+    # covers that member too; where they cannot, the presence check below leaves
+    # it out instead of reading "fixed".
+    for tool, payload in (
+        ("cae.generate_mesh", {"project_id": project_id, "mesh_size_mm": 8}),
+        ("cae.generate_solver_input", {"project_id": project_id}),
+    ):
+        try:
+            runtime.invoke_tool(tool, payload)
+        except Exception:  # noqa: BLE001 - optional stage, absence is not failure
+            break
 
-    previous = os.environ.get("AIENG_PLATFORM_DATA")
-    os.environ["AIENG_PLATFORM_DATA"] = str(data_root)
-    try:
-        from app import main as app_main  # noqa: F401  (registers the tools)
-        from app import cad_generation, runtime
-        from app.config import Settings
+    from app.project_io import project_dir
 
-        settings = Settings.from_env()
-        built = cad_generation.execute_build123d_code(
-            settings, project_id, {"code": _CODE, "timeout": 180}
-        )
-        assert built.get("status") == "ok", built
-        runtime.invoke_tool("cae.setup_static", {
-            "project_id": project_id,
-            "material": "Al6061-T6",
-            "fix": "bottom",
-            "load": {"at": "top", "force_n": 500, "direction": "-Z"},
-        })
-        # Best effort: the mesh + deck stages need the optional mesh stack, and
-        # they are what write `simulation/cae_mapping.json`. Where they run, the
-        # ratchet covers that member too; where they cannot, the presence check
-        # below simply leaves it out instead of reading "fixed".
-        for tool, payload in (
-            ("cae.generate_mesh", {"project_id": project_id, "mesh_size_mm": 8}),
-            ("cae.generate_solver_input", {"project_id": project_id}),
-        ):
-            try:
-                runtime.invoke_tool(tool, payload)
-            except Exception:  # noqa: BLE001 - optional stage, absence is not failure
-                break
-    finally:
-        if previous is None:
-            os.environ.pop("AIENG_PLATFORM_DATA", None)
-        else:
-            os.environ["AIENG_PLATFORM_DATA"] = previous
-
-    package = project_dir / f"{project_id}.aieng"
+    package = project_dir(settings, project_id) / f"{project_id}.aieng"
     assert package.exists()
     return package
 
