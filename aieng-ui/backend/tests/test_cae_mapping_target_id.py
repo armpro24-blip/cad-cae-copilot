@@ -111,10 +111,16 @@ class TestTheAccessor:
 
 # ── the validator side ───────────────────────────────────────────────────────
 
-def _package(tmp_path: Path, maps_to: dict) -> Path:
+_DEFAULT_BCS = [{"id": "bc_001", "target": "BC_001", "type": "fixed",
+                 "dof_start": 1, "dof_end": 3, "value": 0}]
+
+
+def _package(tmp_path: Path, maps_to: dict, boundary_conditions: list | None = None) -> Path:
     """The smallest package that reaches the CAE-mapping semantics check."""
     import zipfile
 
+    if boundary_conditions is None:
+        boundary_conditions = _DEFAULT_BCS
     package = tmp_path / "m.aieng"
     members = {
         "manifest.json": {
@@ -124,8 +130,7 @@ def _package(tmp_path: Path, maps_to: dict) -> Path:
         },
         "simulation/cae_imports/parsed_boundary_conditions.json": {
             "format": "aieng.parsed_cae_boundary_conditions", "format_version": "0.1.0",
-            "boundary_conditions": [{"id": "bc_001", "target": "BC_001", "type": "fixed",
-                                     "dof_start": 1, "dof_end": 3, "value": 0}],
+            "boundary_conditions": boundary_conditions,
         },
         "simulation/cae_mapping.json": {
             "format": "aieng.cae_mapping", "format_version": "0.1.0",
@@ -171,6 +176,41 @@ def test_a_dangling_feature_reference_is_still_caught(tmp_path: Path) -> None:
     """The fallback excuses a known CAE target, not any unknown feature."""
     package = _package(tmp_path, {"feature_id": "not_a_feature", "role": "fixed_support"})
     assert any("unknown feature_id not_a_feature" in text for text in _cae_failures(package))
+
+
+def test_a_package_that_declares_no_bcs_or_loads_still_fails(tmp_path: Path) -> None:
+    """A reference check must not switch itself off when there is nothing to check.
+
+    The first version guarded the comparison with `and cae_target_ids`, so a
+    package carrying a mapping but no boundary conditions and no loads accepted
+    ANY target id. That is the `by-construction` shape: a rule unfireable for a
+    whole class of input. An empty set means the mapping is dangling — which is
+    precisely what the rule is for.
+    """
+    package = _package(
+        tmp_path,
+        {"cae_target_id": "bc_001", "role": "fixed_support"},
+        boundary_conditions=[],
+    )
+    assert any("unknown cae_target_id bc_001" in text for text in _cae_failures(package))
+
+
+def test_the_selection_key_a_producer_uses_is_a_valid_target(tmp_path: Path) -> None:
+    """The two producers name the same entity differently, and both are right.
+
+    `normalize_cae_bindings` writes the record `id`; AI preprocessing writes the
+    selection key it also stores as the item's `target_feature` — the value every
+    consumer joins on. Accepting only `id` would reject every AI-preprocessed
+    package, which is the coin-toss this test pins down.
+    """
+    package = _package(
+        tmp_path,
+        {"cae_target_id": "face_bottom_group", "role": "fixed_support"},
+        boundary_conditions=[{"id": "bc_001", "target_feature": "face_bottom_group",
+                              "target": "BC_001", "type": "fixed",
+                              "dof_start": 1, "dof_end": 3, "value": 0}],
+    )
+    assert _cae_failures(package) == []
 
 
 def test_maps_to_must_still_identify_something(tmp_path: Path) -> None:

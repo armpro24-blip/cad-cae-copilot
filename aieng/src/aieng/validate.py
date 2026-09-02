@@ -2584,14 +2584,27 @@ def _validate_parsed_cae_loads_semantics(parsed_loads: Any) -> list[ValidationMe
     return messages
 
 
+#: How a boundary condition or load names itself. Both are legitimate values for
+#: `maps_to.cae_target_id`, because the two producers pick different ones and
+#: each is self-consistent: `normalize_cae_bindings` writes the record `id`,
+#: while AI preprocessing writes the selection key it also stores as
+#: `target_feature` — which is what every consumer joins on. Accepting one and
+#: not the other would fail whichever path lost the coin toss.
+_CAE_TARGET_ID_KEYS = ("id", "target_feature")
+
+
 def _cae_target_ids(*documents_and_keys: tuple[Any, str]) -> set[str]:
-    """Ids of the boundary conditions / loads a mapping may serve."""
+    """Every name by which a boundary condition or load can be addressed."""
     ids: set[str] = set()
     for document, key in documents_and_keys:
         items = document.get(key) if isinstance(document, dict) else None
         for item in items if isinstance(items, list) else []:
-            if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"]:
-                ids.add(item["id"])
+            if not isinstance(item, dict):
+                continue
+            for id_key in _CAE_TARGET_ID_KEYS:
+                value = item.get(id_key)
+                if isinstance(value, str) and value:
+                    ids.add(value)
     return ids
 
 
@@ -2673,7 +2686,12 @@ def _validate_cae_mapping_semantics(
 
         if isinstance(maps_to, dict):
             target_id = maps_to.get("cae_target_id")
-            if isinstance(target_id, str) and cae_target_ids and target_id not in cae_target_ids:
+            # No truthiness guard on `cae_target_ids`: an empty set means the
+            # package declares no boundary condition or load at all, so a
+            # mapping claiming to serve one is dangling — exactly the case a
+            # reference check exists for. Skipping it there would make the rule
+            # unfireable for a whole class of package.
+            if isinstance(target_id, str) and target_id not in cae_target_ids:
                 messages.append(
                     ValidationMessage(
                         Level.FAIL,
@@ -2711,8 +2729,8 @@ def _validate_cae_mapping_semantics(
                 messages.append(
                     ValidationMessage(
                         Level.FAIL,
-                        f"CAE mapping at index {index} maps_to must include "
-                        "cae_target_id, feature_id and/or interface_id",
+                        f"CAE mapping at index {index} maps_to must include at "
+                        "least one of cae_target_id, feature_id, interface_id",
                     )
                 )
 
