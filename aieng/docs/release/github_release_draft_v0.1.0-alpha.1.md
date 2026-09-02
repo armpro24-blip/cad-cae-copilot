@@ -94,9 +94,11 @@ Repository test status at tag time:
   is present in a legacy package. These code paths are quarantined: no alpha
   CLI or MCP surface exposes them, and no evidence import advances claim
   state. They will be retired in a follow-up alpha.
-- The package ships `aieng/src/aieng/schemas/claim_map.schema.json` for backwards
-  compatibility with packages already containing a `claim_map.json`. It is
-  not promoted as part of the alpha contract.
+- **Correction (#517):** this draft originally said the package ships
+  `claim_map.schema.json` for backwards compatibility. It never did — the file
+  lived only in the duplicate repo-root schema tree, which was never packaged,
+  and the runbook's wheel check has always asserted `claim_map shipped: False`.
+  The tree was removed in #517 and the file deleted with it.
 - Benchmark fixtures under `benchmark_runs/` still contain
   `results/claim_map.json` files. They are evaluator fixtures and are
   outside the release contract.
@@ -113,8 +115,9 @@ follow-up alpha:
 - Retire dormant claim-map reads in `completeness_writer.py`,
   `evidence_report_writer.py`, `validate.py`,
   `simulation/mesh_handoff_writer.py`, and `ai/summary_writer.py`.
-- Move `claim_map.schema.json` out of the packaged schemas once the dormant
-  reads are gone.
+- ~~Move `claim_map.schema.json` out of the packaged schemas once the dormant
+  reads are gone.~~ Resolved differently in #517: it was never in the packaged
+  schemas, and the unpackaged copy was deleted with the duplicate tree.
 - Clean claim-map references from `benchmark_runs/` fixtures or move them
   behind an explicit legacy-compat marker.
 - Tighten the public API surface around the pure semantics modules and add

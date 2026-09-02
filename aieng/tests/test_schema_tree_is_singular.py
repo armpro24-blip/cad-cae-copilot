@@ -91,13 +91,30 @@ def test_no_module_resolves_a_schema_directory_outside_the_package() -> None:
     )
 
 
+#: Trees whose docs describe something other than the current product: `legacy`
+#: and `archive` are preserved-as-was by AGENTS.md, `benchmark_runs` holds
+#: evaluator fixtures, and the rest is build output or vendored code.
+_UNSCANNED_DOC_DIRS = frozenset({
+    "legacy", "archive", "benchmark_runs",
+    "node_modules", ".venv", "venv", ".git", "dist", "build",
+})
+
+
 def test_no_document_points_readers_at_the_removed_tree() -> None:
-    """Docs here are a contract an agent acts on."""
+    """Docs here are a contract an agent acts on.
+
+    Scanned repo-wide, not just `docs/`: the two files this cleanup had to fix
+    outside `aieng/docs` were `aieng-ui/README.md` and
+    `aieng-ui/backend/MCP_SETUP.md`, so a guard watching only the doc
+    directories would have missed exactly the citations that were wrong.
+    """
     stale = re.compile(r"(?<!src/)aieng/schemas/")
     offenders: list[str] = []
-    for doc in list(_REPO.glob("*.md")) + list((_REPO / "docs").glob("**/*.md")) + \
-            list((_AIENG / "docs").glob("**/*.md")):
-        for number, line in enumerate(doc.read_text(encoding="utf-8").splitlines(), 1):
+    for doc in _REPO.rglob("*.md"):
+        if _UNSCANNED_DOC_DIRS & set(doc.relative_to(_REPO).parts):
+            continue
+        text = doc.read_text(encoding="utf-8", errors="replace")
+        for number, line in enumerate(text.splitlines(), 1):
             if stale.search(line):
                 offenders.append(f"{doc.relative_to(_REPO)}:{number}")
     assert offenders == [], (
