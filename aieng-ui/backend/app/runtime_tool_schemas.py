@@ -1399,8 +1399,10 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "description": (
             "Author the pre-code CAD brief + validation-target list (#290): declare units, "
             "model type, parts, and key dimensions BEFORE cad.execute_build123d. Stored as a "
-            "project sidecar; auto-derives validation_targets (named_part_present, part_count, "
-            "overall_size, part_size, no_floating_parts) that cad.validate_targets then checks "
+            "project sidecar; auto-derives validation_targets from what you declare — "
+            "named_part_present and part_count always, part_size/overall_size from the "
+            "sizes you give, and no_floating_parts for any multi-body model that is not "
+            "organic — that cad.validate_targets then checks "
             "the built model against — closing the plan→build→verify loop. A brief is a plan, "
             "not a guarantee."
         ),

@@ -47,3 +47,36 @@ def test_brief_dedupes_derived_and_explicit() -> None:
     })
     n = sum(1 for t in b["validation_targets"] if t["kind"] == "named_part_present" and t.get("part") == "a")
     assert n == 1  # derived + explicit collapse to one
+
+
+def test_a_single_part_with_two_bodies_still_gets_the_floating_check() -> None:
+    """The shape the rule used to skip — and the one where it is certain.
+
+    A `single_part` whose bodies are detached is broken geometry; AGENTS.md
+    calls a floating part "usually a coordinate typo". The derivation only ran
+    for `assembly`/`product`, i.e. the case where parts can legitimately sit
+    apart, bolted with clearance. The existing test above pins the assembly
+    case, which is exactly the input shape that cannot expose this.
+    """
+    brief = normalize_cad_brief({
+        "request": "CNC bracket", "units": "mm", "model_type": "single_part",
+        "parts": [{"name": "base_plate"}, {"name": "rib_main"}],
+    })
+    assert any(t["kind"] == "no_floating_parts" for t in brief["validation_targets"])
+
+
+def test_a_single_body_model_gets_no_floating_check() -> None:
+    """With one part there is nothing for it to float away from."""
+    brief = normalize_cad_brief({
+        "request": "a plate", "units": "mm", "parts": [{"name": "plate"}],
+    })
+    assert not any(t["kind"] == "no_floating_parts" for t in brief["validation_targets"])
+
+
+def test_an_organic_model_is_the_one_exception() -> None:
+    """A detached body may be intended there — a prop, a hovering element."""
+    brief = normalize_cad_brief({
+        "request": "a character", "units": "mm", "model_type": "organic",
+        "parts": [{"name": "torso"}, {"name": "cape"}],
+    })
+    assert not any(t["kind"] == "no_floating_parts" for t in brief["validation_targets"])

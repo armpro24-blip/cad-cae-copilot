@@ -82,7 +82,16 @@ def normalize_cad_brief(raw: dict[str, Any]) -> dict[str, Any]:
     for p in parts:
         if p.get("size_mm"):
             targets.append({"kind": "part_size", "part": p["name"], "size_mm": p["size_mm"], "tolerance_mm": tol})
-    if model_type in {"assembly", "product"} and len(parts) >= 2:
+    # Every multi-body model except an organic one. The condition used to be
+    # `assembly`/`product` only, which skipped exactly the case where the finding
+    # is CERTAIN: a `single_part` whose bodies are detached is broken geometry —
+    # AGENTS.md calls a floating part "usually a coordinate typo" — while an
+    # assembly's parts can legitimately sit apart, bolted with clearance. The
+    # rule was applied to the debatable case and withheld from the hard error.
+    #
+    # `organic` is the one genuine exception: a detached body there may be
+    # intended (a separate prop, a hovering element).
+    if len(parts) >= 2 and model_type != "organic":
         targets.append({"kind": "no_floating_parts"})
 
     # explicit targets the agent passed (validated against the known kinds)
