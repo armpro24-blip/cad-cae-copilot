@@ -20,6 +20,12 @@ on:
       - "aieng-ui/backend/app/simulation_runner.py"
       - "aieng-ui/backend/tests/test_cae_solve_integration.py"
       - "aieng-ui/backend/tests/test_simulation_runner.py"
+      # Package conformance (#513) rides this lane because it is the only one
+      # with the real CAD + mesh stack installed. Either side of the
+      # writer/schema disagreement can move its numbers, so both trigger it.
+      - "aieng/schemas/**"
+      - "aieng-ui/backend/app/cad_generation.py"
+      - "aieng-ui/backend/tests/test_package_conformance_ratchet.py"
   push:
     branches: [main]
     paths:
@@ -37,6 +43,12 @@ on:
       - "aieng-ui/backend/app/simulation_runner.py"
       - "aieng-ui/backend/tests/test_cae_solve_integration.py"
       - "aieng-ui/backend/tests/test_simulation_runner.py"
+      # Package conformance (#513) rides this lane because it is the only one
+      # with the real CAD + mesh stack installed. Either side of the
+      # writer/schema disagreement can move its numbers, so both trigger it.
+      - "aieng/schemas/**"
+      - "aieng-ui/backend/app/cad_generation.py"
+      - "aieng-ui/backend/tests/test_package_conformance_ratchet.py"
 
 # Candidate required gate (originally #373, now closed). It auto-runs for
 # solver/V&V path changes and remains manually runnable for release
@@ -90,3 +102,11 @@ jobs:
 
       - name: Run real-ccx verification gate
         run: python scripts/run_real_ccx_verification_gate.py
+
+      # The ordinary CI lanes have no CAD/mesh stack, so this test skips itself
+      # there — a guard that never runs in CI is the defect it exists to catch.
+      # `!cancelled()` so it reports independently of the numerics gate.
+      - name: Package conformance ratchet
+        if: ${{ !cancelled() }}
+        run: |
+          pytest aieng-ui/backend/tests/test_package_conformance_ratchet.py -q -rs

@@ -1605,7 +1605,7 @@ still answers health, so real work is never cut short.
 The backend manages all package I/O; never read it directly. Structure:
 ```
 <project_id>.aieng   (ZIP)
-├── metadata.json            project name, status, timestamps
+├── manifest.json            format identity: model_id, format_version, units, resources, created_by (built by `aieng.package.build_manifest`; `metadata.json` — project name/status/timestamps — lives in the project DIRECTORY, not in the package)
 ├── geometry/                source.py, sdf_source.py / manifold_source.py, shape_ir.json, generated.step, preview.stl/.glb, topology_map.json
 ├── graph/                   aag.json, feature_graph.json, interface_graph.json, brep_graph.json
 ├── state/                   revalidation_status.json (stale-artifact flags)

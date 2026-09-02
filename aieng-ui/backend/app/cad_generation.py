@@ -40,6 +40,7 @@ from aieng.converters.critique_engine import (
     critique_geometry,
     is_named_part_feature as _is_named_part_feature,
 )
+from aieng.package import build_manifest as _build_aieng_manifest
 
 LOGGER = logging.getLogger(__name__)
 
@@ -5671,6 +5672,22 @@ def _execute_build123d_code_streaming(
 
 # ── package write ──────────────────────────────────────────────────────────────
 
+
+def _new_package_manifest(pkg_path: Path) -> bytes:
+    """The manifest a NEW .aieng package starts with.
+
+    Built by the format library rather than hand-rolled here. The hand-rolled
+    version was `{"schema_version": "0.1"}` — which the format's own schema
+    rejects twice over: it omits `model_id`, `format_version`, `units` and
+    `created_by`, and `schema_version` is not a declared property at all. Every
+    package the agent CAD path produced therefore failed `aieng.validate`, and
+    the library's own AI summary writer reported each one as `unknown_model`
+    (#513).
+    """
+    manifest = _build_aieng_manifest(pkg_path.stem).to_dict()
+    return (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
 def _write_cad_artifacts(
     pkg_path: Path,
     step_bytes: bytes,
@@ -5769,7 +5786,7 @@ def _write_cad_artifacts(
             raise
     else:
         with zipfile.ZipFile(pkg_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("manifest.json", json.dumps({"schema_version": "0.1"}))
+            zf.writestr("manifest.json", _new_package_manifest(pkg_path))
             for name, data in artifacts.items():
                 zf.writestr(name, data)
 
@@ -8384,7 +8401,7 @@ def set_reference_image(
             raise
     else:
         with zipfile.ZipFile(pkg_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("manifest.json", json.dumps({"schema_version": "0.1"}))
+            zf.writestr("manifest.json", _new_package_manifest(pkg_path))
             for name, data in artifacts.items():
                 zf.writestr(name, data)
 
