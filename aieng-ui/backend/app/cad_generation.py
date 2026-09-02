@@ -8301,6 +8301,12 @@ def _read_reference_image_bytes(pkg_path: Path | None) -> bytes | None:
     return None
 
 
+#: Cap on the bytes a reference image may occupy before decoding. Generous for
+#: a photo or drawing (the stored copy is downscaled to fit 800x800), and small
+#: enough that a mistyped URL cannot read an unbounded body into memory.
+_REFERENCE_IMAGE_MAX_BYTES = 25 * 1024 * 1024
+
+
 def set_reference_image(
     settings: Any,
     project_id: str,
@@ -8314,8 +8320,8 @@ def set_reference_image(
     project's .aieng package. Subsequent cad.execute_build123d thumbnails
     will tile the reference in a rightmost column for visual comparison.
 
-    Payload keys (one of image_url / image_path is required):
-        image_url:   HTTP(S) URL to fetch (timeout 15s)
+    Payload keys (exactly one of image_url / image_path is required):
+        image_url:   http:// or https:// URL to fetch (timeout 15s, 25 MB cap)
         image_path:  local file path
         description: optional caption stored in reference.json
     """
@@ -8336,6 +8342,35 @@ def set_reference_image(
             "code": "missing_input",
             "message": "Provide either image_url (HTTP/HTTPS) or image_path (local file).",
         }
+    if image_url and image_path_str:
+        # Refuse rather than pick. Silently preferring the URL discarded a
+        # perfectly good local path and reported a DNS failure for it.
+        return {
+            "status": "error",
+            "code": "ambiguous_input",
+            "message": (
+                "Provide image_url OR image_path, not both — it is not clear "
+                "which one you meant to attach."
+            ),
+        }
+    if image_url:
+        scheme = str(image_url).split(":", 1)[0].lower()
+        if scheme not in ("http", "https"):
+            # `urlopen` also speaks file:// and ftp://, so without this the
+            # parameter reads any local file the backend can — while its own
+            # docstring and error message promise HTTP(S). A contract a tool
+            # states and does not enforce is worse than no contract, and this
+            # one is reached from `cad.search_reference_image`, whose URLs come
+            # from a web search.
+            return {
+                "status": "error",
+                "code": "unsupported_scheme",
+                "message": (
+                    f"image_url must be http:// or https:// (got "
+                    f"{scheme + ':' if scheme else 'no scheme'}). "
+                    "Use image_path for a local file."
+                ),
+            }
 
     # Fetch raw image bytes
     raw_bytes: bytes
@@ -8356,7 +8391,21 @@ def set_reference_image(
                 },
             )
             with urllib.request.urlopen(req, timeout=15) as resp:
-                raw_bytes = resp.read()
+                # Bounded read: the response is an arbitrary remote body, and
+                # the downscale that keeps the package small happens only AFTER
+                # decoding. `read(n + 1)` so an exactly-at-limit body still
+                # succeeds while a larger one is detectably truncated.
+                raw_bytes = resp.read(_REFERENCE_IMAGE_MAX_BYTES + 1)
+            if len(raw_bytes) > _REFERENCE_IMAGE_MAX_BYTES:
+                return {
+                    "status": "error",
+                    "code": "image_too_large",
+                    "message": (
+                        f"Reference image exceeds "
+                        f"{_REFERENCE_IMAGE_MAX_BYTES // (1024 * 1024)} MB. "
+                        "Attach a smaller image, or downscale it first."
+                    ),
+                }
             source_descriptor = f"url:{image_url}"
         else:
             p = Path(image_path_str)
@@ -8365,6 +8414,16 @@ def set_reference_image(
                     "status": "error",
                     "code": "file_not_found",
                     "message": f"Local file not found: {image_path_str}",
+                }
+            if p.stat().st_size > _REFERENCE_IMAGE_MAX_BYTES:
+                return {
+                    "status": "error",
+                    "code": "image_too_large",
+                    "message": (
+                        f"Reference image exceeds "
+                        f"{_REFERENCE_IMAGE_MAX_BYTES // (1024 * 1024)} MB. "
+                        "Attach a smaller image, or downscale it first."
+                    ),
                 }
             raw_bytes = p.read_bytes()
             source_descriptor = f"path:{p.name}"

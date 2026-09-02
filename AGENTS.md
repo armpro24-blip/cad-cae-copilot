@@ -406,7 +406,9 @@ through to the finish.
 
 **Reference image calibration.** When the user names a real product, character,
 or vehicle, attach a reference image once with `cad.set_reference_image`
-(pass `image_url` for HTTP fetch or `image_path` for a local file). The
+(pass **exactly one** of `image_url` — `http://` or `https://` only, 25 MB cap —
+or `image_path` for a local file; giving both is refused rather than resolved by
+precedence). The
 reference is stored in the project's `.aieng` package and every subsequent
 `cad.execute_build123d` thumbnail tiles it next to the 4 views, so you compare
 proportions against the real reference instead of relying on memory.
