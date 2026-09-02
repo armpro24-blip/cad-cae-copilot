@@ -327,3 +327,31 @@ class TestTheStatedContract:
         text.write_text("this is not a PNG", encoding="utf-8")
         result = cad_generation.set_reference_image(settings, project_id, {"image_path": str(text)})
         assert result["code"] == "invalid_image", result
+
+
+def test_the_advertised_schema_carries_the_url_restriction() -> None:
+    """A client should be able to reject `file://` before making the call.
+
+    Only the scheme is expressible: "exactly one source" needs `not`/`oneOf`,
+    which no other schema in this file uses and which LLM tool binders handle
+    unevenly, and the destination check needs DNS. Both are enforced at runtime
+    and stated in the descriptions — this test pins what the schema itself can
+    promise, and that the pattern agrees with the runtime rather than being
+    stricter than it.
+    """
+    import re
+
+    from app.runtime_tool_schemas import TOOL_SCHEMAS
+
+    schema = TOOL_SCHEMAS["cad.set_reference_image"]["properties"]["image_url"]
+    pattern = re.compile(schema["pattern"])
+    for accepted in ("http://x/y.png", "https://x/y.png", "HTTPS://x/y.png"):
+        assert pattern.match(accepted), f"{accepted} is accepted at runtime"
+    for refused in ("file:///x.png", "ftp://x/y.png", "data:image/png;base64,AA", "/etc/passwd"):
+        assert not pattern.match(refused), f"{refused} is refused at runtime"
+
+    both = " ".join(
+        TOOL_SCHEMAS["cad.set_reference_image"]["properties"][key]["description"]
+        for key in ("image_url", "image_path")
+    )
+    assert "exactly one" in both, "the schema must still SAY what it cannot express"

@@ -1000,6 +1000,16 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "project_id": {"type": "string"},
             "image_url": {
                 "type": "string",
+                # Machine-checkable half of the runtime contract, so a client can
+                # reject `file://` before the call rather than after. The rest of
+                # it — exactly one source, and a destination that is not
+                # loopback/private/link-local — is not expressible here: the
+                # first needs `not`/`oneOf`, which no other tool schema in this
+                # file uses and which LLM tool binders handle unevenly, and the
+                # second needs DNS. Both are enforced at runtime and stated
+                # below. Case-insensitive by character class: JSON Schema
+                # patterns carry no flags field, and the runtime lowercases.
+                "pattern": "^[Hh][Tt][Tt][Pp][Ss]?://",
                 "description": (
                     "http:// or https:// URL of a reference image "
                     "(jpg/png/webp). Fetched server-side, downscaled to fit "
