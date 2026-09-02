@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import json
 
 from aieng.converters.shape_ir_patch import (
     apply_shape_ir_patch,
@@ -136,3 +137,116 @@ def test_validate_shape_ir():
     assert validate_shape_ir({"parts": []})[0] is False
     assert validate_shape_ir({"parts": [{"id": "a"}, {"id": "a"}]})[0] is False
     assert validate_shape_ir({})[0] is False
+
+
+# ── the shapes the product actually writes ───────────────────────────────────
+#
+# The fixture above gives its node an explicit `parameters` map and no
+# same-named top-level field — precisely the input shape where writing to
+# `parameters` was correct. A real Shape IR part from the topology-optimization
+# writeback looks nothing like it: `extruded_region` with `thickness` and
+# `polygons` as top-level fields and no `parameters` at all.
+
+_EXTRUDED_IR = {
+    "format": "aieng.shape_ir",
+    "model_id": "probe",
+    "representation": "brep_build123d",
+    "parts": [{
+        "id": "region_001",
+        "type": "extruded_region",
+        "label": "region_001",
+        "thickness": 24.0,
+        "origin": [0.0, 0.0, 0.0],
+        "u_axis": "x",
+        "v_axis": "y",
+        "polygons": [[[0.0, 0.0], [10.0, 0.0], [10.0, 8.0], [0.0, 8.0]]],
+    }],
+}
+
+
+def _patch(ops, payload=None):
+    from aieng.converters.shape_ir_patch import apply_shape_ir_patch
+
+    import copy as _copy
+    return apply_shape_ir_patch(_copy.deepcopy(payload or _EXTRUDED_IR),
+                                {"format_version": "0.1", "operations": ops})
+
+
+def test_set_parameter_changes_the_field_the_compilers_read() -> None:
+    """It reported success and changed nothing.
+
+    `_compile_node` merges as `{**parameters, **node}` — the node's own field
+    wins — and an `extruded_region` reads `thickness` off the node directly,
+    never consulting `parameters`. So writing to `parameters` returned ok, said
+    "set region_001.parameters.thickness = 30.0", and recompiled the SAME
+    geometry: an approval-gated edit that did nothing.
+    """
+    result = _patch([{"op": "set_parameter", "target": "region_001",
+                      "parameter": "thickness", "value": 30.0}])
+
+    assert result["ok"], result.get("error")
+    node = result["new_payload"]["parts"][0]
+    assert node["thickness"] == 30.0
+    assert "parameters" not in node, "the shadow copy would be inert"
+
+    # …and the compiler agrees, which is the claim that actually matters.
+    from aieng.converters.shape_ir import extruded_region_geometry
+
+    assert extruded_region_geometry(node)["thickness"] == 30.0
+
+
+def test_set_parameter_still_uses_the_parameters_map_when_there_is_no_field() -> None:
+    """A primitive node keeps its `parameters` home."""
+    payload = {**_EXTRUDED_IR, "parts": [
+        {"id": "plate", "type": "box", "dimensions": [40, 30, 6], "parameters": {"RADIUS": 4}}]}
+    result = _patch([{"op": "set_parameter", "target": "plate",
+                      "parameter": "RADIUS", "value": 12}], payload)
+
+    assert result["ok"], result.get("error")
+    assert result["new_payload"]["parts"][0]["parameters"]["RADIUS"] == 12
+
+
+def test_set_parameter_refuses_to_rewrite_what_identifies_the_node() -> None:
+    """Writing `id`/`type`/`label` as a parameter is inert at best."""
+    for field in ("id", "type", "label"):
+        result = _patch([{"op": "set_parameter", "target": "region_001",
+                          "parameter": field, "value": "x"}])
+        assert not result["ok"]
+        assert "replace_node" in json.dumps(result["failed"]), field
+
+
+def test_move_control_point_moves_an_extruded_regions_polygon_vertex() -> None:
+    """A polygon vertex IS the control point of the node kind the product writes.
+
+    `_control_net` looked only for `control_net`/`control_points`/`points`/`net`,
+    so the operation refused with "node has no control_net" on every
+    extruded_region — the shape the topology-optimization writeback produces.
+    """
+    result = _patch([{"op": "move_control_point", "target": "region_001",
+                      "path": [0, 1], "delta": [2.0, 0.5]}])
+
+    assert result["ok"], result.get("error")
+    assert result["new_payload"]["parts"][0]["polygons"][0][1] == [12.0, 0.5]
+
+
+def test_move_control_point_works_in_the_points_own_dimension() -> None:
+    """Hard-coding 3 rejected every planar control point."""
+    absolute = _patch([{"op": "move_control_point", "target": "region_001",
+                        "path": [0, 0], "value": [1.0, 2.0]}])
+    assert absolute["ok"], absolute.get("error")
+    assert absolute["new_payload"]["parts"][0]["polygons"][0][0] == [1.0, 2.0]
+
+    wrong_dims = _patch([{"op": "move_control_point", "target": "region_001",
+                          "path": [0, 0], "value": [1.0, 2.0, 3.0]}])
+    assert not wrong_dims["ok"], "a 3D point in a planar polygon must be refused"
+    assert "component" in json.dumps(wrong_dims["failed"])
+
+
+def test_a_failed_operation_leaves_the_payload_untouched() -> None:
+    """Atomicity, on the real node shape."""
+    result = _patch([
+        {"op": "set_parameter", "target": "region_001", "parameter": "thickness", "value": 30.0},
+        {"op": "remove_node", "target": "no_such_node"},
+    ])
+    assert not result["ok"]
+    assert _EXTRUDED_IR["parts"][0]["thickness"] == 24.0
