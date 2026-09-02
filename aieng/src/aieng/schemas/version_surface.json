@@ -20,7 +20,7 @@
     "artifact_schemas": {
       "policy": "unstable",
       "sha256": "36309784f5c9ee80e1c2d809f72e5f7df6f439dbc757759fb6a68685af90d6a8",
-      "version": "0.1.0-alpha.4"
+      "version": "0.1.0-alpha.5"
     },
     "mcp_tool_surface": {
       "policy": "unstable",
