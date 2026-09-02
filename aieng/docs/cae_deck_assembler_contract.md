@@ -74,9 +74,9 @@ materials:
 
 Both assemblers resolve a setup item's `target_feature` to its `cae_entity` (the
 NSET name) by matching `maps_to.cae_target_id`. Read that field through
-`aieng.simulation.cae_mapping_writer.mapping_target_id`: packages written before
-#513 carry the same value under `maps_to.feature_id`, and the accessor takes
-either. `face_ids` reference `geometry/topology_map.json` entities and drive the
+`aieng.simulation.cae_mapping_writer.mapping_target_id`: packages written
+before issue #513 carry the same value under `maps_to.feature_id`, and the
+accessor takes either. `face_ids` reference `geometry/topology_map.json` entities and drive the
 geometric node binding.
 
 **What `cae_target_id` may hold.** It addresses the boundary condition or load
