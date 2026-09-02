@@ -112,14 +112,19 @@ def _settings(tmp_path: Path):
     )
 
 
-@pytest.fixture(scope="module")
-def built_package(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """A package produced by the real CAD + CAE authoring path."""
+def _build_project(root: Path, *, with_cae: bool) -> tuple[object, str, Path]:
+    """Build a package through the real CAD (and optionally CAE) path.
+
+    Returns (settings, project_id, package). Each caller gets its OWN project:
+    the self-heal test mutates the package it is given, and a shared fixture
+    would make the ratchet's numbers depend on test order.
+    """
     from app import cad_generation, runtime
     from app.app_factory import create_app
     from app.main import default_project, save_project
+    from app.project_io import project_dir
 
-    settings = _settings(tmp_path_factory.mktemp("conformance"))
+    settings = _settings(root)
     create_app(settings)  # rebinds the runtime tool registry to these settings
     project_id = save_project(settings, default_project("conformance"))["id"]
 
@@ -127,29 +132,38 @@ def built_package(tmp_path_factory: pytest.TempPathFactory) -> Path:
         settings, project_id, {"code": _CODE, "timeout": 180}
     )
     assert built.get("status") == "ok", built
-    runtime.invoke_tool("cae.setup_static", {
-        "project_id": project_id,
-        "material": "Al6061-T6",
-        "fix": "bottom",
-        "load": {"at": "top", "force_n": 500, "direction": "-Z"},
-    })
-    # Best effort: the mesh + deck stages need the optional mesh stack, and they
-    # are what write `simulation/cae_mapping.json`. Where they run, the ratchet
-    # covers that member too; where they cannot, the presence check below leaves
-    # it out instead of reading "fixed".
-    for tool, payload in (
-        ("cae.generate_mesh", {"project_id": project_id, "mesh_size_mm": 8}),
-        ("cae.generate_solver_input", {"project_id": project_id}),
-    ):
-        try:
-            runtime.invoke_tool(tool, payload)
-        except Exception:  # noqa: BLE001 - optional stage, absence is not failure
-            break
 
-    from app.project_io import project_dir
+    if with_cae:
+        runtime.invoke_tool("cae.setup_static", {
+            "project_id": project_id,
+            "material": "Al6061-T6",
+            "fix": "bottom",
+            "load": {"at": "top", "force_n": 500, "direction": "-Z"},
+        })
+        # Best effort: the mesh + deck stages need the optional mesh stack, and
+        # they are what write `simulation/cae_mapping.json`. Where they run, the
+        # ratchet covers that member too; where they cannot, the presence check
+        # below leaves it out instead of reading "fixed".
+        for tool, payload in (
+            ("cae.generate_mesh", {"project_id": project_id, "mesh_size_mm": 8}),
+            ("cae.generate_solver_input", {"project_id": project_id}),
+        ):
+            try:
+                runtime.invoke_tool(tool, payload)
+            except Exception:  # noqa: BLE001 - optional stage, absence is not failure
+                break
 
     package = project_dir(settings, project_id) / f"{project_id}.aieng"
     assert package.exists()
+    return settings, project_id, package
+
+
+@pytest.fixture(scope="module")
+def built_package(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A package produced by the real CAD + CAE authoring path. Read-only."""
+    _settings_obj, _project_id, package = _build_project(
+        tmp_path_factory.mktemp("conformance"), with_cae=True
+    )
     return package
 
 
@@ -259,3 +273,41 @@ def test_the_ratchet_actually_covers_the_members_it_claims(built_package: Path) 
             f"{member} has a recorded baseline but the fixture no longer writes "
             "it — the ratchet would be watching nothing"
         )
+
+
+def test_a_rewrite_repairs_a_legacy_stub_manifest(tmp_path: Path) -> None:
+    """The self-heal, end to end through a real rebuild.
+
+    `test_manifest_self_heal.py` covers the decision function without the CAD
+    stack; this proves the rewrite path actually applies it, which is the part a
+    unit test cannot see. Builds its own project because it mutates it.
+    """
+    from app import cad_generation
+
+    settings, project_id, package = _build_project(tmp_path, with_cae=False)
+
+    # Downgrade the manifest to exactly what packages carried before #515.
+    stub = {"schema_version": "0.1", "resources": {"results": {"x": "results/x.json"}}}
+    tmp = package.with_suffix(".stub.aieng")
+    with (
+        zipfile.ZipFile(package, "r") as src,
+        zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as dst,
+    ):
+        for item in src.infolist():
+            if item.filename != "manifest.json":
+                dst.writestr(item, src.read(item.filename))
+        dst.writestr("manifest.json", json.dumps(stub))
+    tmp.replace(package)
+
+    with zipfile.ZipFile(package) as zf:
+        assert "model_id" not in json.loads(zf.read("manifest.json"))
+
+    rebuilt = cad_generation.execute_build123d_code(
+        settings, project_id, {"code": _CODE, "timeout": 180}
+    )
+    assert rebuilt.get("status") == "ok", rebuilt
+
+    with zipfile.ZipFile(package) as zf:
+        manifest = json.loads(zf.read("manifest.json"))
+    assert manifest["model_id"] == project_id, "the rewrite should have repaired it"
+    assert manifest["resources"]["results"]["x"] == "results/x.json", "without losing content"

@@ -40,7 +40,10 @@ from aieng.converters.critique_engine import (
     critique_geometry,
     is_named_part_feature as _is_named_part_feature,
 )
-from aieng.package import build_manifest as _build_aieng_manifest
+from aieng.package import (
+    build_manifest as _build_aieng_manifest,
+    upgrade_manifest as _upgrade_aieng_manifest,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -5685,7 +5688,29 @@ def _new_package_manifest(pkg_path: Path) -> bytes:
     (#513).
     """
     manifest = _build_aieng_manifest(pkg_path.stem).to_dict()
+    return _manifest_bytes(manifest)
+
+
+def _manifest_bytes(manifest: dict[str, Any]) -> bytes:
     return (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
+def _upgraded_package_manifest(pkg_path: Path) -> bytes | None:
+    """A conforming manifest for an existing package, or None if it already has one.
+
+    Returns None for a manifest that already declares `model_id` so a rewrite
+    does not churn `created_by` on every build.
+    """
+    try:
+        with zipfile.ZipFile(pkg_path, "r") as zf:
+            if "manifest.json" not in zf.namelist():
+                return _new_package_manifest(pkg_path)
+            manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
+    except Exception:  # noqa: BLE001 - an unreadable manifest is not a build failure
+        return None
+    if not isinstance(manifest, dict) or manifest.get("model_id"):
+        return None
+    return _manifest_bytes(_upgrade_aieng_manifest(manifest, pkg_path.stem))
 
 
 def _write_cad_artifacts(
@@ -5769,6 +5794,16 @@ def _write_cad_artifacts(
     pkg_path.parent.mkdir(parents=True, exist_ok=True)
 
     if pkg_path.exists():
+        # A package created before this path used the format library's builder
+        # carries a stub manifest. Upgrade it here rather than only in a
+        # migration script: every rewrite is a chance to repair it, so the fix
+        # reaches any project still being worked on without anyone running
+        # anything. Additive — declared fields are kept (#513).
+        if "manifest.json" not in artifacts:
+            upgraded = _upgraded_package_manifest(pkg_path)
+            if upgraded is not None:
+                artifacts["manifest.json"] = upgraded
+
         tmp = pkg_path.with_suffix(".tmp.aieng")
         try:
             with (

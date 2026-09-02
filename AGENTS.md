@@ -1622,6 +1622,20 @@ The backend manages all package I/O; never read it directly. Structure:
 └── audit_log.jsonl          append-only action history
 ```
 
+**Never hand-roll a package member the format library already writes.** The CAD
+path used to create `manifest.json` as `{"schema_version": "0.1"}` instead of
+calling `aieng.package.build_manifest`, so every agent-built package failed
+`aieng.validate` and the library's AI summary writer reported each one as
+`unknown_model`. A package built through the library's own path validates
+completely (measured: 0 failures of 57 checks), so when a member disagrees with
+its schema, suspect the writer first. Workbench-built packages are not fully
+conforming yet — the remaining members are tracked below.
+A legacy stub manifest is now upgraded automatically on the next CAD write
+(additive; declared fields are kept), and
+`scripts/backfill_package_manifests.py` repairs packages that will not be
+rewritten. Remaining writer/schema disagreements are tracked in #513 with a
+per-member ceiling in `tests/test_package_conformance_ratchet.py`.
+
 ### Design study v0 (optional, parameter studies)
 
 A package MAY carry `analysis/design_study_problem.json` — a backend contract for an

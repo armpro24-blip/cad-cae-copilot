@@ -77,6 +77,55 @@ def build_manifest(model_id: str) -> Manifest:
     )
 
 
+#: Keys a legacy writer emitted that this format never declared. Dropped on
+#: upgrade because they are pure `additionalProperties` violations carrying no
+#: information — `schema_version` duplicated `format_version` and nothing read it.
+LEGACY_MANIFEST_KEYS = frozenset({"schema_version"})
+
+
+def _overlay(base: dict[str, Any], extra: Any) -> Any:
+    """Overlay a recorded value onto a canonical default, losing nothing.
+
+    Two dicts merge key by key so a PARTIAL input keeps the defaults it did not
+    mention — `{"units": {"length": "m"}}` must not drop `mass`/`force`/`stress`
+    and leave the result non-conforming. Anything else replaces the default
+    outright, including a value of the wrong type: a manifest carrying
+    `"resources": []` is malformed, and silently swapping in defaults would
+    invent data the package never declared. The validator reports it instead.
+    """
+    if not isinstance(extra, dict) or not isinstance(base, dict):
+        return deepcopy(extra)
+    for key, value in extra.items():
+        base[key] = _overlay(base.get(key), value)
+    return base
+
+
+def upgrade_manifest(manifest: dict[str, Any] | None, model_id: str) -> dict[str, Any]:
+    """Add the identity fields a legacy manifest lacks, discarding nothing.
+
+    It repairs what it can name; it is not a promise of conformance. A manifest
+    whose `resources` tree the writer shaped wrongly stays wrong, because
+    guessing the writer's intent from a migration is how content gets lost.
+
+    For packages written before the workbench used this module's
+    :func:`build_manifest` — their manifest was `{"schema_version": "0.1"}` plus
+    whatever `resources` later writers merged in, so it declared no `model_id`
+    and the AI summary writer reported them all as ``unknown_model``.
+
+    Deliberately additive: a field the input already declares WINS, so an
+    upgrade never renames a model or rewrites someone's `created_by` provenance,
+    and unknown extra keys (e.g. the CAD path's `geometry_execution` record) are
+    preserved rather than discarded to make a validator happy. Idempotent.
+    """
+    existing = {k: v for k, v in (manifest or {}).items() if k not in LEGACY_MANIFEST_KEYS}
+    upgraded = build_manifest(model_id).to_dict()
+    for key, value in existing.items():
+        # Overlay, not replace: a declared field wins leaf by leaf, so a partial
+        # `units` or `created_by` keeps the rest of its required keys.
+        upgraded[key] = _overlay(upgraded.get(key), value)
+    return upgraded
+
+
 def create_package(
     model_id: str,
     out: str | Path,
