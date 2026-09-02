@@ -229,13 +229,12 @@ def test_package_validator_registers_all_optimization_schemas() -> None:
         assert SCHEMA_FILES[artifact_path] == OPTIMIZATION_SCHEMA_FILES[kind]
 
 
-def test_canonical_and_packaged_schemas_match() -> None:
-    for schema_name in OPTIMIZATION_SCHEMA_FILES.values():
-        canonical = json.loads((ROOT / "schemas" / schema_name).read_text(encoding="utf-8"))
-        packaged = json.loads(
-            (ROOT / "src" / "aieng" / "schemas" / schema_name).read_text(encoding="utf-8")
-        )
-        assert canonical == packaged
+# `test_canonical_and_packaged_schemas_match` lived here: it compared the
+# repo-root schema tree with the packaged one. It passed — because it compared
+# only the OPTIMIZATION schemas, which happened to be identical, while 14 other
+# schemas had diverged. A synchronisation check scoped to a subset that is in
+# sync gives false assurance about the whole. There is now one tree (#517), and
+# `test_schema_tree_is_singular.py` keeps it that way.
 
 
 def test_package_validation_checks_design_study_consistency(tmp_path: Path) -> None:

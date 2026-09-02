@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import json
 import zipfile
 
@@ -40,7 +42,7 @@ def _read_task_spec(pkg):
 
 def test_task_spec_schema_is_valid_json_schema():
     import pathlib
-    schema_path = pathlib.Path("schemas/task_spec.schema.json")
+    schema_path = (Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "task_spec.schema.json")
     assert schema_path.exists(), "schemas/task_spec.schema.json missing"
     schema = json.loads(schema_path.read_text())
     Draft202012Validator.check_schema(schema)
@@ -48,7 +50,7 @@ def test_task_spec_schema_is_valid_json_schema():
 
 def test_minimal_valid_task_spec_conforms_to_schema():
     import pathlib
-    schema = json.loads(pathlib.Path("schemas/task_spec.schema.json").read_text())
+    schema = json.loads((Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "task_spec.schema.json").read_text())
     validator = Draft202012Validator(schema)
     spec = {
         "task_id": "task_001",
@@ -70,7 +72,7 @@ def test_minimal_valid_task_spec_conforms_to_schema():
 
 def test_schema_rejects_false_no_solver_run_claim():
     import pathlib
-    schema = json.loads(pathlib.Path("schemas/task_spec.schema.json").read_text())
+    schema = json.loads((Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "task_spec.schema.json").read_text())
     validator = Draft202012Validator(schema)
     spec = {
         "task_id": "task_001",
@@ -92,7 +94,7 @@ def test_schema_rejects_false_no_solver_run_claim():
 
 def test_schema_rejects_false_external_tools_execute():
     import pathlib
-    schema = json.loads(pathlib.Path("schemas/task_spec.schema.json").read_text())
+    schema = json.loads((Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "task_spec.schema.json").read_text())
     validator = Draft202012Validator(schema)
     spec = {
         "task_id": "task_001",
@@ -114,7 +116,7 @@ def test_schema_rejects_false_external_tools_execute():
 
 def test_schema_rejects_unrecognized_mode():
     import pathlib
-    schema = json.loads(pathlib.Path("schemas/task_spec.schema.json").read_text())
+    schema = json.loads((Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "task_spec.schema.json").read_text())
     validator = Draft202012Validator(schema)
     spec = {
         "task_id": "task_001",
@@ -136,7 +138,7 @@ def test_schema_rejects_unrecognized_mode():
 
 def test_schema_rejects_empty_forbidden_claims():
     import pathlib
-    schema = json.loads(pathlib.Path("schemas/task_spec.schema.json").read_text())
+    schema = json.loads((Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "task_spec.schema.json").read_text())
     validator = Draft202012Validator(schema)
     spec = {
         "task_id": "task_001",
@@ -236,7 +238,7 @@ def test_write_task_spec_conforms_to_schema(tmp_path):
     pkg = _make_package(tmp_path)
     write_task_spec_package(pkg, "Reduce mass by 15%.")
     spec = _read_task_spec(pkg)
-    schema = json.loads(pathlib.Path("schemas/task_spec.schema.json").read_text())
+    schema = json.loads((Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "task_spec.schema.json").read_text())
     errors = list(Draft202012Validator(schema).iter_errors(spec))
     assert errors == [], f"schema errors: {errors}"
 

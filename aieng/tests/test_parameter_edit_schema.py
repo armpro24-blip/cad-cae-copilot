@@ -12,7 +12,7 @@ from pathlib import Path
 import jsonschema
 import pytest
 
-SCHEMA_PATH = Path(__file__).parent.parent / "schemas" / "parameter_edit.schema.json"
+SCHEMA_PATH = Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "parameter_edit.schema.json"
 
 
 def _schema() -> dict:

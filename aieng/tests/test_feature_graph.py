@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import json
 import zipfile
 
@@ -98,7 +100,7 @@ def test_feature_graph_conforms_to_schema(tmp_path):
     package_path = imported_and_topologized_package(tmp_path)
     recognize_features_package(package_path)
     feature_graph = read_feature_graph(package_path)
-    schema = json.loads((__import__("pathlib").Path("schemas") / "feature_graph.schema.json").read_text())
+    schema = json.loads((Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "feature_graph.schema.json").read_text())
 
     errors = list(Draft202012Validator(schema).iter_errors(feature_graph))
 

@@ -13,7 +13,7 @@ import pytest
 from jsonschema import validate
 
 CAPABILITY_MANIFEST_PATH = Path("docs/adapter_capability_declarations.json")
-CAPABILITY_SCHEMA_PATH = Path("schemas/adapter_capability_manifest.schema.json")
+CAPABILITY_SCHEMA_PATH = (Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "adapter_capability_manifest.schema.json")
 
 
 class TestAdapterCapabilityManifest:

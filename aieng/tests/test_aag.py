@@ -90,7 +90,7 @@ def test_aag_conforms_to_schema(tmp_path):
     package_path = _package_with_topology(tmp_path)
     build_aag_package(package_path)
     aag = _read_json_member(package_path, AAG_PATH)
-    schema = json.loads((Path("schemas") / "aag.schema.json").read_text(encoding="utf-8"))
+    schema = json.loads((Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "aag.schema.json").read_text(encoding="utf-8"))
     errors = list(Draft202012Validator(schema).iter_errors(aag))
     assert errors == []
 

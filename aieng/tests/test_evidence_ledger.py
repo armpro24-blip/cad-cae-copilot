@@ -66,7 +66,7 @@ def _names(pkg: Path) -> set[str]:
 # ---------------------------------------------------------------------------
 
 def test_evidence_index_schema_has_required_fields():
-    schema_path = Path(__file__).parent.parent / "schemas" / "evidence_index.schema.json"
+    schema_path = Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "evidence_index.schema.json"
     schema = json.loads(schema_path.read_text())
     required = schema.get("required", [])
     for field in ("format_version", "evidence_index_id", "evidence_items", "claim_policy"):
@@ -74,7 +74,7 @@ def test_evidence_index_schema_has_required_fields():
 
 
 def test_evidence_index_schema_claim_policy_consts():
-    schema_path = Path(__file__).parent.parent / "schemas" / "evidence_index.schema.json"
+    schema_path = Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "evidence_index.schema.json"
     schema = json.loads(schema_path.read_text())
     policy_props = schema["properties"]["claim_policy"]["properties"]
     assert policy_props["external_tools_execute"]["const"] is True
@@ -84,7 +84,7 @@ def test_evidence_index_schema_claim_policy_consts():
 
 
 def test_evidence_index_schema_evidence_type_enum():
-    schema_path = Path(__file__).parent.parent / "schemas" / "evidence_index.schema.json"
+    schema_path = Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "evidence_index.schema.json"
     schema = json.loads(schema_path.read_text())
     item_props = schema["properties"]["evidence_items"]["items"]["properties"]
     enum = item_props["evidence_type"]["enum"]
@@ -93,7 +93,7 @@ def test_evidence_index_schema_evidence_type_enum():
 
 
 def test_evidence_index_schema_producer_kind_enum():
-    schema_path = Path(__file__).parent.parent / "schemas" / "evidence_index.schema.json"
+    schema_path = Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "evidence_index.schema.json"
     schema = json.loads(schema_path.read_text())
     item_props = schema["properties"]["evidence_items"]["items"]["properties"]
     enum = item_props["producer"]["properties"]["kind"]["enum"]

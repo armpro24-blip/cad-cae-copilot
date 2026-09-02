@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import json
 import zipfile
 
@@ -96,7 +98,7 @@ def test_topology_map_conforms_to_schema(tmp_path):
     package_path = imported_package(tmp_path)
     extract_topology_package(package_path)
     topology_map = read_topology_map(package_path)
-    schema = json.loads((__import__("pathlib").Path("schemas") / "topology_map.schema.json").read_text())
+    schema = json.loads((Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "topology_map.schema.json").read_text())
 
     errors = list(Draft202012Validator(schema).iter_errors(topology_map))
 

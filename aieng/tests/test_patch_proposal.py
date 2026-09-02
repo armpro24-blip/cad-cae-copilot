@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+from pathlib import Path
 import json
 import zipfile
 
@@ -152,7 +153,7 @@ def test_patch_proposal_conforms_to_schema(tmp_path):
     package_path = phase5a_package(tmp_path)
     propose_patch_package(package_path, MASS_REDUCTION_INTENT)
     patch = read_patch(package_path)
-    schema = json.loads((__import__("pathlib").Path("schemas") / "patch_proposal.schema.json").read_text())
+    schema = json.loads((Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "patch_proposal.schema.json").read_text())
 
     errors = list(Draft202012Validator(schema).iter_errors(patch))
 

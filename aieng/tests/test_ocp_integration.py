@@ -264,7 +264,7 @@ def test_ocp_extraction_two_calls_produce_identical_ids(tmp_path):
 def test_ocp_extraction_output_conforms_to_schema(tmp_path):
     from jsonschema import Draft202012Validator
 
-    schema = json.loads(Path("schemas/topology_map.schema.json").read_text(encoding="utf-8"))
+    schema = json.loads((Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "topology_map.schema.json").read_text(encoding="utf-8"))
     step_path = _make_box_step(tmp_path)
     pkg = tmp_path / "box.aieng"
     import_step_package(step_path, pkg)

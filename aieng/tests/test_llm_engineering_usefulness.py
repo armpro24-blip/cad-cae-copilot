@@ -420,6 +420,8 @@ def test_mr_fixture_design_targets_validate_against_schema(
 
     schema_path = (
         Path(__file__).resolve().parents[1]
+        / "src"
+        / "aieng"
         / "schemas"
         / "design_targets.schema.json"
     )

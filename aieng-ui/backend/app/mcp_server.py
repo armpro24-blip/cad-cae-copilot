@@ -282,7 +282,7 @@ every subsequent thumbnail will tile the reference next to the four views
 so proportions can be calibrated against the truth.
 
 Engineering parts (brackets / housings / fixtures): label parts with the
-canonical types from aieng/schemas/feature_graph.schema.json (base_plate,
+canonical types from aieng/src/aieng/schemas/feature_graph.schema.json (base_plate,
 mounting_hole, rib, boss, flange, ...) and call cad.critique afterwards
 for a deterministic manufacturability audit (min wall thickness, standard
 hole sizes, floating components).

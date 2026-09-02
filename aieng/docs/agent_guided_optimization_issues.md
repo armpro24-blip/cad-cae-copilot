@@ -66,7 +66,7 @@ the optimization front-end needs a durable, versioned contract for variables,
 objectives, constraints, and the decision log.
 
 **Scope.**
-- Add JSON schemas under `aieng/schemas/` for the new artifacts:
+- Add JSON schemas under `aieng/src/aieng/schemas/` for the new artifacts:
   `optimization_study`, `optimization_variables`, `optimization_objectives`,
   `optimization_constraints`, `optimization_decision_log`.
 - Schemas must be **consistent with** (not a fork of) `analysis/design_study_problem.json`.

@@ -148,7 +148,7 @@ def test_explicit_insertion_populates_four_m6_holes_with_screws_and_nuts(tmp_pat
     manifest = read_manifest(pkg)
     assert manifest["resources"]["graph"]["fastener_insertion_report"] == FASTENER_INSERTION_REPORT_PATH
 
-    schema = json.loads((Path("schemas") / "feature_graph.schema.json").read_text(encoding="utf-8"))
+    schema = json.loads((Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "feature_graph.schema.json").read_text(encoding="utf-8"))
     errors = list(Draft202012Validator(schema).iter_errors(feature_graph))
     assert errors == []
 
