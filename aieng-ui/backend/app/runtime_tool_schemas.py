@@ -1000,18 +1000,37 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "project_id": {"type": "string"},
             "image_url": {
                 "type": "string",
+                # Machine-checkable half of the runtime contract, so a client can
+                # reject `file://` before the call rather than after. The rest of
+                # it — exactly one source, and a destination that is not
+                # loopback/private/link-local — is not expressible here: the
+                # first needs `not`/`oneOf`, which no other tool schema in this
+                # file uses and which LLM tool binders handle unevenly, and the
+                # second needs DNS. Both are enforced at runtime and stated
+                # below. Case-insensitive by character class: JSON Schema
+                # patterns carry no flags field, and the runtime lowercases.
+                # The leading `\s*` mirrors the runtime's `.strip()`, because a
+                # schema stricter than the runtime it advertises is its own
+                # defect — it would refuse a padded URL the tool then accepts.
+                "pattern": r"^\s*[Hh][Tt][Tt][Pp][Ss]?://",
                 "description": (
-                    "HTTP(S) URL of a reference image (jpg/png/webp). Fetched "
-                    "server-side, downscaled to fit 800x800, and stored as "
-                    "geometry/reference.png in the .aieng package. Either "
-                    "image_url or image_path is required."
+                    "http:// or https:// URL of a reference image "
+                    "(jpg/png/webp). Fetched server-side, downscaled to fit "
+                    "800x800, and stored as geometry/reference.png in the "
+                    ".aieng package. Other schemes are refused, as is a host "
+                    "that resolves to a loopback/private/link-local address — "
+                    "use image_path for a file on this host. Pass exactly one "
+                    "of image_url / image_path."
                 ),
             },
             "image_path": {
                 "type": "string",
                 "description": (
-                    "Local file path to a reference image. Use when the image "
-                    "is on the workbench host, e.g. /tmp/optimus_ref.jpg."
+                    "Local file path to a reference image, when it is on the "
+                    "workbench host (e.g. /tmp/optimus_ref.jpg). Pass exactly "
+                    "one of image_url / image_path — giving both is refused "
+                    "rather than resolved by precedence. Either source is "
+                    "capped at 25 MB and 80 megapixels."
                 ),
             },
             "description": {
