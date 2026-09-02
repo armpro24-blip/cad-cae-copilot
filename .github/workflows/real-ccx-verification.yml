@@ -26,6 +26,7 @@ on:
       - "aieng/schemas/**"
       - "aieng-ui/backend/app/cad_generation.py"
       - "aieng-ui/backend/tests/test_package_conformance_ratchet.py"
+      - "aieng-ui/backend/tests/test_load_case_requirement.py"
       - "aieng/src/aieng/package.py"
   push:
     branches: [main]
@@ -50,6 +51,7 @@ on:
       - "aieng/schemas/**"
       - "aieng-ui/backend/app/cad_generation.py"
       - "aieng-ui/backend/tests/test_package_conformance_ratchet.py"
+      - "aieng-ui/backend/tests/test_load_case_requirement.py"
       - "aieng/src/aieng/package.py"
 
 # Candidate required gate (originally #373, now closed). It auto-runs for
@@ -62,6 +64,10 @@ concurrency:
 
 jobs:
   real-ccx:
+    # Least privilege: this job checks out pull-request code and runs pytest, so
+    # the persisted GITHUB_TOKEN must not be able to write repository resources.
+    permissions:
+      contents: read
     name: Real CalculiX V&V gate
     runs-on: ubuntu-latest
     env:
@@ -108,7 +114,7 @@ jobs:
       # The ordinary CI lanes have no CAD/mesh stack, so this test skips itself
       # there — a guard that never runs in CI is the defect it exists to catch.
       # `!cancelled()` so it reports independently of the numerics gate.
-      - name: Package conformance ratchet
+      - name: CAD-stack tool tests (conformance ratchet + load-case requirements)
         if: ${{ !cancelled() }}
         run: |
-          pytest aieng-ui/backend/tests/test_package_conformance_ratchet.py -q -rs
+          pytest aieng-ui/backend/tests/test_package_conformance_ratchet.py                  aieng-ui/backend/tests/test_load_case_requirement.py -q -rs
