@@ -1009,7 +1009,10 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                 # second needs DNS. Both are enforced at runtime and stated
                 # below. Case-insensitive by character class: JSON Schema
                 # patterns carry no flags field, and the runtime lowercases.
-                "pattern": "^[Hh][Tt][Tt][Pp][Ss]?://",
+                # The leading `\s*` mirrors the runtime's `.strip()`, because a
+                # schema stricter than the runtime it advertises is its own
+                # defect — it would refuse a padded URL the tool then accepts.
+                "pattern": r"^\s*[Hh][Tt][Tt][Pp][Ss]?://",
                 "description": (
                     "http:// or https:// URL of a reference image "
                     "(jpg/png/webp). Fetched server-side, downscaled to fit "

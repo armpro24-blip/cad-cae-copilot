@@ -345,10 +345,16 @@ def test_the_advertised_schema_carries_the_url_restriction() -> None:
 
     schema = TOOL_SCHEMAS["cad.set_reference_image"]["properties"]["image_url"]
     pattern = re.compile(schema["pattern"])
-    for accepted in ("http://x/y.png", "https://x/y.png", "HTTPS://x/y.png"):
-        assert pattern.match(accepted), f"{accepted} is accepted at runtime"
-    for refused in ("file:///x.png", "ftp://x/y.png", "data:image/png;base64,AA", "/etc/passwd"):
-        assert not pattern.match(refused), f"{refused} is refused at runtime"
+    accepted = ("http://x/y.png", "https://x/y.png", "HTTPS://x/y.png",
+                "  https://x/y.png", "".join((chr(9), "https://x/y.png")))
+    for value in accepted:
+        assert pattern.match(value), f"{value!r} is accepted at runtime"
+    refused = ("file:///x.png", "ftp://x/y.png", "data:image/png;base64,AA", "/etc/passwd",
+               # Near misses: the scheme must START the value, not merely occur
+               # in it, or a pattern check degrades into a substring search.
+               "see https://x/y.png", "xhttps://x/y.png", "httpx://x/y.png")
+    for value in refused:
+        assert not pattern.match(value), f"{value!r} is refused at runtime"
 
     both = " ".join(
         TOOL_SCHEMAS["cad.set_reference_image"]["properties"][key]["description"]
