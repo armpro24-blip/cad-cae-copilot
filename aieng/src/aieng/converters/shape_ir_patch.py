@@ -49,6 +49,18 @@ _OPS = {
 }
 
 
+#: Fields that identify a node rather than dimension it. Setting one as a
+#: "parameter" would be inert at best and would break the target lookup at
+#: worst, so it is refused with a pointer at the operation that can. `name` is
+#: in here because `_node_id` falls back to it when `id` is absent — rewriting
+#: it would move the target out from under the very patch doing the rewriting.
+_IDENTITY_FIELDS = frozenset({"id", "name", "type", "label"})
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 class PatchOpError(Exception):
     """A single patch operation could not be applied."""
 
@@ -98,11 +110,16 @@ def _find_index(payload: dict[str, Any], target: str) -> int:
 
 
 def _control_net(node: dict[str, Any]) -> list[Any]:
-    for key in ("control_net", "control_points", "points", "net"):
+    # `polygons` last: it is the control net of an `extruded_region`, which is
+    # what the topology-optimization writeback and the 2D contour path actually
+    # produce. Without it, `move_control_point` refused ("node has no
+    # control_net") on the dominant node kind the product writes — a documented
+    # operation that could not touch the geometry it ships.
+    for key in ("control_net", "control_points", "points", "net", "polygons"):
         cn = node.get(key)
         if isinstance(cn, list):
             return cn
-    raise PatchOpError("node has no control_net")
+    raise PatchOpError("node has no control net (control_net/control_points/points/net/polygons)")
 
 
 def _apply_op(payload: dict[str, Any], op: dict[str, Any]) -> str:
@@ -122,11 +139,39 @@ def _apply_op(payload: dict[str, Any], op: dict[str, Any]) -> str:
         if "value" not in op:
             raise PatchOpError("set_parameter requires 'value'")
         node = raw_nodes[_find_index(payload, target)]
+        name = str(param)
+        # Write where the compilers READ. A node's own field wins over its
+        # `parameters` map — `_compile_node` merges them as `{**params, **node}`,
+        # and an `extruded_region` reads `thickness` / `polygons` off the node
+        # directly and never looks at `parameters` at all. Always writing to
+        # `parameters` meant `set_parameter thickness=30` on a real IR part
+        # returned ok, reported "set X.parameters.thickness = 30.0", and
+        # recompiled the SAME geometry: an approval-gated edit that changed
+        # nothing (#513-adjacent dogfood).
+        if name in _IDENTITY_FIELDS:
+            raise PatchOpError(
+                f"'{name}' identifies the node; use replace_node to change it "
+                "(writing it as a parameter would be inert)"
+            )
+        if name in node:
+            current = node[name]
+            value = op["value"]
+            # Type-preserving, not schema validation: a dimension that is a
+            # number must stay one. Writing `thickness: "thick"` would be
+            # accepted here and fail much later, inside the compiler, with an
+            # error that no longer mentions the patch.
+            if _is_number(current) and not _is_number(value):
+                raise PatchOpError(
+                    f"'{name}' on node '{target}' is numeric ({current!r}); "
+                    f"refusing to set it to {value!r}"
+                )
+            node[name] = value
+            return f"set {target}.{name} = {value}"
         node.setdefault("parameters", {})
         if not isinstance(node["parameters"], dict):
             raise PatchOpError(f"node '{target}' parameters is not an object")
-        node["parameters"][str(param)] = op["value"]
-        return f"set {target}.parameters.{param} = {op['value']}"
+        node["parameters"][name] = op["value"]
+        return f"set {target}.parameters.{name} = {op['value']}"
 
     if kind == "move_control_point":
         target = str(op.get("target") or "")
@@ -140,14 +185,30 @@ def _apply_op(payload: dict[str, Any], op: dict[str, Any]) -> str:
             current = cn[i][j]
         except (IndexError, TypeError) as exc:
             raise PatchOpError(f"control point [{i}][{j}] out of range") from exc
+        # Move the point in ITS OWN dimension. Hard-coding 3 rejected every
+        # planar control point: an extruded region's polygon vertices are [x, y]
+        # in the local plane.
+        try:
+            dims = len(current)
+        except TypeError as exc:
+            raise PatchOpError(f"control point [{i}][{j}] is not a coordinate") from exc
         if "value" in op:
             new = [float(v) for v in op["value"]]
         elif "delta" in op:
-            new = [float(current[k]) + float(op["delta"][k]) for k in range(3)]
+            delta = op["delta"]
+            if not (isinstance(delta, (list, tuple)) and len(delta) == dims):
+                got = len(delta) if isinstance(delta, (list, tuple)) else "none"
+                raise PatchOpError(
+                    f"delta must have exactly {dims} component(s) for this control "
+                    f"point; got {got}"
+                )
+            new = [float(current[k]) + float(delta[k]) for k in range(dims)]
         else:
             raise PatchOpError("move_control_point requires 'value' or 'delta'")
-        if len(new) != 3:
-            raise PatchOpError("control point must be [x, y, z]")
+        if len(new) != dims:
+            raise PatchOpError(
+                f"control point [{i}][{j}] has {dims} component(s); got {len(new)}"
+            )
         cn[i][j] = new
         return f"moved {target} control point [{i}][{j}] -> {new}"
 
