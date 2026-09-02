@@ -22,6 +22,12 @@ and is being paid down per writer; recording it per member means:
 
 Lower a number when you fix a writer. Never raise one to make the suite green —
 raising it is the regression this file exists to catch.
+
+Where this runs: the ordinary CI lanes install no CAD/mesh stack, so the
+module-level `importorskip` skips it there. It is wired into the
+`Real CCX Verification` workflow instead — the one lane that installs
+`[dev,cad]` + gmsh — triggered by changes to `cad_generation.py`, the schemas,
+or this file. A guard that never runs in CI is the defect it exists to catch.
 """
 
 from __future__ import annotations
