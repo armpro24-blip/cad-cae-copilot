@@ -81,9 +81,15 @@ def test_a_declared_field_wins_over_the_canonical_default() -> None:
 
 
 def test_upgrading_twice_changes_nothing() -> None:
-    once = upgrade_manifest(_LEGACY, "m")
-    twice = upgrade_manifest(once, "m")
-    assert once == twice, "the migration must be safe to re-run"
+    """Re-running the migration must be a no-op, on every input shape it accepts."""
+    for source in (
+        _LEGACY,
+        {**_LEGACY, "units": {"length": "m"}},          # partial nested field
+        {"schema_version": "0.1", "resources": []},     # malformed value, preserved
+        {},
+    ):
+        once = upgrade_manifest(source, "m")
+        assert upgrade_manifest(once, "m") == once, source
 
 
 def test_an_empty_or_missing_manifest_still_yields_a_valid_one() -> None:
@@ -133,3 +139,36 @@ def test_the_upgrade_cannot_repair_a_resources_tree_the_writer_shaped_wrongly() 
         "if this stops failing, the writer or the schema was fixed — drop this "
         "test and lower the ratchet's manifest.json ceiling"
     )
+
+
+def test_a_partial_nested_field_keeps_the_defaults_it_did_not_mention() -> None:
+    """"Declared wins" must apply leaf by leaf, not wholesale.
+
+    Replacing the whole `units` object with a partial one leaves the result
+    missing required keys — a conformance repair that produces a
+    non-conforming manifest. The first version of this test used a COMPLETE
+    units dict, which is exactly the input shape that cannot expose the bug.
+    """
+    upgraded = upgrade_manifest({**_LEGACY, "units": {"length": "m"}}, "m")
+
+    assert upgraded["units"]["length"] == "m", "the declared leaf wins"
+    for inherited in ("mass", "force", "stress"):
+        assert inherited in upgraded["units"], (
+            f"{inherited} was dropped; the manifest no longer conforms"
+        )
+
+    partial_provenance = upgrade_manifest({**_LEGACY, "created_by": {"tool": "other"}}, "m")
+    assert partial_provenance["created_by"]["tool"] == "other"
+    assert partial_provenance["created_by"]["created_at"], "still required"
+
+
+def test_a_malformed_value_is_preserved_rather_than_replaced_by_defaults() -> None:
+    """Discarding it would invent data the package never declared.
+
+    `{"resources": []}` is malformed, but silently substituting the default
+    skeleton would report resources the package does not have. Keeping it means
+    the validator still says so, which is the honest outcome for a migration
+    whose contract is "discard nothing".
+    """
+    upgraded = upgrade_manifest({"schema_version": "0.1", "resources": []}, "m")
+    assert upgraded["resources"] == []

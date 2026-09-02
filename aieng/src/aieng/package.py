@@ -83,21 +83,29 @@ def build_manifest(model_id: str) -> Manifest:
 LEGACY_MANIFEST_KEYS = frozenset({"schema_version"})
 
 
-def _merge_resources(base: dict[str, Any], extra: Any) -> dict[str, Any]:
-    """Overlay a recorded resources tree onto the default skeleton."""
-    if not isinstance(extra, dict):
-        return base
+def _overlay(base: dict[str, Any], extra: Any) -> Any:
+    """Overlay a recorded value onto a canonical default, losing nothing.
+
+    Two dicts merge key by key so a PARTIAL input keeps the defaults it did not
+    mention — `{"units": {"length": "m"}}` must not drop `mass`/`force`/`stress`
+    and leave the result non-conforming. Anything else replaces the default
+    outright, including a value of the wrong type: a manifest carrying
+    `"resources": []` is malformed, and silently swapping in defaults would
+    invent data the package never declared. The validator reports it instead.
+    """
+    if not isinstance(extra, dict) or not isinstance(base, dict):
+        return deepcopy(extra)
     for key, value in extra.items():
-        current = base.get(key)
-        if isinstance(current, dict) and isinstance(value, dict):
-            _merge_resources(current, value)
-        else:
-            base[key] = deepcopy(value)
+        base[key] = _overlay(base.get(key), value)
     return base
 
 
 def upgrade_manifest(manifest: dict[str, Any] | None, model_id: str) -> dict[str, Any]:
-    """Return a conforming manifest that keeps everything the input carried.
+    """Add the identity fields a legacy manifest lacks, discarding nothing.
+
+    It repairs what it can name; it is not a promise of conformance. A manifest
+    whose `resources` tree the writer shaped wrongly stays wrong, because
+    guessing the writer's intent from a migration is how content gets lost.
 
     For packages written before the workbench used this module's
     :func:`build_manifest` — their manifest was `{"schema_version": "0.1"}` plus
@@ -110,9 +118,12 @@ def upgrade_manifest(manifest: dict[str, Any] | None, model_id: str) -> dict[str
     preserved rather than discarded to make a validator happy. Idempotent.
     """
     existing = {k: v for k, v in (manifest or {}).items() if k not in LEGACY_MANIFEST_KEYS}
-    canonical = build_manifest(model_id).to_dict()
-    resources = _merge_resources(canonical["resources"], existing.pop("resources", None))
-    return {**canonical, **existing, "resources": resources}
+    upgraded = build_manifest(model_id).to_dict()
+    for key, value in existing.items():
+        # Overlay, not replace: a declared field wins leaf by leaf, so a partial
+        # `units` or `created_by` keeps the rest of its required keys.
+        upgraded[key] = _overlay(upgraded.get(key), value)
+    return upgraded
 
 
 def create_package(

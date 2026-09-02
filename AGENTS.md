@@ -1627,7 +1627,9 @@ path used to create `manifest.json` as `{"schema_version": "0.1"}` instead of
 calling `aieng.package.build_manifest`, so every agent-built package failed
 `aieng.validate` and the library's AI summary writer reported each one as
 `unknown_model`. A package built through the library's own path validates
-completely — when a member disagrees with its schema, suspect the writer first.
+completely (measured: 0 failures of 57 checks), so when a member disagrees with
+its schema, suspect the writer first. Workbench-built packages are not fully
+conforming yet — the remaining members are tracked below.
 A legacy stub manifest is now upgraded automatically on the next CAD write
 (additive; declared fields are kept), and
 `scripts/backfill_package_manifests.py` repairs packages that will not be

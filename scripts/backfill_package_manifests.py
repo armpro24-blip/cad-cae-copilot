@@ -59,7 +59,11 @@ def _read_manifest(package: Path) -> dict | None:
 
 
 def _rewrite_manifest(package: Path, manifest: dict) -> None:
-    """Replace one member, atomically, leaving every other byte alone."""
+    """Replace one member, atomically, leaving every other member's content intact.
+
+    The archive is rebuilt (so compressed bytes and zip metadata change); what is
+    preserved is every other member's name and content.
+    """
     payload = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8")
     tmp = package.with_suffix(".backfill.tmp")
     try:
