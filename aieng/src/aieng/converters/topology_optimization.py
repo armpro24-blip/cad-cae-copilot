@@ -39,6 +39,7 @@ import numpy as np
 
 from aieng import FORMAT_VERSION
 from aieng.cae_setup_view import load_cae_setup
+from aieng.simulation.cae_mapping_writer import mapping_target_id
 from aieng.converters.shape_ir import _AXIS_INDEX, sample_periodic_catmull_rom
 
 TOPOLOGY_OPTIMIZATION_PATH = "analysis/topology_optimization.json"
@@ -838,9 +839,9 @@ def _index_faces(topology_map: Any) -> tuple[dict[str, dict[str, Any]], list[flo
 def _feature_to_faces(cae_mapping: Any) -> dict[str, list[str]]:
     out: dict[str, list[str]] = {}
     for m in (cae_mapping or {}).get("mappings", []) or []:
-        fid = (m.get("maps_to") or {}).get("feature_id")
+        fid = mapping_target_id(m)
         if fid:
-            out[str(fid)] = [str(x) for x in (m.get("face_ids") or [])]
+            out[fid] = [str(x) for x in (m.get("face_ids") or [])]
     return out
 
 

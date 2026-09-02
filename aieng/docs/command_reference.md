@@ -592,7 +592,7 @@ aieng import-cae-deck build/bracket_001.aieng --deck examples/bracket_loadcase.i
 
 **Validation behavior:**
 - mapping YAML must include `mappings` list
-- each mapping must include `cae_entity` and `maps_to` with at least one of `feature_id` or `interface_id`
+- each mapping must include `cae_entity` and `maps_to` with at least one of `cae_target_id` (the BC/load id it serves), `feature_id`, or `interface_id`
 - `mapping_method` must be `user_provided`
 - `confidence` must be one of `high`, `medium`, `low`
 - referenced `feature_id` values must exist in `graph/feature_graph.json`

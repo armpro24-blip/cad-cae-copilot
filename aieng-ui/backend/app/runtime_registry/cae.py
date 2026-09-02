@@ -8,6 +8,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from aieng.simulation.cae_mapping_writer import mapping_target_id
+
 from .. import blocked_reason_codes as _blocked_reason_codes
 from .. import next_actions as _next_actions
 from .. import operation_receipt as _receipt
@@ -297,11 +299,9 @@ def _validate_cae_mapping_for_solver(package_path: Path) -> dict[str, Any]:
         if not entity:
             continue
         nset_by_entity[entity] = mapping
-        maps_to = mapping.get("maps_to")
-        if isinstance(maps_to, dict):
-            fid = maps_to.get("feature_id")
-            if fid:
-                nset_by_feature[str(fid)] = entity
+        fid = mapping_target_id(mapping)
+        if fid:
+            nset_by_feature[fid] = entity
         for fid in mapping.get("face_ids") or []:
             if fid:
                 all_mapped_face_ids.add(str(fid))
@@ -1553,12 +1553,12 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                                 "mappings": [
                                     {
                                         "cae_entity": "top_face_nset",
-                                        "maps_to": {"feature_id": "top_face"},
+                                        "maps_to": {"cae_target_id": "top_face"},
                                         "face_ids": ["face_001"],
                                     },
                                     {
                                         "cae_entity": "bottom_face_nset",
-                                        "maps_to": {"feature_id": "bottom_face"},
+                                        "maps_to": {"cae_target_id": "bottom_face"},
                                         "face_ids": ["face_002"],
                                     },
                                 ]
@@ -1583,7 +1583,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                         "content": {
                             "mappings": [{
                                 "cae_entity": "REPLACE_WITH_REFERENCED_NSET",
-                                "maps_to": {"feature_id": "REPLACE_WITH_FEATURE_ID"},
+                                "maps_to": {"cae_target_id": "REPLACE_WITH_BC_OR_LOAD_ID"},
                                 "face_ids": ["face_001"],
                             }],
                         },

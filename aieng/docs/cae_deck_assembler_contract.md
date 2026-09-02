@@ -67,13 +67,16 @@ materials:
 ```json
 {"mappings": [
   {"cae_entity": "FEAT_HOLE_001",
-   "maps_to": {"feature_id": "feat_hole_001", "role": "fixed_support"},
+   "maps_to": {"cae_target_id": "bc_001", "role": "fixed_support"},
    "face_ids": ["face_003"]}
 ]}
 ```
 
 Both assemblers resolve a `target_feature` to its `cae_entity` (the NSET name) by
-matching `maps_to.feature_id`. `face_ids` reference `geometry/topology_map.json`
+matching `maps_to.cae_target_id` — the id of the boundary condition or load
+in `parsed_boundary_conditions.json` / `parsed_loads.json`. (Packages written
+before #513 carry that value under `maps_to.feature_id`, which readers still
+accept.) `face_ids` reference `geometry/topology_map.json`
 entities and drive the geometric node binding.
 
 ### Pointer-form divergence (normalization note)

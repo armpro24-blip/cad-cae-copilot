@@ -428,6 +428,12 @@ def _validate_zip_members(package: zipfile.ZipFile, names: set[str]) -> Iterable
                 cae_mapping_data,
                 feature_graph_data,
                 interface_graph_data,
+                _cae_target_ids(
+                    (parsed_cae_boundary_conditions_data, "boundary_conditions"),
+                    (parsed_cae_loads_data, "loads"),
+                    (simulation_setup_data, "boundary_conditions"),
+                    (simulation_setup_data, "loads"),
+                ),
             )
         )
     for text_resource in TEXT_RESOURCES:
@@ -2578,10 +2584,22 @@ def _validate_parsed_cae_loads_semantics(parsed_loads: Any) -> list[ValidationMe
     return messages
 
 
+def _cae_target_ids(*documents_and_keys: tuple[Any, str]) -> set[str]:
+    """Ids of the boundary conditions / loads a mapping may serve."""
+    ids: set[str] = set()
+    for document, key in documents_and_keys:
+        items = document.get(key) if isinstance(document, dict) else None
+        for item in items if isinstance(items, list) else []:
+            if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"]:
+                ids.add(item["id"])
+    return ids
+
+
 def _validate_cae_mapping_semantics(
     cae_mapping: Any,
     feature_graph: Any | None,
     interface_graph: Any | None,
+    cae_target_ids: set[str] | None = None,
 ) -> list[ValidationMessage]:
     messages: list[ValidationMessage] = []
     if not isinstance(cae_mapping, dict):
@@ -2596,6 +2614,7 @@ def _validate_cae_mapping_semantics(
     valid_confidence = {"none", "low", "medium", "high"}
     feature_ids = _feature_ids_from_graph(feature_graph) or set()
     interface_ids = _interface_ids_from_graph(interface_graph)
+    cae_target_ids = cae_target_ids or set()
 
     for index, mapping in enumerate(mappings):
         if not isinstance(mapping, dict):
@@ -2653,14 +2672,31 @@ def _validate_cae_mapping_semantics(
             )
 
         if isinstance(maps_to, dict):
-            feature_id = maps_to.get("feature_id")
-            if isinstance(feature_id, str) and feature_id not in feature_ids:
+            target_id = maps_to.get("cae_target_id")
+            if isinstance(target_id, str) and cae_target_ids and target_id not in cae_target_ids:
                 messages.append(
                     ValidationMessage(
                         Level.FAIL,
-                        f"CAE mapping at index {index} references unknown feature_id {feature_id}",
+                        f"CAE mapping at index {index} references unknown cae_target_id {target_id}",
                     )
                 )
+            feature_id = maps_to.get("feature_id")
+            if isinstance(feature_id, str) and feature_id not in feature_ids:
+                # A package written before `cae_target_id` existed put the CAE
+                # setup entity's id here, so this is only a dangling FEATURE
+                # reference when it is not a known CAE target either. Reporting
+                # it as one regardless is what made every workbench package fail
+                # (#513) — the check was right about the field name and wrong
+                # about the data.
+                if target_id is None and feature_id in cae_target_ids:
+                    pass
+                else:
+                    messages.append(
+                        ValidationMessage(
+                            Level.FAIL,
+                            f"CAE mapping at index {index} references unknown feature_id {feature_id}",
+                        )
+                    )
             interface_id = maps_to.get("interface_id")
             if isinstance(interface_id, str) and interface_id not in interface_ids:
                 messages.append(
@@ -2669,11 +2705,14 @@ def _validate_cae_mapping_semantics(
                         f"CAE mapping at index {index} references unknown interface_id {interface_id}",
                     )
                 )
-            if not isinstance(feature_id, str) and not isinstance(interface_id, str):
+            if not any(
+                isinstance(value, str) for value in (target_id, feature_id, interface_id)
+            ):
                 messages.append(
                     ValidationMessage(
                         Level.FAIL,
-                        f"CAE mapping at index {index} maps_to must include feature_id and/or interface_id",
+                        f"CAE mapping at index {index} maps_to must include "
+                        "cae_target_id, feature_id and/or interface_id",
                     )
                 )
 

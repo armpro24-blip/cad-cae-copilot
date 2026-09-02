@@ -62,39 +62,9 @@
     "resources": {
       "type": "object",
       "additionalProperties": {
-        "oneOf": [
-          {
-            "type": "string",
-            "minLength": 1
-          },
-          {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "minLength": 1
-            }
-          },
-          {
-            "type": "object",
-            "additionalProperties": {
-              "oneOf": [
-                {
-                  "type": "string",
-                  "minLength": 1
-                },
-                {
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                }
-              ]
-            }
-          }
-        ]
+        "$ref": "#/$defs/resourceValue"
       },
-      "description": "Typed resource index. Values are package-relative paths or nested maps of package-relative paths."
+      "description": "Typed resource index. Values are package-relative paths, lists of them, or nested maps of either to any depth."
     },
     "created_by": {
       "type": "object",
@@ -118,5 +88,29 @@
   },
   "additionalProperties": false,
   "description": "Package-level index for a self-describing .aieng engineering model repository. The manifest identifies the model, units, typed resources, and provenance; future versions should also index validation state, visual mappings, and allowed-operation resources.",
-  "$comment": "The manifest should help a general AI discover structured engineering meaning before calling CAD/CAE tools. Phase 0 keeps only the required minimal fields."
+  "$comment": "The manifest should help a general AI discover structured engineering meaning before calling CAD/CAE tools. Phase 0 keeps only the required minimal fields.",
+  "$defs": {
+    "resourceValue": {
+      "$comment": "A leaf path, a list of leaf paths, or a named group of either \u2014 to any depth. Depth is not part of the contract: a solver run indexes its artifacts under a run id (`simulation.runs.<run_id>.<artifact>`), and a future producer may group deeper still. Both readers already walk to leaf strings recursively; the schema used to spell two levels out by hand, so the third failed validation while every consumer handled it.",
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/resourceValue"
+          }
+        }
+      ]
+    }
+  }
 }

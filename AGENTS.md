@@ -1564,8 +1564,9 @@ package's schema + rule validation and reports; it touches no semantic artifact
 and no stale flag. It used to be documented here as step 1 of the fix, which
 made the recipe a no-op — and, until it was fixed, calling it also overwrote a
 `viewer_ready_glb` project with `validation_failed` (the sidebar's "Needs
-attention"), because every agent-built package currently fails that validation
-on writer/schema drift (#513).
+attention"), because at the time every agent-built package failed that
+validation on writer/schema drift (#513, now closed — a freshly built package
+validates with 0 failures).
 
 **Every tool that changes geometry records it**, `opt.writeback_to_shape_ir`
 included — it replaces the whole body with the optimized one, so it marks every
@@ -1628,13 +1629,33 @@ calling `aieng.package.build_manifest`, so every agent-built package failed
 `aieng.validate` and the library's AI summary writer reported each one as
 `unknown_model`. A package built through the library's own path validates
 completely (measured: 0 failures of 57 checks), so when a member disagrees with
-its schema, suspect the writer first. Workbench-built packages are not fully
-conforming yet — the remaining members are tracked below.
-A legacy stub manifest is now upgraded automatically on the next CAD write
+its schema, suspect the writer first — but not always: of the ten members that
+disagreed, nine were the writer's fault and one was the schema's. `manifest.json`
+indexes solver-run artifacts under their run id
+(`simulation.runs.<run_id>.<artifact>`), which is three levels deep; both readers
+already walked the tree to leaf strings recursively and the schema's own
+description already said "nested maps of package-relative paths", but the schema
+spelled two levels out by hand. The resource index is now recursive.
+
+**A field name is part of the contract.** `simulation/cae_mapping.json` records
+which CAE setup entity each NSET serves under **`maps_to.cae_target_id`** — the
+`id` of a boundary condition in `parsed_boundary_conditions.json` or a load in
+`parsed_loads.json`. It used to be called `feature_id`, and the value was never
+a feature: all three producers wrote the BC/load id, all eight consumers joined
+it against `setup.boundary_conditions[].target_feature`, and not one looked it
+up in `graph/feature_graph.json`. So the validator rejected every package the
+workbench builds and was right to — a consumer that believed the name would join
+against the feature graph and find nothing. Read the field through
+`aieng.simulation.cae_mapping_writer.mapping_target_id`, which falls back to the
+historical spelling so packages written before the rename still solve.
+
+A legacy stub manifest is upgraded automatically on the next CAD write
 (additive; declared fields are kept), and
 `scripts/backfill_package_manifests.py` repairs packages that will not be
-rewritten. Remaining writer/schema disagreements are tracked in #513 with a
-per-member ceiling in `tests/test_package_conformance_ratchet.py`.
+rewritten. A freshly built package now has **no** known drift;
+`tests/test_package_conformance_ratchet.py` still compares per member against a
+recorded baseline, so a new writer that invents an undeclared field fails with
+the member named.
 
 ### Design study v0 (optional, parameter studies)
 

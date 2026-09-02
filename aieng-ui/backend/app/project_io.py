@@ -10,6 +10,8 @@ import shutil
 import tempfile
 import uuid
 import zipfile
+
+from aieng.simulation.cae_mapping_writer import mapping_target_id
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -1224,7 +1226,7 @@ def validate_cae_topology_references(package_path: str | Path) -> dict[str, Any]
                         "location": "simulation/cae_mapping.json",
                         "mapping_index": i,
                         "cae_entity": mapping.get("cae_entity"),
-                        "feature_id": (mapping.get("maps_to") or {}).get("feature_id"),
+                        "cae_target_id": mapping_target_id(mapping),
                         "face_id": fid,
                         "reason": "face_id not found in current topology",
                     },

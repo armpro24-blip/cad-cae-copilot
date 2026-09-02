@@ -66,17 +66,28 @@ _BASELINE: dict[str, int] = {
     "simulation/cae_imports/parsed_boundary_conditions.json": 0, # was 5
     "geometry/topology_map.json": 0,           # was 1: "0.1" vs the pinned "0.1.0"
     "graph/feature_graph.json": 0,             # was 1: `model_kind` now declared
-    # What is left needs a DECISION, not a fill-in:
+    # The last two needed a DECISION rather than a fill-in, and got one:
     #
     # manifest.json — the workbench records solver runs as a nested
-    # `simulation.runs.<id>` map while the schema declares each resource entry as
-    # a path string. Pinned by a test in test_package_manifest_upgrade.py.
-    "manifest.json": 1,
-    # CAE — `maps_to.feature_id` holds the BC/load id rather than a feature-graph
-    # feature id. Three live readers correlate on that value, so changing its
-    # meaning is a design change with reader impact.
-    "CAE": 2,
+    # `simulation.runs.<id>` map, three levels deep, while the schema spelled two
+    # out by hand. Both readers already walked to leaf strings recursively and
+    # the description already said "nested maps of package-relative paths", so
+    # the depth cap was accidental: the SCHEMA was wrong. Now recursive.
+    "manifest.json": 0,                        # was 1 (#524)
+    # CAE — `maps_to.feature_id` held the BC/load id. Every producer wrote it
+    # that way and all eight readers joined it against the setup's
+    # `target_feature`; none looked it up in the feature graph. So the WRITERS
+    # were wrong — about the name, not the value — and it is now
+    # `maps_to.cae_target_id`, validated against the parsed BC/load ids. The
+    # historical spelling is still read, so old packages keep solving.
+    "CAE": 0,                                  # was 2 (#524)
 }
+
+#: A freshly built package now has NO known drift. That makes the ratchet a
+#: conformance test in practice — but not by declaration: it still compares
+#: per-member against a recorded baseline, so a new writer that invents an
+#: undeclared field fails with the member named, rather than with one red
+#: assertion about a total.
 
 _MEMBER = re.compile(r"[\w./-]+\.(?:json|yaml)")
 

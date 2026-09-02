@@ -483,7 +483,7 @@ def _fea_setup_to_cae_mapping(fea_setup: dict[str, Any]) -> dict[str, Any]:
         mappings.append({
             "cae_entity": nset_name,
             "maps_to": {
-                "feature_id": feat_id,
+                "cae_target_id": feat_id,
                 "description": bc.get("target_description", ""),
                 "role": "fixed_support",
                 "target_pointers": bc.get("target_pointers") or [],
@@ -498,7 +498,7 @@ def _fea_setup_to_cae_mapping(fea_setup: dict[str, Any]) -> dict[str, Any]:
         mappings.append({
             "cae_entity": nset_name[:20],
             "maps_to": {
-                "feature_id": feat_id,
+                "cae_target_id": feat_id,
                 "description": ld.get("target_description", ""),
                 "role": "load_application",
                 "load_type": ld.get("type", "force"),

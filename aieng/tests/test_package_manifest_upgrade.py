@@ -124,29 +124,45 @@ def test_the_upgraded_manifest_satisfies_the_real_schema() -> None:
     jsonschema.validate(upgraded, _manifest_schema())
 
 
-def test_the_upgrade_cannot_repair_a_resources_tree_the_writer_shaped_wrongly() -> None:
-    """Where this migration's power ends, stated rather than hidden.
+def test_a_run_keyed_resource_tree_validates_at_its_real_depth() -> None:
+    """The schema's depth cap was accidental, and it is gone (#513).
 
-    The workbench records solver runs as a nested map —
-    `simulation: {runs: {run_001: {solver_input: "..."}}}` — while the schema
-    declares each resource entry as a path string or a list of them. Adding the
-    identity fields cannot fix that, and inventing a flattening here would be
-    guessing at a writer's intent from a migration script. It is the residual
-    `manifest.json` failure the conformance ratchet records, and it belongs with
-    the other writer questions in #513.
+    The workbench records solver runs as `simulation.runs.<run_id>.<artifact>` —
+    three levels — while the schema spelled two out by hand. Both readers
+    (`validate._resource_paths`, `ai.summary_writer._resource_paths`) already
+    walked to leaf strings recursively, and the schema's own description already
+    said "nested maps of package-relative paths" without stating a depth. Only
+    the schema disagreed, so the manifest of every package that had been solved
+    failed validation.
     """
     import pytest
 
     jsonschema = pytest.importorskip("jsonschema")
 
     upgraded = upgrade_manifest(_LEGACY, "m")
-    with pytest.raises(jsonschema.ValidationError) as excinfo:
-        jsonschema.validate(upgraded, _manifest_schema())
+    assert upgraded["resources"]["simulation"]["runs"]["run_001"]["solver_input"]
+    jsonschema.validate(upgraded, _manifest_schema())
 
-    assert "runs" in str(excinfo.value), (
-        "if this stops failing, the writer or the schema was fixed — drop this "
-        "test and lower the ratchet's manifest.json ceiling"
-    )
+
+def test_the_resource_index_still_holds_paths_at_any_depth() -> None:
+    """Recursive is not "anything goes" — a leaf is still a non-empty path.
+
+    Without this, lifting the depth cap would quietly also lift the leaf check,
+    and a resource index could carry numbers, nulls, or empty strings that no
+    reader can open.
+    """
+    import pytest
+
+    jsonschema = pytest.importorskip("jsonschema")
+
+    schema = _manifest_schema()
+    for depth, bad_leaf in ((1, 7), (3, ""), (4, None)):
+        resources: object = bad_leaf
+        for level in range(depth):
+            resources = {f"level_{level}": resources}
+        manifest = {**upgrade_manifest(_LEGACY, "m"), "resources": resources}
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(manifest, schema)
 
 
 def test_a_partial_nested_field_keeps_the_defaults_it_did_not_mention() -> None:

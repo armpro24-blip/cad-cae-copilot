@@ -258,7 +258,7 @@ def test_fea_setup_to_cae_mapping() -> None:
     assert result["ai_generated"] is True
     mappings = result["mappings"]
     assert len(mappings) == 2
-    feature_ids = [m["maps_to"]["feature_id"] for m in mappings]
+    feature_ids = [m["maps_to"]["cae_target_id"] for m in mappings]
     assert "feat_hole_001" in feature_ids
     assert "feat_base_001" in feature_ids
 
@@ -333,7 +333,7 @@ def test_pointer_only_mapping_uses_selection_key() -> None:
 
     assert setup_yaml["boundary_conditions"][0]["target_feature"] == "group_mounting_group"
     assert setup_yaml["boundary_conditions"][0]["target_pointers"] == ["@group:mounting_group"]
-    assert mapping["mappings"][0]["maps_to"]["feature_id"] == "group_mounting_group"
+    assert mapping["mappings"][0]["maps_to"]["cae_target_id"] == "group_mounting_group"
     assert mapping["mappings"][0]["maps_to"]["target_pointers"] == ["@group:mounting_group"]
     assert mapping["mappings"][0]["face_ids"] == ["face_003", "face_004"]
 

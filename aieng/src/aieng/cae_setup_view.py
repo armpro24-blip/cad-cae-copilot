@@ -28,6 +28,8 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from aieng.simulation.cae_mapping_writer import mapping_target_id
+
 SETUP_YAML_PATH = "simulation/setup.yaml"
 SETUP_JSON_PATHS = ("simulation/setup.json", "cae/setup.json")
 CAE_MAPPING_PATH = "simulation/cae_mapping.json"
@@ -119,9 +121,9 @@ def synthesize_setup_from_parsed(zf: zipfile.ZipFile) -> dict[str, Any] | None:
         if not isinstance(mapping, dict):
             continue
         entity = mapping.get("cae_entity")
-        feature_id = (mapping.get("maps_to") or {}).get("feature_id")
-        if entity and feature_id:
-            entity_to_feature[str(entity)] = str(feature_id)
+        target_id = mapping_target_id(mapping)
+        if entity and target_id:
+            entity_to_feature[str(entity)] = target_id
 
     def target_feature(item: dict[str, Any]) -> str | None:
         explicit = item.get("target_feature")

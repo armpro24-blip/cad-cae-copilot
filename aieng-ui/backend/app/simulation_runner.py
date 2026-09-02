@@ -21,6 +21,8 @@ from collections.abc import Generator
 from pathlib import Path
 from typing import Any
 
+from aieng.simulation.cae_mapping_writer import mapping_target_id
+
 import yaml
 
 from .config import ensure_aieng_on_path
@@ -1382,7 +1384,7 @@ def normalize_cae_bindings(package_path: Path) -> dict[str, Any]:
                 "cae_entity": entity,
                 "face_ids": [fid],
                 "maps_to": {
-                    "feature_id": item.get("id") or entity,
+                    "cae_target_id": item.get("id") or entity,
                     "role": "fixed_support" if kind == "bc" else "load_application",
                 },
             })
@@ -1809,7 +1811,7 @@ def _unresolved_bc_load_faces(
     """
     feat_map: dict[str, tuple[str, list[str]]] = {}
     for m in cae_mapping.get("mappings") or []:
-        fid = (m.get("maps_to") or {}).get("feature_id")
+        fid = mapping_target_id(m)
         if fid:
             feat_map[fid] = (m.get("cae_entity", ""), list(m.get("face_ids") or []))
 
@@ -1896,7 +1898,7 @@ def _build_calculix_deck(
     # Build feature_id → cae_entity index
     feat_to_nset: dict[str, str] = {}
     for m in cae_mapping.get("mappings") or []:
-        fid = (m.get("maps_to") or {}).get("feature_id")
+        fid = mapping_target_id(m)
         if fid:
             feat_to_nset[fid] = m.get("cae_entity", "")
 
