@@ -100,7 +100,16 @@ def test_an_empty_or_missing_manifest_still_yields_a_valid_one() -> None:
 
 
 def _manifest_schema() -> dict[str, Any]:
-    path = Path(__file__).resolve().parents[1] / "schemas" / "manifest.schema.json"
+    """The PACKAGED schema — the one `validate.py` actually serves.
+
+    `aieng/schemas/` is a second, diverged tree that nothing loads; validating
+    against it would be green about a file the product does not use. (This test
+    read it at first and passed only because `manifest.schema.json` happens to
+    be identical in both.)
+    """
+    path = (
+        Path(__file__).resolve().parents[1] / "src" / "aieng" / "schemas" / "manifest.schema.json"
+    )
     return json.loads(path.read_text(encoding="utf-8"))
 
 

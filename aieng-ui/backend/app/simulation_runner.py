@@ -1418,13 +1418,15 @@ def normalize_cae_bindings(package_path: Path) -> dict[str, Any]:
     if materials_normalized:
         writes[_PARSED_MATERIALS_PATH] = json.dumps(mats_doc, indent=2).encode()
     if derived or not cae_raw and mappings:
-        out_mapping = {
-            "schema_version": cae_mapping.get("schema_version", "0.1"),
-            "mappings": mappings,
-        }
+        from aieng.simulation.cae_mapping_writer import METHOD_POINTER, finalize_cae_mapping
+
+        out_mapping = {**cae_mapping, "mappings": mappings}
         topo_hash = topology.get("topology_hash") or topology.get("hash")
         if topo_hash:
             out_mapping["topology_hash"] = topo_hash
+        # Every binding here came from an explicit @face: pointer, so the method
+        # is exact by construction and there is no source deck (#513).
+        out_mapping = finalize_cae_mapping(out_mapping, method=METHOD_POINTER)
         writes[_CAE_MAPPING_PATH] = json.dumps(out_mapping, indent=2).encode()
     if loads_promoted or loads_changed:
         writes[_PARSED_LOADS_PATH] = json.dumps(parsed_loads, indent=2).encode()
