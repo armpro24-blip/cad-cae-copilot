@@ -510,12 +510,16 @@ def _fea_setup_to_cae_mapping(fea_setup: dict[str, Any]) -> dict[str, Any]:
             "confidence": "ai_generated",
             "face_ids": ld.get("target_face_ids") or [],
         })
-    return {
-        "schema_version": "0.1",
-        "ai_generated": True,
-        "selection_pointer_syntax": {"face": "@face:<face_id>", "group": "@group:<group_id>"},
-        "mappings": mappings,
-    }
+    from aieng.simulation.cae_mapping_writer import METHOD_AI, finalize_cae_mapping
+
+    return finalize_cae_mapping(
+        {
+            "ai_generated": True,
+            "selection_pointer_syntax": {"face": "@face:<face_id>", "group": "@group:<group_id>"},
+            "mappings": mappings,
+        },
+        method=METHOD_AI,
+    )
 
 
 def _write_both_to_package(package_path: Path, files: dict[str, bytes]) -> None:

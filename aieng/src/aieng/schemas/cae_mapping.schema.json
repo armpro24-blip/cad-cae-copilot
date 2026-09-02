@@ -65,10 +65,62 @@
                   "interface_id": {
                     "type": "string",
                     "minLength": 1
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "fixed_support",
+                      "load_application"
+                    ]
+                  },
+                  "selection_source": {
+                    "$comment": "How the face was chosen. Read by contextual_chat when explaining a binding to the user.",
+                    "type": "string"
+                  },
+                  "target_pointers": {
+                    "$comment": "@face:/@group: pointers the binding came from; read by the solver preflight.",
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "load_type": {
+                    "type": "string"
+                  },
+                  "value_n": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "direction": {
+                    "type": [
+                      "array",
+                      "null"
+                    ],
+                    "items": {
+                      "type": "number"
+                    }
                   }
                 },
                 "additionalProperties": false,
-                "minProperties": 1
+                "anyOf": [
+                  {
+                    "required": [
+                      "feature_id"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "interface_id"
+                    ]
+                  }
+                ],
+                "$comment": "The descriptive fields are optional, but a populated maps_to must still identify WHAT it maps to: `minProperties` alone would let `{\"description\": \"top face\"}` through, which validate.py then rejects."
               }
             ]
           },
@@ -85,8 +137,12 @@
             "type": "string",
             "enum": [
               "not_inferred_phase_10a",
-              "user_provided"
-            ]
+              "user_provided",
+              "resolved_from_pointer",
+              "resolved_from_intent",
+              "ai_generated"
+            ],
+            "$comment": "The first two are the CAE-import era's answers. The workbench now AUTHORS setups: `resolved_from_pointer` binds an explicit @face: pointer with no inference, `resolved_from_intent` resolves an engineering phrase (cae.setup_static), and `ai_generated` is an LLM-proposed binding."
           },
           "confidence": {
             "type": "string",
@@ -102,6 +158,33 @@
             "items": {
               "type": "string",
               "minLength": 1
+            }
+          },
+          "face_ids": {
+            "$comment": "Bound topology faces. Load-bearing: the deck generator turns these into NSET members, and binding re-verification compares them against the current topology.",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "face_signatures": {
+            "$comment": "What each bound face looked like when the mapping was written (surface type + normal). Deliberately not position or area \u2014 an edit is meant to move and resize faces. This is the evidence that lets a changed geometry re-verify instead of being refused.",
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "surface_type": {
+                  "type": "string"
+                },
+                "normal": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
+                }
+              },
+              "additionalProperties": true
             }
           }
         },
@@ -140,7 +223,21 @@
         "type": "string",
         "minLength": 1
       }
+    },
+    "topology_hash": {
+      "$comment": "Geometry revision the mapping was bound against; the solver preflight compares it before trusting the bindings.",
+      "type": "string"
+    },
+    "ai_generated": {
+      "type": "boolean"
+    },
+    "selection_pointer_syntax": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
     }
   },
-  "additionalProperties": false
+  "additionalProperties": false,
+  "$comment": "Written by the CAE import path AND by the workbench's own authoring path (cae.setup_static -> normalize_cae_bindings). Both must fill the provenance fields: an authored mapping that records how the binding came to exist is strictly more informative than one that does not. See #513."
 }

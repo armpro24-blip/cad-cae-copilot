@@ -46,16 +46,23 @@ from aieng.validate import validate_package  # noqa: E402
 
 # Per-member ceiling of schema/rule failures for a freshly built package.
 #
-# `simulation/cae_mapping.json` and the `parsed_*` artifacts dominate for one
-# reason worth writing down: those schemas were designed for the CAE *import*
-# direction and require its provenance (`parser`, `source_file`,
-# `mapping_status`, `mapping_method`, `confidence`). The workbench now AUTHORS
-# setups natively (`cae.setup_static`), and the authoring writer omits all of it
-# rather than filling it in honestly. Conforming there is not box-ticking: an
-# authored mapping that records that it was authored, by which tool, and how
-# confident the binding is, is strictly more informative than one that does not.
+# The `parsed_*` artifacts dominate what is left, for one reason worth writing
+# down: those schemas were designed for the CAE *import* direction and require
+# its provenance (`parser`, `source_file`). The workbench now AUTHORS setups
+# natively (`cae.setup_static`), and the authoring writer omits all of it rather
+# than filling it in honestly.
+#
+# `cae_mapping.json` was the same story and is now at 0: conforming there was
+# not box-ticking — each mapping records how its face was bound
+# (`resolved_from_pointer` / `resolved_from_intent` / `ai_generated`) and how far
+# that method can be trusted, which is strictly more informative than the lean
+# document it used to write.
 _BASELINE: dict[str, int] = {
-    "simulation/cae_mapping.json": 18,
+    # 18 -> 0: both writers now go through
+    # `aieng.simulation.cae_mapping_writer.finalize_cae_mapping`, which fills the
+    # provenance the schema asks for. Kept at 0 rather than deleted so a
+    # reappearing failure trips the regression check.
+    "simulation/cae_mapping.json": 0,
     "simulation/cae_imports/parsed_loads.json": 7,
     "simulation/cae_imports/parsed_materials.json": 5,
     "simulation/cae_imports/parsed_boundary_conditions.json": 5,

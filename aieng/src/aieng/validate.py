@@ -159,6 +159,40 @@ OPTIONAL_PHASE0_RESOURCES = (
 )
 
 
+
+def _cae_mapping_enum(*path: str) -> set[str]:
+    """An enum from `cae_mapping.schema.json`, so the rule cannot drift from it.
+
+    These sets used to be literals here AND in the schema. When the workbench
+    started authoring setups it needed new `mapping_method` values, and two
+    copies meant a schema update alone left the rule rejecting them (#513).
+    Falls back to the historical values if the schema cannot be read, so a
+    packaging problem degrades to the old behaviour rather than accepting
+    anything.
+    """
+    text = _read_schema_text("cae_mapping.schema.json")
+    if text:
+        try:
+            node: Any = json.loads(text)
+            for key in path:
+                node = node[key]
+            if isinstance(node, list) and node:
+                return {str(v) for v in node}
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            pass
+    return {"not_inferred_phase_10a", "user_provided"}
+
+
+_MAPPING_ITEM = ("properties", "mappings", "items", "properties")
+
+#: `mapping_method` values that state how a face was actually chosen. These make
+#: the notes' non-inference policy redundant; `not_inferred_phase_10a` does not,
+#: because that value IS the claim the note substantiates.
+_SELECTION_METHODS = frozenset(
+    {"user_provided", "resolved_from_pointer", "resolved_from_intent", "ai_generated"}
+)
+
+
 def validate_package(package_path: str | Path) -> ValidationReport:
     path = Path(package_path)
     messages: list[ValidationMessage] = []
@@ -2176,7 +2210,7 @@ def _validate_interface_graph_semantics(
     protected_feature_ids = _protected_region_feature_ids(protected_regions_data)
     cae_entities = _cae_mapping_entities(cae_mapping_data)
     valid_cae_statuses = {"mapped", "unmapped", "partially_mapped", "unresolved"}
-    valid_cae_methods = {"not_inferred_phase_10a", "user_provided"}
+    valid_cae_methods = _cae_mapping_enum(*_MAPPING_ITEM, "mapping_method", "enum")
     valid_cae_confidence = {"none", "low", "medium", "high"}
 
     for index, interface in enumerate(interfaces):
@@ -2558,7 +2592,7 @@ def _validate_cae_mapping_semantics(
         return [ValidationMessage(Level.FAIL, "simulation/cae_mapping.json mappings must be an array")]
 
     valid_statuses = {"mapped", "unmapped", "partially_mapped", "unresolved"}
-    valid_methods = {"not_inferred_phase_10a", "user_provided"}
+    valid_methods = _cae_mapping_enum(*_MAPPING_ITEM, "mapping_method", "enum")
     valid_confidence = {"none", "low", "medium", "high"}
     feature_ids = _feature_ids_from_graph(feature_graph) or set()
     interface_ids = _interface_ids_from_graph(interface_graph)
@@ -2646,21 +2680,39 @@ def _validate_cae_mapping_semantics(
     notes = cae_mapping.get("notes")
     if isinstance(notes, list):
         notes_text = " ".join(item.lower() for item in notes if isinstance(item, str))
-        has_policy = "phase 10a" in notes_text and (
-            "does not automatically map" in notes_text or "not automatically map" in notes_text
+        # The prose requirement was a stand-in for provenance: it forced the
+        # document to SAY that mappings were not auto-inferred. A mapping that
+        # states HOW its face was chosen has answered that in structured data,
+        # and demanding the sentence too would make an authored mapping assert
+        # something false about itself (#513).
+        #
+        # Deliberately NOT satisfied by `not_inferred_phase_10a`: that value
+        # means "we did not infer this", which is the very claim the policy note
+        # backs up. Relaxing it there would weaken the import path's guard, so
+        # only the methods that affirmatively describe a selection count.
+        entries = cae_mapping.get("mappings")
+        declares_method = bool(entries) and isinstance(entries, list) and all(
+            isinstance(m, dict) and m.get("mapping_method") in _SELECTION_METHODS
+            for m in entries
+        )
+        has_policy = declares_method or (
+            "phase 10a" in notes_text
+            and ("does not automatically map" in notes_text or "not automatically map" in notes_text)
         )
         if has_policy:
             messages.append(
                 ValidationMessage(
                     Level.PASS,
-                    "simulation/cae_mapping.json notes state Phase 10A non-automatic mapping policy",
+                    "simulation/cae_mapping.json records how each mapping was produced",
                 )
             )
         else:
             messages.append(
                 ValidationMessage(
                     Level.FAIL,
-                    "simulation/cae_mapping.json notes must state that Phase 10A does not automatically infer mappings",
+                    "simulation/cae_mapping.json must record provenance: either a "
+                    "mapping_method on every mapping, or a note stating that "
+                    "Phase 10A does not automatically infer mappings",
                 )
             )
     else:
