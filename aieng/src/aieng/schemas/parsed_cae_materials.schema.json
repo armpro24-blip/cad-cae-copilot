@@ -6,9 +6,7 @@
   "required": [
     "format",
     "format_version",
-    "source_file",
-    "materials",
-    "parser"
+    "materials"
   ],
   "properties": {
     "format": {
@@ -53,6 +51,10 @@
           },
           "density": {
             "type": "number"
+          },
+          "yield_strength": {
+            "$comment": "MPa in the canonical unit system; the safety-factor field divides by it.",
+            "type": "number"
           }
         },
         "additionalProperties": false
@@ -75,7 +77,26 @@
         }
       },
       "additionalProperties": false
+    },
+    "authored_by": {
+      "$comment": "The tool that authored this setup, e.g. `cae.setup_static`.",
+      "type": "string",
+      "minLength": 1
     }
   },
-  "additionalProperties": false
+  "additionalProperties": false,
+  "$comment": "The document must declare WHERE its content came from: `parser` + `source_file` for a deck that was parsed, `authored_by` for a setup the workbench wrote itself, or BOTH when a parsed deck was later edited by the authoring path \u2014 which is why this is anyOf rather than oneOf. What it may not do is declare neither, and an authored setup must not claim a `source_file` it never read: the synthesised source_solver_deck.inp supplies the mesh, not these loads. See #513.",
+  "anyOf": [
+    {
+      "required": [
+        "parser",
+        "source_file"
+      ]
+    },
+    {
+      "required": [
+        "authored_by"
+      ]
+    }
+  ]
 }

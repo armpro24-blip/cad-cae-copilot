@@ -1400,7 +1400,9 @@ def _extract_topology(shape):
             ent = rec["entity"]
             ent["adjacent_faces"] = rec["faces"]
             entities.append(ent)
-    return {"format_version": "0.1", "entities": entities}
+    # "0.1.0", not "0.1": topology_map.schema.json pins the full triple, and
+    # a truncated string failed it on every package ever written (#513).
+    return {"format_version": "0.1.0", "entities": entities}
 
 
 

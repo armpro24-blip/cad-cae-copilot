@@ -65,6 +65,28 @@ def _ccx_dll_crash_hint(return_code: int | None, stdout: str, frd_exists: bool) 
     )
 
 
+
+def _material_display(material: dict[str, Any]) -> tuple[str, float | None, float | None]:
+    """(name, E in GPa, poisson) from a material in EITHER recorded shape.
+
+    `cae.setup_static` now writes the canonical mm-N-MPa-tonne form, while
+    packages written before it — and `apply_setup_patch`'s documented SI/flat
+    example — carry `youngs_modulus_pa`. Reading only one shape is what made this
+    helper necessary: canonicalising the writer silently emptied the documented
+    `material: Al6061-T6 (E=69 GPa)` line for every new package.
+    """
+    from .. import simulation_runner as _sr
+
+    canonical = _sr._canonical_material(material)
+    elastic = canonical.get("elastic") or {}
+    modulus_mpa = elastic.get("youngs_modulus")
+    return (
+        str(canonical.get("name") or material.get("name") or "?"),
+        float(modulus_mpa) / 1000.0 if modulus_mpa is not None else None,
+        elastic.get("poisson_ratio"),
+    )
+
+
 def _describe_cae_setup(package_path: Path) -> list[str]:
     """State the bound physics in engineering language, for a preflight read-back.
 
@@ -135,11 +157,11 @@ def _describe_cae_setup(package_path: Path) -> list[str]:
     lines: list[str] = []
     for material in (materials.get("materials") or []):
         if isinstance(material, dict):
-            modulus = material.get("youngs_modulus_pa")
+            name, modulus_gpa, _nu = _material_display(material)
             lines.append(
                 "material: {}{}".format(
-                    material.get("name", "?"),
-                    f" (E={float(modulus) / 1e9:.4g} GPa)" if modulus else "",
+                    name,
+                    f" (E={modulus_gpa:.4g} GPa)" if modulus_gpa else "",
                 )
             )
     for bc in (bcs.get("boundary_conditions") or []):
@@ -883,14 +905,28 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
              "dof_start": 1, "dof_end": 3, "value": 0}
             for i, fid in enumerate(fix_hit["face_ids"])
         ]
+        from aieng.simulation.cae_setup_writer import authored_setup_document
+
+        # Canonical mm-N-MPa-tonne up front. `_canonical_material` exists to
+        # translate the documented SI/flat form, and it leaves an already-
+        # canonical material untouched — writing the target form here means new
+        # packages carry one shape instead of two (#513).
+        from .. import simulation_runner as _sr
+
+        material_record = _sr._canonical_material(material_record)
+
+        # `authored_by`, not a `source_file`: these were written from engineering
+        # intent, never parsed from the synthesised source deck.
         patches: list[dict[str, Any]] = [
             {"action_type": "create_file", "path": "simulation/solver_settings.json",
              "content": solver_settings},
             {"action_type": "create_file", "path": "simulation/cae_imports/parsed_materials.json",
-             "content": {"materials": [material_record]}},
+             "content": authored_setup_document(
+                 "materials", [material_record], authored_by="cae.setup_static")},
             {"action_type": "create_file",
              "path": "simulation/cae_imports/parsed_boundary_conditions.json",
-             "content": {"boundary_conditions": boundary_conditions}},
+             "content": authored_setup_document(
+                 "boundary_conditions", boundary_conditions, authored_by="cae.setup_static")},
         ]
         loads: list[dict[str, Any]] = []
         if load_hit is not None:
@@ -903,7 +939,8 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             patches.append({
                 "action_type": "create_file",
                 "path": "simulation/cae_imports/parsed_loads.json",
-                "content": {"loads": loads},
+                "content": authored_setup_document(
+                    "loads", loads, authored_by="cae.setup_static"),
             })
 
         patch_result = _tool_cae_apply_setup_patch(
@@ -927,11 +964,15 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             str(e.get("id")): e for e in (topology.get("entities") or [])
             if isinstance(e, dict) and e.get("type") == "face"
         }
+        _mat_name, _mat_e_gpa, _mat_nu = _material_display(material_record)
         summary_lines = [
-            "material: {} (E={} Pa, nu={})".format(
-                material_record.get("name"),
-                material_record.get("youngs_modulus_pa"),
-                material_record.get("poisson_ratio"),
+            # GPa, matching the `setup_description` line AGENTS.md documents.
+            # Reading `youngs_modulus_pa` here broke the moment the writer began
+            # recording the canonical form.
+            "material: {} (E={} GPa, nu={})".format(
+                _mat_name,
+                f"{_mat_e_gpa:.4g}" if _mat_e_gpa is not None else "unknown",
+                _mat_nu,
             ),
             "fixed (all DOF 1-3): " + "; ".join(
                 _intent.describe_face(faces_by_id[fid], body_names)
