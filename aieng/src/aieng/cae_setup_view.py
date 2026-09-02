@@ -28,6 +28,8 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from aieng.simulation.cae_mapping_writer import mapping_target_id
+
 SETUP_YAML_PATH = "simulation/setup.yaml"
 SETUP_JSON_PATHS = ("simulation/setup.json", "cae/setup.json")
 CAE_MAPPING_PATH = "simulation/cae_mapping.json"
@@ -109,19 +111,20 @@ def _parse_setup_document(raw: str) -> dict[str, Any]:
 def synthesize_setup_from_parsed(zf: zipfile.ZipFile) -> dict[str, Any] | None:
     """Translate the ``parsed_*.json`` shape into the ``setup.yaml`` shape.
 
-    Each NSET target is mapped back to its ``maps_to.feature_id`` through
-    ``cae_mapping.json``. Returns ``None`` when there is nothing to synthesize
+    Each NSET target is mapped back to the CAE entity it serves through
+    ``cae_mapping.json`` (``maps_to.cae_target_id``, or the historical
+    ``maps_to.feature_id`` — :func:`mapping_target_id` reads either). Returns ``None`` when there is nothing to synthesize
     from, so the caller can still report "no CAE setup" honestly rather than
     inventing one.
     """
-    entity_to_feature: dict[str, str] = {}
+    entity_to_target: dict[str, str] = {}
     for mapping in _read_json(zf, CAE_MAPPING_PATH).get("mappings") or []:
         if not isinstance(mapping, dict):
             continue
         entity = mapping.get("cae_entity")
-        feature_id = (mapping.get("maps_to") or {}).get("feature_id")
-        if entity and feature_id:
-            entity_to_feature[str(entity)] = str(feature_id)
+        target_id = mapping_target_id(mapping)
+        if entity and target_id:
+            entity_to_target[str(entity)] = target_id
 
     def target_feature(item: dict[str, Any]) -> str | None:
         explicit = item.get("target_feature")
@@ -130,7 +133,7 @@ def synthesize_setup_from_parsed(zf: zipfile.ZipFile) -> dict[str, Any] | None:
         target = item.get("target")
         if target is None:
             return None
-        return entity_to_feature.get(str(target))
+        return entity_to_target.get(str(target))
 
     materials: dict[str, Any] = {}
     material_name: str | None = None

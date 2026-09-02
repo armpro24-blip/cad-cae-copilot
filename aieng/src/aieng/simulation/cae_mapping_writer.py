@@ -161,3 +161,39 @@ def _default_note(method: str) -> str:
             "deck was parsed."
         )
     return f"Mapping produced by {method}."
+
+
+#: What `maps_to` calls the CAE setup entity (boundary condition / load) that a
+#: mapping serves.
+#:
+#: `feature_id` is the historical name and it was never accurate: every producer
+#: put the setup item's own id there (`bc_001`, `load_001`), and every consumer
+#: joined it against `setup.boundary_conditions[].target_feature` — not one ever
+#: looked it up in `graph/feature_graph.json`. So `validate.py` reported "CAE
+#: mapping references unknown feature_id bc_001" on every package the workbench
+#: builds, and it was right: a reader trusting the field name would join against
+#: the feature graph and find nothing.
+#:
+#: The value is a CAE target id, so it is now written under a name that says so.
+#: Packages written before this change still carry `feature_id`, hence the
+#: fallback: the accessor below is how a reader gets the id without caring which
+#: era wrote it.
+TARGET_ID_KEY = "cae_target_id"
+_LEGACY_TARGET_ID_KEY = "feature_id"
+
+
+def mapping_target_id(mapping: Any) -> str | None:
+    """The CAE setup entity id a mapping serves, or None.
+
+    Accepts either the mapping or its `maps_to` block, so a caller that already
+    unwrapped one does not have to wrap it back up.
+    """
+    if not isinstance(mapping, dict):
+        return None
+    maps_to = mapping.get("maps_to")
+    block = maps_to if isinstance(maps_to, dict) else mapping
+    for key in (TARGET_ID_KEY, _LEGACY_TARGET_ID_KEY):
+        value = block.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None

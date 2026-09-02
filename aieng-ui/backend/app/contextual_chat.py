@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from aieng.simulation.cae_mapping_writer import mapping_target_id
 from fastapi import HTTPException
 
 
@@ -70,7 +71,7 @@ def _format_pointer_block(
     # Check cae_mapping confidence for this item
     for mapping in cae_mapping.get("mappings", []):
         maps_to = mapping.get("maps_to") or {}
-        if maps_to.get("feature_id") == item.get("target_feature"):
+        if mapping_target_id(mapping) == item.get("target_feature"):
             conf = mapping.get("confidence", "")
             src = maps_to.get("selection_source", "")
             if conf == "ai_generated" or src == "ai_generated":

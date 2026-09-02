@@ -58,9 +58,15 @@
               {
                 "type": "object",
                 "properties": {
-                  "feature_id": {
+                  "cae_target_id": {
+                    "$comment": "The CAE setup entity this NSET serves \u2014 the `id` of a boundary condition in parsed_boundary_conditions.json or a load in parsed_loads.json (`bc_001`, `load_001`). Every reader joins on this value; none looks it up in the feature graph. It used to be written as `feature_id`, which made validation reject every package the workbench builds and would mislead any consumer that believed the name.",
                     "type": "string",
                     "minLength": 1
+                  },
+                  "feature_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "$comment": "A feature in graph/feature_graph.json. Populate it only when the mapping really does name one \u2014 for the CAE setup entity it serves, use `cae_target_id`. Still read as a fallback for packages written before that field existed."
                   },
                   "interface_id": {
                     "type": "string",
@@ -111,6 +117,11 @@
                 "anyOf": [
                   {
                     "required": [
+                      "cae_target_id"
+                    ]
+                  },
+                  {
+                    "required": [
                       "feature_id"
                     ]
                   },
@@ -120,7 +131,7 @@
                     ]
                   }
                 ],
-                "$comment": "The descriptive fields are optional, but a populated maps_to must still identify WHAT it maps to: `minProperties` alone would let `{\"description\": \"top face\"}` through, which validate.py then rejects."
+                "$comment": "The descriptive fields are optional, but a populated maps_to must still identify WHAT it maps to: `minProperties` alone would let {\"description\": \"top face\"} through, which validate.py then rejects."
               }
             ]
           },

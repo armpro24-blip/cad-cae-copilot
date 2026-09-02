@@ -592,7 +592,13 @@ aieng import-cae-deck build/bracket_001.aieng --deck examples/bracket_loadcase.i
 
 **Validation behavior:**
 - mapping YAML must include `mappings` list
-- each mapping must include `cae_entity` and `maps_to` with at least one of `feature_id` or `interface_id`
+- each mapping must include `cae_entity` and `maps_to` with at least one of
+  `cae_target_id`, `feature_id`, or `interface_id`
+- `cae_target_id` names the boundary condition or load the NSET serves, by
+  either its record `id` or its `target_feature` selection key; a value matching
+  neither is reported as an unknown target. `feature_id` must name a
+  `graph/feature_graph.json` feature — except where it carries a known CAE
+  target, the pre-#513 spelling, which is still accepted
 - `mapping_method` must be `user_provided`
 - `confidence` must be one of `high`, `medium`, `low`
 - referenced `feature_id` values must exist in `graph/feature_graph.json`

@@ -55,30 +55,42 @@ materials:
 
 | Key | Authoritative form | Notes |
 |-----|--------------------|-------|
-| `boundary_conditions[].target_feature` | **feature id** (e.g. `feat_hole_001`) | Resolved to an NSET via `cae_mapping`. |
+| `boundary_conditions[].target_feature` | **CAE target id** (e.g. `bc_001`) | Resolved to an NSET via `cae_mapping`. Despite the key's name this is not a feature-graph id — see below. |
 | `boundary_conditions[].type` | `fixed` (translational) | Maps to `*BOUNDARY <nset>, 1, 3, 0.0` for solid elements. |
-| `loads[].target_feature` | **feature id** | Resolved to an NSET via `cae_mapping`. |
+| `loads[].target_feature` | **CAE target id** (e.g. `load_001`) | Resolved to an NSET via `cae_mapping`. |
 | `loads[].type` | `force` | Maps to `*CLOAD`. |
 | `loads[].value_n` | **total** force in N | Distributed over the NSET nodes (see Semantics). |
 | `loads[].direction` | unit vector `[x, y, z]` | Decomposed into one `*CLOAD` line per non-zero DOF. |
 
-`cae_mapping` (`simulation/cae_mapping.json`) is the feature->NSET bridge:
+`cae_mapping` (`simulation/cae_mapping.json`) is the target->NSET bridge:
 
 ```json
 {"mappings": [
-  {"cae_entity": "FEAT_HOLE_001",
-   "maps_to": {"feature_id": "feat_hole_001", "role": "fixed_support"},
+  {"cae_entity": "BC_001",
+   "maps_to": {"cae_target_id": "bc_001", "role": "fixed_support"},
    "face_ids": ["face_003"]}
 ]}
 ```
 
-Both assemblers resolve a `target_feature` to its `cae_entity` (the NSET name) by
-matching `maps_to.feature_id`. `face_ids` reference `geometry/topology_map.json`
-entities and drive the geometric node binding.
+Both assemblers resolve a setup item's `target_feature` to its `cae_entity` (the
+NSET name) by matching `maps_to.cae_target_id`. Read that field through
+`aieng.simulation.cae_mapping_writer.mapping_target_id`: packages written
+before issue #513 carry the same value under `maps_to.feature_id`, and the
+accessor takes either. `face_ids` reference `geometry/topology_map.json` entities and drive the
+geometric node binding.
+
+**What `cae_target_id` may hold.** It addresses the boundary condition or load
+this NSET serves, by either of the two names that entity has: its record `id`
+(`bc_001` — what `normalize_cae_bindings` writes) or its `target_feature`
+selection key (what AI preprocessing writes, and what both assemblers join on).
+`aieng.validate` accepts either and rejects a value that is neither, so a
+mapping cannot claim to serve a boundary condition the package does not declare.
+It is **not** a `graph/feature_graph.json` feature id — no reader has ever
+resolved it there, which is why the field was renamed.
 
 ### Pointer-form divergence (normalization note)
 
-- The **deck path** is keyed on `target_feature` (feature id) -> NSET via
+- The **deck path** is keyed on `target_feature` (a CAE target id) -> NSET via
   `cae_mapping`.
 - The normalized `agent_context` CAE view exposes `target` + `@face:` pointers.
 
