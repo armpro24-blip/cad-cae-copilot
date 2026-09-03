@@ -137,6 +137,26 @@ def register_cad_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         ),
     )
 
+    def _with_edit_parameter_keys(entry: dict[str, Any]) -> dict[str, Any]:
+        """Name each target the way `cad.edit_parameter` accepts it.
+
+        This listing is documented as the "point" of point-and-shoot: read it,
+        then pass a parameter to `cad.edit_parameter`. But it emitted
+        `feature_id` / `parameter_name` while that tool requires `featureId` /
+        `parameterName`, so passing an entry through as documented returned
+        `invalid_contract` — the documented loop did not close.
+
+        Both spellings are emitted rather than renaming: the frontend panel
+        (`useEditableParameters` -> `editableParameters.ts`) and the
+        `/editable-parameters` endpoint read the snake_case keys.
+        """
+        entry = dict(entry)
+        if "feature_id" in entry:
+            entry.setdefault("featureId", entry["feature_id"])
+        if "parameter_name" in entry:
+            entry.setdefault("parameterName", entry["parameter_name"])
+        return entry
+
     def _tool_cad_list_editable_parameters(inp: dict[str, Any], _ctx: dict[str, Any]) -> dict[str, Any]:
         from ..agent_autopilot.parameter_binding import summarize_parameter_index
 
@@ -158,7 +178,10 @@ def register_cad_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 ),
             }
         # Drop the internal search_tokens; keep the user/agent-facing fields.
-        parameters = [{k: v for k, v in entry.items() if k != "search_tokens"} for entry in index]
+        parameters = [
+            _with_edit_parameter_keys({k: v for k, v in entry.items() if k != "search_tokens"})
+            for entry in index
+        ]
         summary = summarize_parameter_index(index)
         message = (
             f"{summary['total']} editable parameter(s): "

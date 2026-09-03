@@ -9,6 +9,7 @@ import logging
 from typing import Any
 
 from ..legacy_app_symbols import sync_main_symbols
+from ..logging_utils import log_exception
 
 LOGGER = logging.getLogger("app.app_factory")
 
@@ -976,6 +977,36 @@ def register_aieng_tools(rt: Any, active_settings: Any, app_context: Any, _schem
             )
             recompile = _cad_generation.recompile_shape_ir_package(pkg, timeout=int(inp.get("timeout") or 120))
             report["recompile"] = recompile
+            # This tool recompiles the body from the patched Shape IR, so the
+            # geometry really changes (measured: `geometry/source.py` and
+            # `generated.step` both differ afterwards) and every downstream CAE
+            # artifact is stale. `cad.edit_parameter` and
+            # `opt.writeback_to_shape_ir` both record that; this one did not, so
+            # `agent_context.edit_impact` stayed `available: false` and no
+            # warning reached the agent — the same gap #521 closed for the
+            # optimization writeback.
+            try:
+                from ..project_io import _record_geometry_edit_in_package
+
+                report["geometry_revision"] = _record_geometry_edit_in_package(
+                    pkg,
+                    triggering_tool="aieng.apply_shape_ir_patch",
+                    affected_artifacts=[
+                        "results/computed_metrics.json",
+                        "results/result_summary.json",
+                        "simulation/cae_mapping.json",
+                        "simulation/mesh/mesh_metadata.json",
+                        "analysis/field_regions.json",
+                        "cae/*",
+                    ],
+                )
+            except Exception:
+                log_exception(
+                    LOGGER,
+                    "Failed to record the geometry edit after a Shape IR patch.",
+                    subsystem="app_factory.shape_ir_patch.revalidation",
+                    context={"project_id": pid},
+                )
             _patch.write_patch_report(pkg, report)  # persist only when committed
             # Publish the recompiled preview to viewer/model.* so the UI viewer shows
             # the patched geometry (recompile only refreshes the in-package preview, not

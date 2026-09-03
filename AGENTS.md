@@ -1189,7 +1189,7 @@ evidence behind it downgrades to `unverified`, which is the honest answer.
 | `aieng.write_completeness_report` | What is missing before simulation |
 | `cae.prepare_solver_run` | Solver preflight — checks readiness, runs nothing. Returns `recommended_next_calls` with tool/input/reason entries for missing artifacts and stale face references |
 | `cad.get_source` | Accumulated build123d source + `{named_parts, has_base}` — call before an incremental edit |
-| `cad.list_editable_parameters` | List the parameters editable fast via `cad.edit_parameter` (the "point" of point-and-shoot): per-parameter `featureId`/`parameterName`/`cad_parameter_name`/current/min-max + `scope` (`local`/`global`/`unscoped`) + a summary. `scope` is re-checked against the CURRENT source, so a stored `local` that actually ripples is corrected to `global` with a `scope_note`. Answers "what can I change here?" |
+| `cad.list_editable_parameters` | List the parameters editable fast via `cad.edit_parameter` (the "point" of point-and-shoot): per-parameter `featureId`/`parameterName` (also as `feature_id`/`parameter_name`, which is what the frontend panel reads) + `cad_parameter_name`/current/min-max + `scope` (`local`/`global`/`unscoped`) + a summary. `scope` is re-checked against the CURRENT source, so a stored `local` that actually ripples is corrected to `global` with a `scope_note`. Answers "what can I change here?" |
 | `cad.validate_subpart` | Execute a build123d **fragment** in isolation (no package write, no project mutation) and report whether it builds into a usable solid — build success or the exact error, non-empty-solid check, solid/face counts, per-part + total volume/area, union bbox. Verify a sub-structure (sketch→solid, a boolean, one sub-assembly) **before** committing it. `valid` = builds into a non-empty solid, NOT a manifold/watertight guarantee |
 | `cad.validate_targets` | Deterministic geometry **target validator**: pass a list of targets (`named_part_present`, `feature_present`, `part_count`, `overall_size`, `part_size`, `part_center`, `no_floating_parts`, `no_deep_overlap`) and get pass/fail/unknown per target with measured-vs-expected. If no `targets` are passed, auto-loads the CAD brief's `validation_targets`. Verifies the brief's exact promises — catches plausible-but-mispositioned / over-modeled builds. Bbox-level, not GD&T; read-only |
 | `cad.author_brief` | Author the **pre-code CAD brief** + validation-target list (units, model_type, parts, key dimensions) BEFORE `cad.execute_build123d`. Stored as a project sidecar; auto-derives `validation_targets` that `cad.validate_targets` checks the built model against — the plan→build→verify loop. Planning artifact only (no approval, no geometry) |
@@ -1600,7 +1600,8 @@ attention"), because at the time every agent-built package failed that
 validation on writer/schema drift (#513, now closed — a freshly built package
 validates with 0 failures).
 
-**Every tool that changes geometry records it**, `opt.writeback_to_shape_ir`
+**Every tool that changes geometry records it** —
+`opt.writeback_to_shape_ir` and `aieng.apply_shape_ir_patch`
 included — it replaces the whole body with the optimized one, so it marks every
 downstream CAE artifact stale and names itself as the trigger. It used to record
 nothing: the package still said `geometry_modified: false` from the previous
