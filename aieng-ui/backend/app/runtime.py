@@ -233,6 +233,9 @@ _HTTP_ERROR_CODES = {
     404: "not_found",
     409: "conflict",
     422: "invalid_input",
+    # Raised where a dependency or configuration is missing (an LLM key, a
+    # solver binary) — actionable for a caller in a way `request_failed` is not.
+    503: "unavailable",
 }
 
 

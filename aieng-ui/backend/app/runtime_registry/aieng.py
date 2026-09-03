@@ -52,7 +52,10 @@ def register_aieng_tools(rt: Any, active_settings: Any, app_context: Any, _schem
         try:
             return convert_asset(active_settings, pid)
         except HTTPException as exc:
-            if exc.status_code == 400 and "STEP" in str(exc.detail):
+            # The exact detail `ensure_step_source` raises. A substring test
+            # would also swallow some future 400 that merely mentions STEP and
+            # report it as "no geometry", which is a different, wrong answer.
+            if exc.status_code == 400 and str(exc.detail) == "STEP source not found":
                 # This tool is the documented fix for "the viewer shows
                 # nothing", and the most common cause of that is a project with
                 # no geometry yet — so the most likely call gets the least

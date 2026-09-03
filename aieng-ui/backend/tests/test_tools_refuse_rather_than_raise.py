@@ -94,10 +94,40 @@ def test_an_unknown_project_is_refused_not_raised(tool_name: str) -> None:
         )
 
     assert isinstance(result, dict), f"{tool_name} returned {type(result).__name__}"
-    # `not_found` from the boundary, or something more specific the handler
-    # already produced. What must NOT happen is an exception.
-    if result.get("status") == "error":
+    # Not raising is only half of it. Accepting `status: ok` here would let a
+    # tool report success for a project that does not exist and still pass —
+    # `cad.list_editable_parameters` did exactly that, answering "no
+    # editable-parameter index available" as though the model simply had no
+    # editable dimensions.
+    status = result.get("status")
+    assert status in {"error", "not_found", "needs_clarification"}, (
+        f"{tool_name} answered {status!r} for a project that does not exist: {result}"
+    )
+    if status == "error":
         assert result.get("code"), f"{tool_name} refused without a code: {result}"
+
+
+def test_an_unavailable_dependency_maps_to_its_own_code() -> None:
+    """503 is raised where an LLM key or a solver binary is missing.
+
+    Without a mapping it fell through to `request_failed`, which tells a caller
+    nothing about whether retrying or configuring is the answer.
+    """
+    from fastapi import HTTPException
+
+    runtime.register_tool(
+        "test.unavailable",
+        lambda _inp, _ctx: (_ for _ in ()).throw(
+            HTTPException(status_code=503, detail="LLM settings are required")
+        ),
+        description="deliberately unavailable",
+    )
+    try:
+        result = runtime.invoke_tool("test.unavailable", {})
+        assert result["code"] == "unavailable", result
+        assert "LLM settings" in result["message"]
+    finally:
+        runtime._REGISTRY.pop("test.unavailable", None)
 
 
 def test_a_reported_error_keeps_its_status_code_in_the_message() -> None:
