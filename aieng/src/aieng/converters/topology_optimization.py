@@ -1750,8 +1750,32 @@ def derive_topopt_problem_3d_from_package(
     }
 
 
+class TopologyProblemRefused(ValueError):
+    """The supplied problem is a derivation's refusal, not a problem to solve."""
+
+
 def run_topology_optimization(problem: dict[str, Any], *, optimizer: str = "simp_2d") -> dict[str, Any]:
-    """Run an optimizer and wrap its output in the neutral result contract."""
+    """Run an optimizer and wrap its output in the neutral result contract.
+
+    Raises :class:`TopologyProblemRefused` when handed a document the derivation
+    declined to produce. `derive_topopt_problem_from_cae` returns
+    ``status: "needs_user_input"`` with a `reason` instead of inventing supports
+    and loads — but the documented next step is "inspect this, then pass it to
+    opt.run_topology_optimization", and passing it verbatim used to return
+    ``status: ok``: `_resolve_bcs` sees no usable explicit BCs and substitutes
+    the textbook cantilever preset, so a plate with no supports and no loads
+    produced a full density field, `warnings: []`, and an artifact
+    `opt.writeback_to_shape_ir` would turn into the part's geometry.
+
+    The preset fallback itself stays — a caller may ask for a preset problem on
+    purpose. What is refused is laundering a refusal into a result.
+    """
+    if isinstance(problem, dict) and str(problem.get("status") or "") == "needs_user_input":
+        raise TopologyProblemRefused(
+            "this problem is a derivation refusal, not a solvable problem: "
+            f"{problem.get('reason') or 'no reason recorded'}. "
+            f"{problem.get('recommendation') or 'Supply supports and loads, or a different design space.'}"
+        )
     requested = str(optimizer or "simp_2d")
     entry = _OPTIMIZER_REGISTRY.get(requested)
     fallback = entry is None

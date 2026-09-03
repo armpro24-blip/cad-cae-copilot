@@ -1265,11 +1265,34 @@ is possible).
 | `cad.tolerance_stackup` | Read-only 1D tolerance stack-up: pass an ordered list of contributors (name, nominal, plus, minus, optional distribution) and get worst-case arithmetic min/max, RSS sigma and confidence-band min/max, controlling contributors, and honesty notes. Assumes independence and +/- 3-sigma tolerance coverage; not a GD&T solver. No geometry mutation. |
 | `opt.sizing_sweep` | Parametric sizing sweep (approval required): vary ONE editable dimension across explicit `values` OR a `{min, max, steps/step}` range, solve each variant with real static FEA, and rank by objective. Range values are clamped to the parameter's declared min/max. Default is recommend-only; set `apply_winner=true` to apply the winning value through the audited `cad.edit_parameter` path and report its `regression_diff`. A variant that fails to solve is reported honestly and never recommended. |
 | `opt.doe_sizing_study` | Multi-parameter DOE sizing study (approval required): jointly vary 2+ editable parameters by explicit values or ranges, generate a full-factorial or LHS design within a 64-point budget, solve each design point with real static FEA, and rank by objective + constraints. Baseline never modified; failed points reported honestly. |
-| `opt.derive_problem_from_cae` | Derive a topology-optimization problem (grid + supports + loads + design space) from a project's CAE setup + geometry (`topology_map` faces + design-space bbox). Reads the setup **whichever path authored it** — `simulation/setup.yaml` or the key-free `simulation/cae_imports/parsed_*.json`. Read-only; returns the problem + a `derivation` block. `dimension=2d` (default) projects supports/loads onto the plane of the two largest dims; `dimension=3d` keeps the full 3D layout (structured voxel grid, supports→boundary layers, full 3D force). **Both dimensions return `status=needs_user_input` rather than substituting a preset** when the BCs can't be mapped |
+| `opt.derive_problem_from_cae` | Derive a topology-optimization problem (grid + supports + loads + design space) from a project's CAE setup + geometry (`topology_map` faces + design-space bbox). Reads the setup **whichever path authored it** — `simulation/setup.yaml` or the key-free `simulation/cae_imports/parsed_*.json`, and in either an `@face:` pointer target, an NSET name, or a `target_feature`. Read-only; returns the problem + a `derivation` block. `dimension=2d` (default) projects supports/loads onto the plane of the two largest dims; `dimension=3d` keeps the full 3D layout (structured voxel grid, supports→boundary layers, full 3D force). **Both dimensions return `status=needs_user_input` rather than substituting a preset** when the BCs can't be mapped |
 | `opt.run_topology_optimization` | Run topology optimization (built-in self-contained SIMP, compliance-min, pure numpy — no external solver) → `analysis/topology_optimization.json`. `simp_2d` (default) or `simp_3d` (experimental structured-voxel 3D, `dimension=3d`; honest `capability` block: experimental_reference, production_ready:false). Honest coarse limitations recorded. Set `auto_derive` (or omit `problem`) to derive supports/loads/design-space from the project's CAE setup; either dimension may return `needs_user_input` instead of guessing |
 | `opt.writeback_to_shape_ir` | Author the optimization result back into `geometry/shape_ir.json`, then recompile through runtime routing → the optimized body meshes/views + gets verification + object_registry, linked to its `design_space_node`. 2D: `method=contour` (default) writes a marching-squares boundary as an `extruded_region` (`boundary=spline` default → closed periodic spline / CAD-friendly curve, falls back to `polygon` if it would overshoot the design-space envelope); `method=voxels` writes the blocky `density_voxels`. 3D: `method=surface` (default) writes a smooth **marching-cubes** `surface_mesh` proxy (mesh / lossy / not production CAD; falls back to `voxels` if no isosurface); `method=voxels` writes the blocky 3D `density_voxels`. Placed in the design-space frame. Default representation `brep_build123d` for 2D (analytic faces — pickable, STEP-exportable; auto-falls back to `manifold_mesh` if the B-Rep build fails); 3D defaults to `manifold_mesh` |
 | `postprocess.generate_computed_metrics` | Import metrics from CSV/JSON |
 | `postprocess.refresh_cae_summary` | Regenerate result summary + evidence markdown |
+
+**A refusal is not a problem — do not pass it back.** The derivation returns
+`status: needs_user_input` rather than inventing supports and loads, and the
+next documented step is "inspect this, then pass it to
+`opt.run_topology_optimization`". Passing a refusal verbatim used to return
+`status: ok`: with no usable explicit BCs the optimizer substitutes the textbook
+**cantilever preset**, so a plate with no supports and no loads produced a full
+density field, `warnings: []`, and an `analysis/topology_optimization.json` that
+`opt.writeback_to_shape_ir` would turn into the part's geometry. Both the tool
+and `run_topology_optimization` itself now refuse it (`code:
+"problem_refused"`), carrying the derivation's reason forward. Ask for a preset
+problem explicitly (`bcs: {preset: "cantilever"}`) if that is what you want.
+
+**`cae.setup_static` writes pointer targets, and the derivation reads them.**
+The one-call authoring path records each BC and load as
+`target: "@face:face_001"` — which the deck path resolves and which AGENTS.md
+calls "not a missing mapping". The setup reader knew only `target_feature` and
+NSET names, so it dropped every BC and load, and the derivation honestly
+reported "0 support(s) and 0 load(s)" for a perfectly good setup: the whole
+topology-optimization chain was unreachable from the workbench's own CAE
+authoring path, in 2D and 3D, with any design space. A target that still
+resolves to nothing is now recorded in the synthesized setup's
+`unresolved_targets` instead of vanishing.
 
 **A 2D problem it cannot honestly pose is refused, not replaced.** The 2D
 projection plane is spanned by the design space's two **largest** dimensions, so

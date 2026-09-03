@@ -126,14 +126,45 @@ def synthesize_setup_from_parsed(zf: zipfile.ZipFile) -> dict[str, Any] | None:
         if entity and target_id:
             entity_to_target[str(entity)] = target_id
 
+    unresolved: list[str] = []
+
     def target_feature(item: dict[str, Any]) -> str | None:
+        """What this boundary condition or load acts on, in any form it is written.
+
+        Three forms exist in the wild and a reader that knows one drops the
+        others silently:
+
+        * ``target_feature`` — the ``setup.yaml`` shape;
+        * ``target`` as an NSET name — resolved through ``cae_mapping.json``;
+        * ``target`` as an ``@face:``/``@group:`` pointer — what
+          ``cae.setup_static`` writes, and what the deck path already resolves
+          (``normalize_cae_bindings``). Knowing only the first two made the
+          entire topology-optimization chain unreachable from the workbench's
+          own one-call authoring path: every BC and load was dropped here, and
+          the derivation then honestly reported "0 support(s) and 0 load(s)"
+          without being able to say why.
+
+        A pointer's id is returned bare, which is what the downstream face
+        resolvers expect.
+        """
         explicit = item.get("target_feature")
         if explicit:
             return str(explicit)
         target = item.get("target")
         if target is None:
+            unresolved.append(f"{item.get('id') or '?'}: no target")
             return None
-        return entity_to_target.get(str(target))
+        text = str(target)
+        if text.startswith("@"):
+            _kind, _, pointer_id = text[1:].partition(":")
+            if pointer_id:
+                return pointer_id
+        resolved = entity_to_target.get(text)
+        if resolved is None:
+            # Say so rather than vanishing: a dropped load is a solved problem
+            # that is not the one the user set up.
+            unresolved.append(f"{item.get('id') or '?'}: target {text!r} matches no mapping")
+        return resolved
 
     materials: dict[str, Any] = {}
     material_name: str | None = None
@@ -202,6 +233,8 @@ def synthesize_setup_from_parsed(zf: zipfile.ZipFile) -> dict[str, Any] | None:
         setup["material_name"] = material_name
     if assumed:
         setup["assumed_properties"] = assumed
+    if unresolved:
+        setup["unresolved_targets"] = unresolved
     mesh_size = _read_json(zf, SOLVER_SETTINGS_PATH).get("mesh_size_mm")
     if mesh_size:
         setup["mesh"] = {"target_size_mm": mesh_size}

@@ -87,7 +87,13 @@ def register_opt_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         # 3D derivation may honestly decline to guess BCs.
         if problem.get("status") == "needs_user_input":
             return {"status": "needs_user_input", "tool": "opt.derive_problem_from_cae",
-                    "problem": problem, "diagnostics": problem.get("diagnostics"),
+                    "problem": problem,
+                    # `reason` carries the explanation; `diagnostics` is often
+                    # empty, so returning only that reported a refusal with no
+                    # stated cause.
+                    "reason": problem.get("reason"),
+                    "recommendation": problem.get("recommendation"),
+                    "diagnostics": problem.get("diagnostics"),
                     # The way out of a refusal the default design space caused.
                     "design_space_candidates": problem.get("design_space_candidates")}
         return {"status": "ok", "tool": "opt.derive_problem_from_cae", "problem": problem,
@@ -99,6 +105,7 @@ def register_opt_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         is set (or no problem is given), the problem is derived from the project's CAE
         setup + geometry first."""
         from aieng.converters.topology_optimization import (
+            TopologyProblemRefused,
             derive_topopt_problem_from_package,
             write_topology_optimization,
         )
@@ -133,7 +140,10 @@ def register_opt_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 # The derivation may honestly decline to guess BCs — surface it, don't solve.
                 if derived.get("status") == "needs_user_input":
                     return {"status": "needs_user_input", "tool": "opt.run_topology_optimization",
-                            "problem": derived, "diagnostics": derived.get("diagnostics"),
+                            "problem": derived,
+                            "reason": derived.get("reason"),
+                            "recommendation": derived.get("recommendation"),
+                            "diagnostics": derived.get("diagnostics"),
                             "design_space_candidates": derived.get("design_space_candidates")}
                 if isinstance(problem, dict):  # caller overrides (volfrac, grid, ...) win
                     derived.update({k: v for k, v in problem.items() if k != "bcs"})
@@ -141,6 +151,14 @@ def register_opt_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                         derived.setdefault("bcs", {}).update(problem["bcs"])
                 problem = derived
             result = write_topology_optimization(pkg, problem, optimizer=optimizer)
+        except TopologyProblemRefused as exc:
+            # A caller-supplied problem that is really a derivation refusal. The
+            # auto_derive branch above already surfaces this; a passed-in problem
+            # went straight to the optimizer, which substituted a preset.
+            return {"status": "needs_user_input", "tool": "opt.run_topology_optimization",
+                    "code": "problem_refused", "message": f"{exc}",
+                    "problem": problem,
+                    "design_space_candidates": (problem or {}).get("design_space_candidates")}
         except Exception as exc:  # noqa: BLE001
             return {"status": "error", "code": "optimization_failed", "message": f"{type(exc).__name__}: {exc}"}
         return {"status": "ok", "tool": "opt.run_topology_optimization", "topology_optimization": result}
