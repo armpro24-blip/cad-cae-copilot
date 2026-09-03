@@ -37,6 +37,7 @@ PARSED_MATERIALS_PATH = "simulation/cae_imports/parsed_materials.json"
 PARSED_BCS_PATH = "simulation/cae_imports/parsed_boundary_conditions.json"
 PARSED_LOADS_PATH = "simulation/cae_imports/parsed_loads.json"
 SOLVER_SETTINGS_PATH = "simulation/solver_settings.json"
+TOPOLOGY_MAP_PATH = "geometry/topology_map.json"
 
 SYNTHESIZED_FROM = "simulation/cae_imports/parsed_*.json"
 
@@ -108,6 +109,30 @@ def _parse_setup_document(raw: str) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _topology_face_ids(zf: zipfile.ZipFile) -> set[str]:
+    """Every FACE id the current geometry declares, or an empty set.
+
+    Face ids specifically, not every entity: checking membership in all of them
+    accepts `@face:solid_001`, which then fails downstream with nothing recorded
+    — a pointer that is wrong in a different way than "stale", reported as
+    neither.
+
+    Empty means "nothing to check against", and the caller treats that as
+    "cannot check" rather than "nothing exists" — refusing every pointer in a
+    package with no topology map, or one that declares no face entities, would
+    be worse than the bug being fixed.
+    """
+    document = _read_json(zf, TOPOLOGY_MAP_PATH)
+    entities = document.get("entities") or document.get("topology") or []
+    if not isinstance(entities, list):
+        return set()
+    return {
+        str(entity["id"]) for entity in entities
+        if isinstance(entity, dict) and entity.get("id")
+        and str(entity.get("type") or "").lower() == "face"
+    }
+
+
 def synthesize_setup_from_parsed(zf: zipfile.ZipFile) -> dict[str, Any] | None:
     """Translate the ``parsed_*.json`` shape into the ``setup.yaml`` shape.
 
@@ -117,6 +142,7 @@ def synthesize_setup_from_parsed(zf: zipfile.ZipFile) -> dict[str, Any] | None:
     from, so the caller can still report "no CAE setup" honestly rather than
     inventing one.
     """
+    known_face_ids = _topology_face_ids(zf)
     entity_to_target: dict[str, str] = {}
     for mapping in _read_json(zf, CAE_MAPPING_PATH).get("mappings") or []:
         if not isinstance(mapping, dict):
@@ -126,14 +152,60 @@ def synthesize_setup_from_parsed(zf: zipfile.ZipFile) -> dict[str, Any] | None:
         if entity and target_id:
             entity_to_target[str(entity)] = target_id
 
+    unresolved: list[str] = []
+
     def target_feature(item: dict[str, Any]) -> str | None:
+        """What this boundary condition or load acts on, in any form it is written.
+
+        Three forms exist in the wild and a reader that knows one drops the
+        others silently:
+
+        * ``target_feature`` — the ``setup.yaml`` shape;
+        * ``target`` as an NSET name — resolved through ``cae_mapping.json``;
+        * ``target`` as an ``@face:`` pointer — what ``cae.setup_static`` writes,
+          and what the deck path already resolves (``normalize_cae_bindings``).
+          Only `@face:` is stripped: a `@group:` id is not a face id and the
+          face resolvers downstream would not know one, so it falls through and
+          is reported. Knowing only the first two made the
+          entire topology-optimization chain unreachable from the workbench's
+          own one-call authoring path: every BC and load was dropped here, and
+          the derivation then honestly reported "0 support(s) and 0 load(s)"
+          without being able to say why.
+
+        A pointer's id is returned bare, which is what the downstream face
+        resolvers expect.
+        """
         explicit = item.get("target_feature")
         if explicit:
             return str(explicit)
         target = item.get("target")
         if target is None:
+            unresolved.append(f"{item.get('id') or '?'}: no target")
             return None
-        return entity_to_target.get(str(target))
+        text = str(target)
+        if text.startswith("@face:"):
+            face_id = text[len("@face:"):]
+            # Only a face that the CURRENT geometry has. Returning the id
+            # unchecked would turn a stale pointer into a target the derivation
+            # then cannot resolve — the dropped-BC failure in a new shape, and
+            # invisible for the same reason.
+            if face_id and (not known_face_ids or face_id in known_face_ids):
+                return face_id
+            unresolved.append(
+                f"{item.get('id') or '?'}: {text} names no face in the current geometry")
+            return None
+        resolved = entity_to_target.get(text)
+        if resolved is None:
+            # Say so rather than vanishing: a dropped load is a solved problem
+            # that is not the one the user set up. A non-`@face:` pointer is
+            # named as such — the face resolvers downstream do not know a group
+            # id, so it is unsupported here rather than merely unmatched.
+            unresolved.append(
+                f"{item.get('id') or '?'}: unsupported pointer kind {text!r}"
+                if text.startswith("@")
+                else f"{item.get('id') or '?'}: target {text!r} matches no mapping"
+            )
+        return resolved
 
     materials: dict[str, Any] = {}
     material_name: str | None = None
@@ -189,8 +261,11 @@ def synthesize_setup_from_parsed(zf: zipfile.ZipFile) -> dict[str, Any] | None:
             "direction": _as_direction(load.get("direction")),
         })
 
-    if not (materials or boundary_conditions or loads):
+    if not (materials or boundary_conditions or loads or unresolved):
         return None
+    # `unresolved` alone still counts. Returning None there would discard the
+    # only record of WHY the setup is empty, and the caller would see the same
+    # silent "no CAE setup" that this whole change exists to remove.
 
     setup: dict[str, Any] = {
         "materials": materials,
@@ -202,6 +277,8 @@ def synthesize_setup_from_parsed(zf: zipfile.ZipFile) -> dict[str, Any] | None:
         setup["material_name"] = material_name
     if assumed:
         setup["assumed_properties"] = assumed
+    if unresolved:
+        setup["unresolved_targets"] = unresolved
     mesh_size = _read_json(zf, SOLVER_SETTINGS_PATH).get("mesh_size_mm")
     if mesh_size:
         setup["mesh"] = {"target_size_mm": mesh_size}

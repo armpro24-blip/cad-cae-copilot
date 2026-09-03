@@ -1355,6 +1355,12 @@ def derive_topopt_problem_from_package(
     setup_loads = setup.get("loads") or []
     if not feat_to_faces and (setup_bcs or setup_loads):
         warnings.append("no simulation/cae_mapping.json — resolving BC/load targets as face ids directly")
+    # A BC or load the setup reader could not pin to geometry is the usual cause
+    # of "0 support(s) and 0 load(s)" on a setup that looks fine. Say so here
+    # rather than leaving the caller to find it in the setup document.
+    warnings.extend(
+        f"setup target unresolved — {note}" for note in setup.get("unresolved_targets") or []
+    )
 
     mins, maxs = overall[:3], overall[3:]
     ext = [max(maxs[k] - mins[k], 1e-9) for k in range(3)]
@@ -1622,7 +1628,12 @@ def derive_topopt_problem_3d_from_package(
         "cell_size_x": cell_size[0], "cell_size_y": cell_size[1], "cell_size_z": cell_size[2],
     }
 
-    diagnostics: list[str] = []
+    # Same as the 2D path: a target the setup reader could not pin to geometry
+    # is the usual cause of "0 support(s) and 0 load(s)" on a setup that looks
+    # fine, so the refusal should name it.
+    diagnostics: list[str] = [
+        f"setup target unresolved — {note}" for note in setup.get("unresolved_targets") or []
+    ]
     supports: list[dict[str, Any]] = []
     for bc in setup_bcs:
         fids = _resolve_target_faces(bc.get("target_feature"), feat_to_faces, faces)
@@ -1750,8 +1761,32 @@ def derive_topopt_problem_3d_from_package(
     }
 
 
+class TopologyProblemRefused(ValueError):
+    """The supplied problem is a derivation's refusal, not a problem to solve."""
+
+
 def run_topology_optimization(problem: dict[str, Any], *, optimizer: str = "simp_2d") -> dict[str, Any]:
-    """Run an optimizer and wrap its output in the neutral result contract."""
+    """Run an optimizer and wrap its output in the neutral result contract.
+
+    Raises :class:`TopologyProblemRefused` when handed a document the derivation
+    declined to produce. `derive_topopt_problem_from_cae` returns
+    ``status: "needs_user_input"`` with a `reason` instead of inventing supports
+    and loads — but the documented next step is "inspect this, then pass it to
+    opt.run_topology_optimization", and passing it verbatim used to return
+    ``status: ok``: `_resolve_bcs` sees no usable explicit BCs and substitutes
+    the textbook cantilever preset, so a plate with no supports and no loads
+    produced a full density field, `warnings: []`, and an artifact
+    `opt.writeback_to_shape_ir` would turn into the part's geometry.
+
+    The preset fallback itself stays — a caller may ask for a preset problem on
+    purpose. What is refused is laundering a refusal into a result.
+    """
+    if isinstance(problem, dict) and str(problem.get("status") or "") == "needs_user_input":
+        raise TopologyProblemRefused(
+            "this problem is a derivation refusal, not a solvable problem: "
+            f"{problem.get('reason') or 'no reason recorded'}. "
+            f"{problem.get('recommendation') or 'Supply supports and loads, or a different design space.'}"
+        )
     requested = str(optimizer or "simp_2d")
     entry = _OPTIMIZER_REGISTRY.get(requested)
     fallback = entry is None
