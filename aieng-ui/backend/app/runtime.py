@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Literal
 
+from fastapi import HTTPException
+
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -222,6 +224,18 @@ def registry_identity() -> dict[str, Any]:
     }
 
 
+#: `HTTPException.status_code` -> the `code` an agent branches on. Deliberately
+#: coarse: the boundary knows the status, not why the handler chose it, and
+#: inventing a more specific code from the detail string would be guessing.
+_HTTP_ERROR_CODES = {
+    400: "bad_request",
+    403: "forbidden",
+    404: "not_found",
+    409: "conflict",
+    422: "invalid_input",
+}
+
+
 def invoke_tool(
     name: str,
     inp: dict[str, Any],
@@ -232,6 +246,10 @@ def invoke_tool(
     Bypasses the run model — intended for direct adapters (e.g. an MCP server)
     that wrap each tool call in their own protocol-level lifecycle.
 
+    A handler that raises `HTTPException` gets its error returned in the normal
+    structured shape instead; see the mapping below. Any other exception
+    propagates — that is a crash, and the callers already report it as one.
+
     Raises:
         KeyError: if the tool is not registered.
     """
@@ -239,7 +257,23 @@ def invoke_tool(
     if meta is None:
         raise KeyError(f"tool not registered: {name}")
     handler: ToolHandler = meta["handler"]
-    return handler(inp or {}, ctx or {})
+    try:
+        return handler(inp or {}, ctx or {})
+    except HTTPException as exc:
+        # A reported error, not a crash: the handler chose to raise it (almost
+        # always `get_project` on an id that does not exist). Measured, 14 of 27
+        # read-only tools reached the caller this way — including
+        # `aieng.agent_context`, one of the three calls every session starts
+        # with — and both callers wrap ANY exception as
+        # `code: "tool_exception"`, so an agent could not tell "you named a
+        # project that does not exist" from "the tool crashed", and the operator
+        # got a stack trace for a typo. Other exceptions still propagate: those
+        # really are crashes.
+        return {
+            "status": "error",
+            "code": _HTTP_ERROR_CODES.get(exc.status_code, "request_failed"),
+            "message": f"{exc.status_code}: {exc.detail}",
+        }
 
 
 # ── file-backed run store ─────────────────────────────────────────────────────
