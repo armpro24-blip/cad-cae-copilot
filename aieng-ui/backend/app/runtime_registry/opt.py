@@ -11,6 +11,7 @@ from typing import Any
 import zipfile
 
 from ..legacy_app_symbols import sync_main_symbols
+from ..logging_utils import log_exception
 
 LOGGER = logging.getLogger("app.app_factory")
 

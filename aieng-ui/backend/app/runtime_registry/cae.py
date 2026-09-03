@@ -14,6 +14,7 @@ from .. import blocked_reason_codes as _blocked_reason_codes
 from .. import next_actions as _next_actions
 from .. import operation_receipt as _receipt
 from ..legacy_app_symbols import sync_main_symbols
+from ..logging_utils import log_exception
 
 LOGGER = logging.getLogger("app.app_factory")
 

@@ -11,6 +11,7 @@ import logging
 from typing import Any
 
 from ..legacy_app_symbols import sync_main_symbols
+from ..logging_utils import log_exception
 
 LOGGER = logging.getLogger("app.app_factory")
 
@@ -68,8 +69,6 @@ def register_ai_preprocessing_tools(rt: Any, active_settings: Any, app_context: 
         try:
             result = _ai_preprocessing.run_ai_preprocessing(active_settings, project_id, payload)
         except Exception as exc:  # noqa: BLE001
-            from ..logging_utils import log_exception
-
             log_exception(
                 LOGGER,
                 "ai_preprocessing.run_ai_preprocessing failed",
