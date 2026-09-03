@@ -976,10 +976,10 @@ requests and pushes to `main` that touch the solver/V&V paths — including any
 easily as a code change — and stays manually runnable via `workflow_dispatch`
 for release verification. **Keep its path list current when a file moves**: a
 glob that matches nothing is silently inert, and GitHub gives no warning.
-Deleting the duplicate schema tree (#523) left `aieng/schemas/**` matching
-nothing, so editing a schema stopped triggering the only lane that runs the
-package-conformance ratchet — and it went unnoticed because the conformance PR
-happened to touch a different listed path.
+Deleting the duplicate schema tree (#523) left the lane's old repo-root
+`schemas/**` glob matching nothing, so editing a schema stopped triggering the
+only lane that runs the package-conformance ratchet — and it went unnoticed
+because the conformance PR happened to touch a different listed path.
 `aieng/tests/test_workflow_path_filters_are_live.py` now fails on a dead entry. It is a **candidate** required check: promotion to a
 branch-protection requirement is gated on observed runner stability and runtime
 cost, not on outstanding calibration work (#373 is closed).
