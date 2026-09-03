@@ -18,12 +18,13 @@ on:
       - "aieng-ui/backend/app/aieng_bridge.py"
       - "aieng-ui/backend/app/runtime_registry/cae.py"
       - "aieng-ui/backend/app/simulation_runner.py"
+      - "aieng/src/aieng/cae_setup_view.py"
       - "aieng-ui/backend/tests/test_cae_solve_integration.py"
       - "aieng-ui/backend/tests/test_simulation_runner.py"
       # Package conformance (#513) rides this lane because it is the only one
       # with the real CAD + mesh stack installed. Either side of the
       # writer/schema disagreement can move its numbers, so both trigger it.
-      - "aieng/schemas/**"
+      - "aieng/src/aieng/schemas/**"
       - "aieng-ui/backend/app/cad_generation.py"
       - "aieng-ui/backend/tests/test_package_conformance_ratchet.py"
       - "aieng-ui/backend/tests/test_load_case_requirement.py"
@@ -43,12 +44,13 @@ on:
       - "aieng-ui/backend/app/aieng_bridge.py"
       - "aieng-ui/backend/app/runtime_registry/cae.py"
       - "aieng-ui/backend/app/simulation_runner.py"
+      - "aieng/src/aieng/cae_setup_view.py"
       - "aieng-ui/backend/tests/test_cae_solve_integration.py"
       - "aieng-ui/backend/tests/test_simulation_runner.py"
       # Package conformance (#513) rides this lane because it is the only one
       # with the real CAD + mesh stack installed. Either side of the
       # writer/schema disagreement can move its numbers, so both trigger it.
-      - "aieng/schemas/**"
+      - "aieng/src/aieng/schemas/**"
       - "aieng-ui/backend/app/cad_generation.py"
       - "aieng-ui/backend/tests/test_package_conformance_ratchet.py"
       - "aieng-ui/backend/tests/test_load_case_requirement.py"
