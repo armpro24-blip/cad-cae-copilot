@@ -37,6 +37,7 @@ PARSED_MATERIALS_PATH = "simulation/cae_imports/parsed_materials.json"
 PARSED_BCS_PATH = "simulation/cae_imports/parsed_boundary_conditions.json"
 PARSED_LOADS_PATH = "simulation/cae_imports/parsed_loads.json"
 SOLVER_SETTINGS_PATH = "simulation/solver_settings.json"
+TOPOLOGY_MAP_PATH = "geometry/topology_map.json"
 
 SYNTHESIZED_FROM = "simulation/cae_imports/parsed_*.json"
 
@@ -108,6 +109,23 @@ def _parse_setup_document(raw: str) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _topology_entity_ids(zf: zipfile.ZipFile) -> set[str]:
+    """Every entity id the current geometry declares, or an empty set.
+
+    Empty means "no topology map to check against", and the callers treat that
+    as "cannot check" rather than "nothing exists" — refusing every pointer in a
+    package without a topology map would be worse than the bug being fixed.
+    """
+    document = _read_json(zf, TOPOLOGY_MAP_PATH)
+    entities = document.get("entities") or document.get("topology") or []
+    if not isinstance(entities, list):
+        return set()
+    return {
+        str(entity["id"]) for entity in entities
+        if isinstance(entity, dict) and entity.get("id")
+    }
+
+
 def synthesize_setup_from_parsed(zf: zipfile.ZipFile) -> dict[str, Any] | None:
     """Translate the ``parsed_*.json`` shape into the ``setup.yaml`` shape.
 
@@ -117,6 +135,7 @@ def synthesize_setup_from_parsed(zf: zipfile.ZipFile) -> dict[str, Any] | None:
     from, so the caller can still report "no CAE setup" honestly rather than
     inventing one.
     """
+    known_entity_ids = _topology_entity_ids(zf)
     entity_to_target: dict[str, str] = {}
     for mapping in _read_json(zf, CAE_MAPPING_PATH).get("mappings") or []:
         if not isinstance(mapping, dict):
@@ -155,10 +174,22 @@ def synthesize_setup_from_parsed(zf: zipfile.ZipFile) -> dict[str, Any] | None:
             unresolved.append(f"{item.get('id') or '?'}: no target")
             return None
         text = str(target)
+        if text.startswith("@face:"):
+            face_id = text[len("@face:"):]
+            # Only a face that the CURRENT geometry has. Returning the id
+            # unchecked would turn a stale pointer into a target the derivation
+            # then cannot resolve — the dropped-BC failure in a new shape, and
+            # invisible for the same reason.
+            if face_id and (not known_entity_ids or face_id in known_entity_ids):
+                return face_id
+            unresolved.append(
+                f"{item.get('id') or '?'}: {text} names no face in the current geometry")
+            return None
         if text.startswith("@"):
-            _kind, _, pointer_id = text[1:].partition(":")
-            if pointer_id:
-                return pointer_id
+            # A `@group:` (or any other kind) is not a face id, and the face
+            # resolvers downstream would not recognise it. Let it fall through
+            # to the mapping, and be recorded if that finds nothing.
+            pass
         resolved = entity_to_target.get(text)
         if resolved is None:
             # Say so rather than vanishing: a dropped load is a solved problem
@@ -220,8 +251,11 @@ def synthesize_setup_from_parsed(zf: zipfile.ZipFile) -> dict[str, Any] | None:
             "direction": _as_direction(load.get("direction")),
         })
 
-    if not (materials or boundary_conditions or loads):
+    if not (materials or boundary_conditions or loads or unresolved):
         return None
+    # `unresolved` alone still counts. Returning None there would discard the
+    # only record of WHY the setup is empty, and the caller would see the same
+    # silent "no CAE setup" that this whole change exists to remove.
 
     setup: dict[str, Any] = {
         "materials": materials,

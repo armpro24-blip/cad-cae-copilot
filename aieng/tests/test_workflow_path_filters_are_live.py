@@ -19,7 +19,6 @@ is the failure that actually happened.
 
 from __future__ import annotations
 
-import fnmatch
 import re
 import subprocess
 from pathlib import Path
@@ -47,20 +46,43 @@ def _tracked_files() -> list[str]:
     return result.stdout.split()
 
 
-def _matches(glob: str, paths: list[str]) -> bool:
-    """Whether a GitHub path filter matches any tracked file.
+def _as_regex(glob: str) -> re.Pattern[str]:
+    """A GitHub path filter as a regex.
 
-    GitHub's globs are not `fnmatch`: `a/**` matches everything under `a/`, and
-    `**/x` matches `x` at any depth. Approximated closely enough to tell "this
-    matches something" from "this matches nothing".
+    Not `fnmatch`: there, `*` crosses `/`, so `aieng/*.py` would "match"
+    `aieng/nested/file.py` and a filter that GitHub considers dead would be
+    judged live — a guard reading too leniently is the one failure mode a guard
+    cannot afford. Here `**` crosses separators and `*` does not.
     """
+    out: list[str] = []
+    i = 0
+    while i < len(glob):
+        char = glob[i]
+        if char == "*":
+            if glob[i:i + 3] == "**/":
+                out.append("(?:.*/)?")   # zero or more leading segments
+                i += 3
+                continue
+            if glob[i:i + 2] == "**":
+                out.append(".*")
+                i += 2
+                continue
+            out.append("[^/]*")
+        elif char == "?":
+            out.append("[^/]")
+        else:
+            out.append(re.escape(char))
+        i += 1
+    return re.compile("^" + "".join(out) + "$")
+
+
+def _matches(glob: str, paths: list[str]) -> bool:
+    """Whether a GitHub path filter matches any tracked file."""
     if glob.endswith("/**"):
         prefix = glob[:-3] + "/"
         return any(p.startswith(prefix) for p in paths)
-    if glob.startswith("**/"):
-        suffix = glob[3:]
-        return any(p == suffix or p.endswith("/" + suffix) for p in paths)
-    return any(fnmatch.fnmatch(p, glob) for p in paths)
+    pattern = _as_regex(glob)
+    return any(pattern.match(p) for p in paths)
 
 
 def test_every_workflow_path_filter_still_matches_something() -> None:
@@ -90,3 +112,12 @@ def test_the_check_can_actually_fail() -> None:
     assert _matches("aieng/src/aieng/schemas/**", tracked), "the live tree must match"
     assert _matches("**/pyproject.toml", tracked)
     assert not _matches("aieng/does_not_exist/**", tracked)
+    # `**/x` must also match `x` at the root — asserted against a synthetic list,
+    # because this repo happens to have no root-level pyproject.toml and the
+    # first version of this line therefore checked something else entirely.
+    assert _matches("**/pyproject.toml", ["pyproject.toml"])
+    # A single `*` must not cross a separator, or a filter GitHub considers
+    # dead would read as live here.
+    assert _matches("aieng/*.toml", ["aieng/pyproject.toml"])
+    assert not _matches("aieng/*.py", ["aieng/nested/file.py"])
+    assert _matches("aieng/**/*.py", ["aieng/nested/file.py"])

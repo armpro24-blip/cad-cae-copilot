@@ -246,3 +246,120 @@ def test_the_derive_tool_honours_its_optimizer_parameters(authored) -> None:
     for key in ("volfrac", "penalty", "rmin", "max_iters"):
         assert problem[key] == asked[key], f"{key}: {problem.get(key)!r} != {asked[key]!r}"
     assert problem["grid"]["nx"] == 12, problem["grid"]
+
+
+class TestAPointerIsOnlyResolvedIfTheGeometryHasIt:
+    """Returning a pointer's id unchecked recreates the bug in a new shape.
+
+    The first fix stripped `@face:` and returned the id, so a STALE pointer
+    became a `target_feature` the derivation could not resolve — dropped again,
+    and invisible again. `unresolved_targets` exists precisely to catch that, so
+    it has to be reached.
+    """
+
+    @staticmethod
+    def _setup(tmp_path: Path, target: str) -> dict:
+        import zipfile
+
+        from aieng.cae_setup_view import load_cae_setup_from_package
+
+        package = tmp_path / "p.aieng"
+        with zipfile.ZipFile(package, "w") as zf:
+            zf.writestr("geometry/topology_map.json", json.dumps(
+                {"entities": [{"id": "face_001", "type": "face"},
+                              {"id": "face_002", "type": "face"}]}))
+            zf.writestr("simulation/cae_imports/parsed_boundary_conditions.json", json.dumps(
+                {"boundary_conditions": [{"id": "bc_001", "target": target, "type": "fixed"}]}))
+        return load_cae_setup_from_package(package)
+
+    def test_a_live_pointer_resolves(self, tmp_path: Path) -> None:
+        setup = self._setup(tmp_path, "@face:face_001")
+        assert setup["boundary_conditions"] == [
+            {"target_feature": "face_001", "type": "fixed"}
+        ]
+        assert not setup.get("unresolved_targets")
+
+    def test_a_stale_pointer_is_recorded_not_passed_on(self, tmp_path: Path) -> None:
+        setup = self._setup(tmp_path, "@face:face_999")
+        assert setup.get("boundary_conditions") == []
+        assert setup["unresolved_targets"] == [
+            "bc_001: @face:face_999 names no face in the current geometry"
+        ]
+
+    def test_a_group_pointer_is_not_mistaken_for_a_face(self, tmp_path: Path) -> None:
+        """A group id is not a face id, and the face resolvers would not know it."""
+        setup = self._setup(tmp_path, "@group:mounting_faces")
+        assert setup.get("boundary_conditions") == []
+        assert setup["unresolved_targets"], "it must be reported, not dropped"
+
+    def test_a_package_without_a_topology_map_still_resolves(self, tmp_path: Path) -> None:
+        """"Cannot check" is not "nothing exists".
+
+        Refusing every pointer in a package that carries no topology map would
+        be worse than the bug being fixed.
+        """
+        import zipfile
+
+        from aieng.cae_setup_view import load_cae_setup_from_package
+
+        package = tmp_path / "no_topo.aieng"
+        with zipfile.ZipFile(package, "w") as zf:
+            zf.writestr("simulation/cae_imports/parsed_boundary_conditions.json", json.dumps(
+                {"boundary_conditions": [{"id": "bc_001", "target": "@face:face_007",
+                                          "type": "fixed"}]}))
+        setup = load_cae_setup_from_package(package)
+        assert setup["boundary_conditions"][0]["target_feature"] == "face_007"
+
+
+def test_a_refused_run_returns_the_same_fields_however_the_problem_arrived(authored) -> None:
+    """One refusal contract, not two.
+
+    The auto_derive path surfaced `reason` / `recommendation` / `diagnostics`;
+    the caller-supplied path returned only prose and a nested `problem`, so a
+    caller had to parse differently depending on which branch refused it.
+    """
+    _settings, project_id = authored
+    refusal = runtime.invoke_tool("opt.derive_problem_from_cae", {"project_id": project_id})
+    direct = runtime.invoke_tool("opt.run_topology_optimization", {
+        "project_id": project_id, "problem": refusal["problem"],
+    })
+    auto = runtime.invoke_tool("opt.run_topology_optimization", {
+        "project_id": project_id, "auto_derive": True,
+    })
+    assert direct["status"] == auto["status"] == "needs_user_input"
+    for field in ("reason", "recommendation", "diagnostics"):
+        assert direct[field] == auto[field], field
+    assert direct["reason"], "a refusal with no stated cause is the defect this fixes"
+
+
+def test_the_derivation_names_an_unresolved_target_in_its_diagnostics(tmp_path: Path) -> None:
+    """The refusal must say why, not leave the caller to find it.
+
+    Without this the chain still reports "0 support(s) and 0 load(s)" for a
+    setup whose targets are simply stale — the same uninformative message the
+    original defect produced, just from a different cause.
+    """
+    import zipfile
+
+    from aieng.converters.topology_optimization import derive_topopt_problem_from_package
+
+    package = tmp_path / "stale.aieng"
+    with zipfile.ZipFile(package, "w") as zf:
+        zf.writestr("geometry/topology_map.json", json.dumps({"entities": [
+            {"id": "solid_001", "type": "solid", "bounding_box": [0, 0, 0, 100, 60, 20]},
+            {"id": "face_001", "type": "face", "bounding_box": [0, 0, 0, 0, 60, 20],
+             "center": [0, 30, 10]},
+        ]}))
+        zf.writestr("simulation/cae_imports/parsed_boundary_conditions.json", json.dumps(
+            {"boundary_conditions": [{"id": "bc_001", "target": "@face:face_gone",
+                                      "type": "fixed"}]}))
+        zf.writestr("simulation/cae_imports/parsed_loads.json", json.dumps(
+            {"loads": [{"id": "load_001", "target": "@face:face_001",
+                        "value_n": 500.0, "direction": [-1.0, 0.0, 0.0]}]}))
+
+    for dimension in ("2d", "3d"):
+        problem = derive_topopt_problem_from_package(package, dimension=dimension)
+        # A refusal reports its notes as `diagnostics`; a successful derivation
+        # keeps them under `warnings`. Read both rather than pinning the branch.
+        notes = " ".join((problem.get("diagnostics") or []) + (problem.get("warnings") or []))
+        assert "face_gone" in notes, f"{dimension}: {problem}"

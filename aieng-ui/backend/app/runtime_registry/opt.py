@@ -155,10 +155,17 @@ def register_opt_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             # A caller-supplied problem that is really a derivation refusal. The
             # auto_derive branch above already surfaces this; a passed-in problem
             # went straight to the optimizer, which substituted a preset.
+            # Same top-level fields as the auto_derive refusal above: a caller
+            # should not have to parse prose, or reach into `problem`, just
+            # because it supplied the problem itself.
+            refused = problem or {}
             return {"status": "needs_user_input", "tool": "opt.run_topology_optimization",
                     "code": "problem_refused", "message": f"{exc}",
                     "problem": problem,
-                    "design_space_candidates": (problem or {}).get("design_space_candidates")}
+                    "reason": refused.get("reason"),
+                    "recommendation": refused.get("recommendation"),
+                    "diagnostics": refused.get("diagnostics"),
+                    "design_space_candidates": refused.get("design_space_candidates")}
         except Exception as exc:  # noqa: BLE001
             return {"status": "error", "code": "optimization_failed", "message": f"{type(exc).__name__}: {exc}"}
         return {"status": "ok", "tool": "opt.run_topology_optimization", "topology_optimization": result}
