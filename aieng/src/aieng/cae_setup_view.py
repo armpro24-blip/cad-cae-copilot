@@ -109,12 +109,18 @@ def _parse_setup_document(raw: str) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def _topology_entity_ids(zf: zipfile.ZipFile) -> set[str]:
-    """Every entity id the current geometry declares, or an empty set.
+def _topology_face_ids(zf: zipfile.ZipFile) -> set[str]:
+    """Every FACE id the current geometry declares, or an empty set.
 
-    Empty means "no topology map to check against", and the callers treat that
-    as "cannot check" rather than "nothing exists" — refusing every pointer in a
-    package without a topology map would be worse than the bug being fixed.
+    Face ids specifically, not every entity: checking membership in all of them
+    accepts `@face:solid_001`, which then fails downstream with nothing recorded
+    — a pointer that is wrong in a different way than "stale", reported as
+    neither.
+
+    Empty means "nothing to check against", and the caller treats that as
+    "cannot check" rather than "nothing exists" — refusing every pointer in a
+    package with no topology map, or one that declares no face entities, would
+    be worse than the bug being fixed.
     """
     document = _read_json(zf, TOPOLOGY_MAP_PATH)
     entities = document.get("entities") or document.get("topology") or []
@@ -123,6 +129,7 @@ def _topology_entity_ids(zf: zipfile.ZipFile) -> set[str]:
     return {
         str(entity["id"]) for entity in entities
         if isinstance(entity, dict) and entity.get("id")
+        and str(entity.get("type") or "").lower() == "face"
     }
 
 
@@ -135,7 +142,7 @@ def synthesize_setup_from_parsed(zf: zipfile.ZipFile) -> dict[str, Any] | None:
     from, so the caller can still report "no CAE setup" honestly rather than
     inventing one.
     """
-    known_entity_ids = _topology_entity_ids(zf)
+    known_face_ids = _topology_face_ids(zf)
     entity_to_target: dict[str, str] = {}
     for mapping in _read_json(zf, CAE_MAPPING_PATH).get("mappings") or []:
         if not isinstance(mapping, dict):
@@ -155,9 +162,11 @@ def synthesize_setup_from_parsed(zf: zipfile.ZipFile) -> dict[str, Any] | None:
 
         * ``target_feature`` — the ``setup.yaml`` shape;
         * ``target`` as an NSET name — resolved through ``cae_mapping.json``;
-        * ``target`` as an ``@face:``/``@group:`` pointer — what
-          ``cae.setup_static`` writes, and what the deck path already resolves
-          (``normalize_cae_bindings``). Knowing only the first two made the
+        * ``target`` as an ``@face:`` pointer — what ``cae.setup_static`` writes,
+          and what the deck path already resolves (``normalize_cae_bindings``).
+          Only `@face:` is stripped: a `@group:` id is not a face id and the
+          face resolvers downstream would not know one, so it falls through and
+          is reported. Knowing only the first two made the
           entire topology-optimization chain unreachable from the workbench's
           own one-call authoring path: every BC and load was dropped here, and
           the derivation then honestly reported "0 support(s) and 0 load(s)"
@@ -180,21 +189,22 @@ def synthesize_setup_from_parsed(zf: zipfile.ZipFile) -> dict[str, Any] | None:
             # unchecked would turn a stale pointer into a target the derivation
             # then cannot resolve — the dropped-BC failure in a new shape, and
             # invisible for the same reason.
-            if face_id and (not known_entity_ids or face_id in known_entity_ids):
+            if face_id and (not known_face_ids or face_id in known_face_ids):
                 return face_id
             unresolved.append(
                 f"{item.get('id') or '?'}: {text} names no face in the current geometry")
             return None
-        if text.startswith("@"):
-            # A `@group:` (or any other kind) is not a face id, and the face
-            # resolvers downstream would not recognise it. Let it fall through
-            # to the mapping, and be recorded if that finds nothing.
-            pass
         resolved = entity_to_target.get(text)
         if resolved is None:
             # Say so rather than vanishing: a dropped load is a solved problem
-            # that is not the one the user set up.
-            unresolved.append(f"{item.get('id') or '?'}: target {text!r} matches no mapping")
+            # that is not the one the user set up. A non-`@face:` pointer is
+            # named as such — the face resolvers downstream do not know a group
+            # id, so it is unsupported here rather than merely unmatched.
+            unresolved.append(
+                f"{item.get('id') or '?'}: unsupported pointer kind {text!r}"
+                if text.startswith("@")
+                else f"{item.get('id') or '?'}: target {text!r} matches no mapping"
+            )
         return resolved
 
     materials: dict[str, Any] = {}

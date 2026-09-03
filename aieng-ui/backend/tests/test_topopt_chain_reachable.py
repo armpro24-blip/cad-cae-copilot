@@ -267,7 +267,8 @@ class TestAPointerIsOnlyResolvedIfTheGeometryHasIt:
         with zipfile.ZipFile(package, "w") as zf:
             zf.writestr("geometry/topology_map.json", json.dumps(
                 {"entities": [{"id": "face_001", "type": "face"},
-                              {"id": "face_002", "type": "face"}]}))
+                              {"id": "face_002", "type": "face"},
+                              {"id": "solid_001", "type": "solid"}]}))
             zf.writestr("simulation/cae_imports/parsed_boundary_conditions.json", json.dumps(
                 {"boundary_conditions": [{"id": "bc_001", "target": target, "type": "fixed"}]}))
         return load_cae_setup_from_package(package)
@@ -286,11 +287,30 @@ class TestAPointerIsOnlyResolvedIfTheGeometryHasIt:
             "bc_001: @face:face_999 names no face in the current geometry"
         ]
 
-    def test_a_group_pointer_is_not_mistaken_for_a_face(self, tmp_path: Path) -> None:
-        """A group id is not a face id, and the face resolvers would not know it."""
+    def test_a_group_pointer_is_reported_as_unsupported_not_as_a_stale_face(
+        self, tmp_path: Path
+    ) -> None:
+        """A group id is not a face id, and the two are different problems.
+
+        Asserting only that SOMETHING was recorded would pass on the wrong
+        diagnosis — "names no face in the current geometry" would send the
+        reader looking for a face that was never meant to exist.
+        """
         setup = self._setup(tmp_path, "@group:mounting_faces")
         assert setup.get("boundary_conditions") == []
-        assert setup["unresolved_targets"], "it must be reported, not dropped"
+        note = " ".join(setup["unresolved_targets"])
+        assert "unsupported pointer kind" in note, note
+        assert "names no face" not in note, note
+
+    def test_a_face_pointer_naming_a_solid_is_rejected(self, tmp_path: Path) -> None:
+        """Checking every entity id, not face ids, accepts `@face:solid_001`.
+
+        It then fails downstream with nothing recorded — wrong in a different
+        way than stale, and reported as neither.
+        """
+        setup = self._setup(tmp_path, "@face:solid_001")
+        assert setup.get("boundary_conditions") == []
+        assert "names no face" in " ".join(setup["unresolved_targets"])
 
     def test_a_package_without_a_topology_map_still_resolves(self, tmp_path: Path) -> None:
         """"Cannot check" is not "nothing exists".
