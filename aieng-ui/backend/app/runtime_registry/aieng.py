@@ -8,6 +8,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from fastapi import HTTPException
+
 from ..legacy_app_symbols import sync_main_symbols
 from ..logging_utils import log_exception
 
@@ -43,10 +45,31 @@ def register_aieng_tools(rt: Any, active_settings: Any, app_context: Any, _schem
     def _tool_generate_preview(inp: dict[str, Any], _ctx: dict[str, Any]) -> dict[str, Any]:
         pid = inp.get("project_id")
         if not pid:
-            raise ValueError("project_id is required for aieng.generate_preview")
+            return {"status": "error", "code": "missing_project_id",
+                    "message": "project_id is required."}
         # convert_asset first publishes embedded package previews (GLB/STL), then
         # falls back to STEP conversion when the package has no viewer asset.
-        return convert_asset(active_settings, pid)
+        try:
+            return convert_asset(active_settings, pid)
+        except HTTPException as exc:
+            # The exact detail `ensure_step_source` raises. A substring test
+            # would also swallow some future 400 that merely mentions STEP and
+            # report it as "no geometry", which is a different, wrong answer.
+            if exc.status_code == 400 and str(exc.detail) == "STEP source not found":
+                # This tool is the documented fix for "the viewer shows
+                # nothing", and the most common cause of that is a project with
+                # no geometry yet — so the most likely call gets the least
+                # useful answer unless it says what to do.
+                return {
+                    "status": "error",
+                    "code": "no_geometry",
+                    "message": (
+                        "This project has no geometry to preview yet. Build some "
+                        "with cad.execute_build123d, or import a STEP file with "
+                        "aieng.convert, then call this again."
+                    ),
+                }
+            raise
 
     def _tool_read_audit_log(inp: dict[str, Any], _ctx: dict[str, Any]) -> dict[str, Any]:
         pid = inp.get("project_id")

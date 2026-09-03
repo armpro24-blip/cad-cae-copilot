@@ -9,6 +9,8 @@ import logging
 from typing import Any
 
 from .. import operation_receipt as _receipt
+from fastapi import HTTPException
+
 from ..legacy_app_symbols import sync_main_symbols
 
 LOGGER = logging.getLogger("app.app_factory")
@@ -163,6 +165,20 @@ def register_cad_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         project_id = inp.get("project_id")
         if not project_id:
             return {"status": "error", "code": "missing_project_id", "message": "project_id is required."}
+        # An id that names no project is a different answer from a project with
+        # no feature graph, and this tool used to give both the same one:
+        # `status: ok` with "no editable-parameter index available", which reads
+        # as "your model has no editable dimensions" for a project that does not
+        # exist at all.
+        from ..project_io import get_project
+
+        try:
+            get_project(active_settings, str(project_id))
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                return {"status": "error", "code": "project_not_found",
+                        "message": f"{exc.status_code}: {exc.detail}"}
+            raise
         # Reuse the same package read the /modify slot binding uses (single source).
         index = _load_project_feature_parameters(str(project_id))
         if index is None:
