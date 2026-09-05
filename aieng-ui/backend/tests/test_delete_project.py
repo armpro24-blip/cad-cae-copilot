@@ -77,16 +77,18 @@ def _listed() -> list[str]:
 
 
 def _refuse_to_unlink(monkeypatch: pytest.MonkeyPatch, doomed: Path) -> None:
-    """Make exactly one path undeletable, on any OS.
+    """Make one TOP-LEVEL file undeletable, on any OS.
 
     Windows raises here of its own accord when a file is open; POSIX does not.
     Injecting the failure keeps the test measuring the tool's REPORTING rather
     than the platform's file semantics.
 
-    Patched at `os.unlink` rather than `Path.unlink` because `shutil.rmtree`
-    reaches the former directly — patching the latter left files inside
-    subdirectories perfectly deletable, and a test that cannot make its own
-    scenario happen proves nothing.
+    Patched at `os.unlink` rather than `Path.unlink` because that is the call
+    the removal loop ends up making. It matches on the absolute path, which is
+    only reliable for a top-level entry: POSIX `shutil.rmtree` walks with
+    `os.unlink(name, dir_fd=...)`, passing a bare filename, so a nested target
+    needs `_rmtree_leaves_behind` below instead. The first version of this
+    helper did not, which passed on Windows and failed in CI.
     """
     import os
 
@@ -98,6 +100,27 @@ def _refuse_to_unlink(monkeypatch: pytest.MonkeyPatch, doomed: Path) -> None:
         return real_unlink(path, *args, **kwargs)
 
     monkeypatch.setattr(os, "unlink", guarded)
+
+
+def _rmtree_leaves_behind(monkeypatch: pytest.MonkeyPatch, survivor: Path) -> None:
+    """Make `shutil.rmtree` unable to fully clear the directory holding `survivor`.
+
+    Patched at `rmtree` rather than inside it, so the simulation does not depend
+    on how a platform's implementation walks the tree.
+    """
+    import shutil
+
+    real_rmtree = shutil.rmtree
+
+    def partial(path, *args, **kwargs):
+        if Path(path) == survivor.parent:
+            for child in Path(path).iterdir():
+                if child != survivor:
+                    real_rmtree(child, *args, **kwargs) if child.is_dir() else child.unlink()
+            return
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "rmtree", partial)
 
 
 def test_a_delete_removes_the_project_and_only_that_project(settings) -> None:
@@ -167,10 +190,12 @@ class TestWhenSomethingCannotBeRemoved:
         self, settings, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         project_id, folder = _project(settings, "stubborn")
-        _refuse_to_unlink(monkeypatch, folder / "viewer" / "model.glb")
+        survivor = folder / "viewer" / "model.glb"
+        _rmtree_leaves_behind(monkeypatch, survivor)
 
         result = runtime.invoke_tool("aieng.delete_project", {"project_id": project_id})
 
+        assert survivor.exists(), "the setup must hold, or this asserts nothing"
         assert result["deleted"] is False, result
         assert any("viewer" in entry for entry in result["remaining_files"]), result
         assert (folder / "metadata.json").exists()
