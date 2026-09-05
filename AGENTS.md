@@ -1375,7 +1375,7 @@ and freeform/NURBS fitting remains future work.
 | `aieng.refresh_semantics` | Re-run the schema + rule validation and report it, grouped by failing artifact. Does **not** re-extract semantics or clear stale flags — see below |
 | `aieng.update_validation_status` | Write per-category validation flags |
 | `aieng.write_evidence_scaffold` | Initialize `results/evidence_index.json` scaffold |
-| `aieng.delete_project` | **[APPROVAL]** Permanently delete a project — its directory + chat sessions/messages. Irreversible |
+| `aieng.delete_project` | **[APPROVAL]** Permanently delete a project — its directory + chat sessions/messages. Irreversible. A file it cannot remove (something still holds it open) is reported as `code: "partial_delete"` with the leftovers named, and the project stays listed so the delete can be retried — never as a success |
 
 ### MCP introspection
 

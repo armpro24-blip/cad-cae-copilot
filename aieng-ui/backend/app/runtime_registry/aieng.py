@@ -948,6 +948,30 @@ def register_aieng_tools(rt: Any, active_settings: Any, app_context: Any, _schem
             result = _delete_project_everywhere(pid)
         except HTTPException:
             return {"status": "error", "code": "not_found", "message": f"project not found: {pid}"}
+        if not result.get("deleted"):
+            # Partial. Saying `ok` here would tell a user their data was
+            # destroyed while it sits on disk — the one claim a delete tool must
+            # never get wrong. The message names only what actually happened:
+            # a failed record cleanup is reported as failed, not as removed.
+            remaining = result.get("remaining_files") or []
+            failed = result.get("failed_cleanups") or []
+            parts: list[str] = []
+            if remaining:
+                parts.append(
+                    f"{len(remaining)} file(s) could not be removed — most often "
+                    "because something still has them open"
+                )
+            if failed:
+                parts.append(f"cleanup failed for: {', '.join(failed)}")
+            return {
+                "status": "error",
+                "code": "partial_delete",
+                "message": (
+                    "This project was not fully deleted (" + "; ".join(parts) + "). "
+                    "It is still listed; resolve the cause and call this again."
+                ),
+                **result,
+            }
         return {"status": "ok", **result}
 
     rt.register_tool(

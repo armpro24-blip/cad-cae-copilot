@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 
 from .legacy_app_symbols import sync_main_symbols
@@ -403,7 +404,13 @@ def build_app_context(*, active_settings: Any, db_path: Any) -> AppContext:
                 continue
         return cancelled
 
-    def _delete_project_autopilot_runs(project_id: str) -> int:
+    def _delete_project_autopilot_runs(project_id: str) -> int | None:
+        """How many runs were removed, or None if the cleanup failed.
+
+        It used to return 0 on failure, which is the same answer as "there were
+        none" — so a delete could report that a project's runs were removed
+        while they were still in the store.
+        """
         try:
             return _autopilot_store().delete_runs(project_id=project_id)
         except Exception:
@@ -413,7 +420,51 @@ def build_app_context(*, active_settings: Any, db_path: Any) -> AppContext:
                 subsystem="app_factory.autopilot.delete_project_runs",
                 context={"project_id": project_id},
             )
-            return 0
+            return None
+
+    def _remove_project_directory(target: Path) -> list[str]:
+        """Delete a project's directory. Returns the files it could not remove.
+
+        `metadata.json` goes LAST, and only once everything else is gone. The
+        order is the difference between a retryable failure and an invisible
+        one: `rmtree` used to take the metadata out first, so a single
+        undeletable file (a `.aieng` package still open — routine on Windows)
+        left the project's engineering data on disk while `get_project` began
+        answering 404. The result was a directory no listing showed, no tool
+        could address, and nothing would ever clean up — and the caller was told
+        `deleted: true`.
+        """
+        import shutil
+
+        if not target.exists():
+            return []
+        metadata = target / "metadata.json"
+        for entry in sorted(target.iterdir()):
+            if entry == metadata:
+                continue
+            if entry.is_dir():
+                shutil.rmtree(entry, ignore_errors=True)
+            else:
+                try:
+                    entry.unlink()
+                except OSError:
+                    pass
+        # Every surviving entry, not only files: an undeletable subdirectory
+        # (or one holding nothing `is_file()` recognises) would otherwise read
+        # as "nothing left", and the final rmtree below would take
+        # `metadata.json` with it — putting back the unlisted directory this
+        # whole function exists to prevent.
+        remaining = sorted(
+            str(path.relative_to(target))
+            for path in target.rglob("*")
+            if path != metadata
+        )
+        if remaining:
+            # Leave the metadata in place: the project stays listed, and the
+            # caller can close whatever holds the file and call this again.
+            return remaining
+        shutil.rmtree(target, ignore_errors=True)
+        return [] if not target.exists() else ["metadata.json"]
 
     def _delete_project_everywhere(project_id: str) -> dict[str, Any]:
         import shutil
@@ -421,7 +472,7 @@ def build_app_context(*, active_settings: Any, db_path: Any) -> AppContext:
 
         get_project(active_settings, project_id)  # 404 if unknown
         runs_removed = _delete_project_autopilot_runs(project_id)
-        chat_rows = 0
+        chat_rows: int | None = None
         try:
             chat_rows = db.delete_project_chat(db_path, project_id)
         except Exception:
@@ -432,15 +483,31 @@ def build_app_context(*, active_settings: Any, db_path: Any) -> AppContext:
                 context={"project_id": project_id, "db_path": db_path},
             )
         target = project_dir(active_settings, project_id)
-        if target.exists():
-            shutil.rmtree(target, ignore_errors=True)
-        _publish_live_event({"type": "project_deleted", "project_id": project_id})
-        return {
-            "deleted": True,
+        remaining = _remove_project_directory(target)
+        # The tool's contract is the directory AND the project's records, so a
+        # failed record cleanup is not a complete delete either.
+        failed_cleanups = [
+            name for name, value in (("chat", chat_rows), ("autopilot_runs", runs_removed))
+            if value is None
+        ]
+        deleted = not remaining and not failed_cleanups
+        if deleted:
+            # Only on a verified full delete: a listener that drops the project
+            # from its state on this event would otherwise desync from a
+            # project that is still on disk and still listed.
+            _publish_live_event({"type": "project_deleted", "project_id": project_id})
+        result: dict[str, Any] = {
+            "deleted": deleted,
             "project_id": project_id,
             "chat_rows_removed": chat_rows,
             "autopilot_runs_removed": runs_removed,
         }
+        if remaining:
+            result["remaining_files"] = remaining
+            result["directory"] = str(target)
+        if failed_cleanups:
+            result["failed_cleanups"] = failed_cleanups
+        return result
 
 
     def _agent_context_with_session_summary(project_id: str | None, session_id: str | None) -> dict[str, Any] | None:
