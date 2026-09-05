@@ -76,8 +76,13 @@ def _listed() -> list[str]:
     return sorted(p.get("id") for p in (projects or []))
 
 
-def _refuse_to_unlink(monkeypatch: pytest.MonkeyPatch, doomed: Path) -> None:
-    """Make one TOP-LEVEL file undeletable, on any OS.
+def _refuse_to_unlink(monkeypatch: pytest.MonkeyPatch, doomed: Path) -> list[Path]:
+    """Make one TOP-LEVEL file undeletable, on any OS. Returns what it blocked.
+
+    Callers assert the returned list is non-empty. Without that, a guard that
+    silently stops matching — as this one did on Linux — turns every test using
+    it into a test of the wrong scenario, which is how the first version passed
+    on Windows and failed in CI.
 
     Windows raises here of its own accord when a file is open; POSIX does not.
     Injecting the failure keeps the test measuring the tool's REPORTING rather
@@ -93,13 +98,16 @@ def _refuse_to_unlink(monkeypatch: pytest.MonkeyPatch, doomed: Path) -> None:
     import os
 
     real_unlink = os.unlink
+    blocked: list[Path] = []
 
     def guarded(path, *args, **kwargs):
         if Path(path) == doomed:
+            blocked.append(Path(path))
             raise PermissionError(f"cannot remove {path}")
         return real_unlink(path, *args, **kwargs)
 
     monkeypatch.setattr(os, "unlink", guarded)
+    return blocked
 
 
 def _rmtree_leaves_behind(monkeypatch: pytest.MonkeyPatch, survivor: Path) -> None:
@@ -144,10 +152,11 @@ class TestWhenSomethingCannotBeRemoved:
     ) -> None:
         project_id, folder = _project(settings, "locked")
         package = folder / f"{project_id}.aieng"
-        _refuse_to_unlink(monkeypatch, package)
+        blocked = _refuse_to_unlink(monkeypatch, package)
 
         result = runtime.invoke_tool("aieng.delete_project", {"project_id": project_id})
 
+        assert blocked, "the guard never fired, so this measured a full delete"
         assert result["status"] == "error", result
         assert result["code"] == "partial_delete", result
         assert result["deleted"] is False
@@ -164,10 +173,11 @@ class TestWhenSomethingCannotBeRemoved:
         including this one.
         """
         project_id, folder = _project(settings, "locked")
-        _refuse_to_unlink(monkeypatch, folder / f"{project_id}.aieng")
+        blocked = _refuse_to_unlink(monkeypatch, folder / f"{project_id}.aieng")
 
         runtime.invoke_tool("aieng.delete_project", {"project_id": project_id})
 
+        assert blocked, "the guard never fired, so this measured a full delete"
         assert (folder / "metadata.json").exists(), "the index must outlive the payload"
         assert project_id in _listed(), "an unlisted leftover is unreachable"
 
@@ -175,9 +185,10 @@ class TestWhenSomethingCannotBeRemoved:
         self, settings, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         project_id, folder = _project(settings, "locked")
-        with monkeypatch.context() as blocked:
-            _refuse_to_unlink(blocked, folder / f"{project_id}.aieng")
+        with monkeypatch.context() as patched:
+            refused = _refuse_to_unlink(patched, folder / f"{project_id}.aieng")
             first = runtime.invoke_tool("aieng.delete_project", {"project_id": project_id})
+        assert refused, "the guard never fired, so this measured a full delete"
         assert first["code"] == "partial_delete", first
 
         retried = runtime.invoke_tool("aieng.delete_project", {"project_id": project_id})
@@ -269,10 +280,11 @@ class TestTheDeletionEvent:
         """
         published = _captured_events(monkeypatch)
         project_id, folder = _project(settings, "quiet")
-        _refuse_to_unlink(monkeypatch, folder / f"{project_id}.aieng")
+        blocked = _refuse_to_unlink(monkeypatch, folder / f"{project_id}.aieng")
 
         runtime.invoke_tool("aieng.delete_project", {"project_id": project_id})
 
+        assert blocked, "the guard never fired, so this measured a full delete"
         assert not [e for e in published if e.get("type") == "project_deleted"], published
         assert project_id in _listed(), "still there, so nothing should say otherwise"
 
@@ -285,6 +297,7 @@ class TestRecordCleanup:
     ) -> None:
         from app import db
 
+        published = _captured_events(monkeypatch)
         monkeypatch.setattr(
             db, "delete_project_chat",
             lambda *a, **k: (_ for _ in ()).throw(RuntimeError("database is locked")),
@@ -293,6 +306,9 @@ class TestRecordCleanup:
 
         result = runtime.invoke_tool("aieng.delete_project", {"project_id": project_id})
 
+        # The files really are gone here, so only the records are outstanding —
+        # a `project_deleted` event would still be a completed-deletion claim.
+        assert not [e for e in published if e.get("type") == "project_deleted"], published
         assert result["status"] == "error", result
         assert result["deleted"] is False
         assert "chat" in result["failed_cleanups"], result
