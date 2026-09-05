@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 
 from .legacy_app_symbols import sync_main_symbols
@@ -415,6 +416,45 @@ def build_app_context(*, active_settings: Any, db_path: Any) -> AppContext:
             )
             return 0
 
+    def _remove_project_directory(target: Path) -> list[str]:
+        """Delete a project's directory. Returns the files it could not remove.
+
+        `metadata.json` goes LAST, and only once everything else is gone. The
+        order is the difference between a retryable failure and an invisible
+        one: `rmtree` used to take the metadata out first, so a single
+        undeletable file (a `.aieng` package still open — routine on Windows)
+        left the project's engineering data on disk while `get_project` began
+        answering 404. The result was a directory no listing showed, no tool
+        could address, and nothing would ever clean up — and the caller was told
+        `deleted: true`.
+        """
+        import shutil
+
+        if not target.exists():
+            return []
+        metadata = target / "metadata.json"
+        for entry in sorted(target.iterdir()):
+            if entry == metadata:
+                continue
+            if entry.is_dir():
+                shutil.rmtree(entry, ignore_errors=True)
+            else:
+                try:
+                    entry.unlink()
+                except OSError:
+                    pass
+        remaining = sorted(
+            str(path.relative_to(target))
+            for path in target.rglob("*")
+            if path.is_file() and path != metadata
+        )
+        if remaining:
+            # Leave the metadata in place: the project stays listed, and the
+            # caller can close whatever holds the file and call this again.
+            return remaining
+        shutil.rmtree(target, ignore_errors=True)
+        return [] if not target.exists() else ["metadata.json"]
+
     def _delete_project_everywhere(project_id: str) -> dict[str, Any]:
         import shutil
         from . import db
@@ -432,15 +472,18 @@ def build_app_context(*, active_settings: Any, db_path: Any) -> AppContext:
                 context={"project_id": project_id, "db_path": db_path},
             )
         target = project_dir(active_settings, project_id)
-        if target.exists():
-            shutil.rmtree(target, ignore_errors=True)
+        remaining = _remove_project_directory(target)
         _publish_live_event({"type": "project_deleted", "project_id": project_id})
-        return {
-            "deleted": True,
+        result: dict[str, Any] = {
+            "deleted": not remaining,
             "project_id": project_id,
             "chat_rows_removed": chat_rows,
             "autopilot_runs_removed": runs_removed,
         }
+        if remaining:
+            result["remaining_files"] = remaining
+            result["directory"] = str(target)
+        return result
 
 
     def _agent_context_with_session_summary(project_id: str | None, session_id: str | None) -> dict[str, Any] | None:
