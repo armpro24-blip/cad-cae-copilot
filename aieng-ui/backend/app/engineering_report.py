@@ -16,6 +16,8 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from aieng.cae_run_comparison import compare_runs
+
 from .config import Settings, now_iso
 from .project_io import get_project, resolve_project_path
 
@@ -332,6 +334,98 @@ def _key_results_html(result_evidence: dict[str, Any]) -> str:
     )
 
 
+def _run_comparison(package_path: Path) -> dict[str, Any]:
+    """The before/after the promised task ends with, as report data.
+
+    `results/computed_metrics.json` is one fixed path, so by the time a report
+    is generated it holds only the LATEST extraction — the report could show
+    where the design ended up but not what changed. This re-derives each run's
+    numbers from that run's own FRD. A project with a single run gets the
+    refusal verbatim rather than an empty section, because "there is nothing to
+    compare yet" is the useful answer.
+    """
+    try:
+        return compare_runs(package_path)
+    except Exception as exc:  # noqa: BLE001 - a report must not fail on one section
+        return {"status": "error", "code": "comparison_failed", "message": str(exc)}
+
+
+def _format_number(value: Any) -> str:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return ""
+    return f"{float(value):.6g}"
+
+
+def _run_comparison_html(comparison: dict[str, Any]) -> str:
+    if not isinstance(comparison, dict) or comparison.get("status") != "ok":
+        message = str((comparison or {}).get("message") or "No run comparison available.")
+        return f"<p class=\"muted\">{html.escape(message)}</p>"
+
+    baseline = comparison.get("baseline") or {}
+    current = comparison.get("current") or {}
+
+    def _revision(side: dict[str, Any]) -> str:
+        revision = side.get("geometry_revision")
+        # "not recorded" is not revision 0 — see cae_run_comparison.
+        return "not recorded" if revision is None else str(revision)
+
+    header = (
+        "<p>"
+        f"<strong>Before:</strong> {html.escape(str(baseline.get('run_id')))} "
+        f"(geometry revision {html.escape(_revision(baseline))}) &nbsp;&rarr;&nbsp; "
+        f"<strong>After:</strong> {html.escape(str(current.get('run_id')))} "
+        f"(geometry revision {html.escape(_revision(current))})"
+        "</p>"
+    )
+    changed = comparison.get("geometry_changed")
+    if changed is False:
+        header += (
+            "<p class=\"muted\">Both decks were built for the same geometry revision: "
+            "this compares two solves of the SAME geometry, so a near-zero change is "
+            "expected and is not evidence about an edit.</p>"
+        )
+    elif changed is None:
+        header += (
+            "<p class=\"muted\">At least one deck records no geometry revision, so "
+            "whether the geometry changed cannot be established from the package.</p>"
+        )
+
+    rows: list[str] = []
+    for row in comparison.get("comparison") or []:
+        if not isinstance(row, dict) or not row.get("metric"):
+            continue
+        percent = row.get("percent_change")
+        percent_text = f"{percent:+.1f}%" if isinstance(percent, (int, float)) else ""
+        note = row.get("reason") or ""
+        rows.append(
+            "<tr>"
+            f"<td>{html.escape(str(row.get('metric')))}</td>"
+            f"<td>{html.escape(_format_number(row.get('before')))}</td>"
+            f"<td>{html.escape(_format_number(row.get('after')))}</td>"
+            f"<td>{html.escape(_format_number(row.get('delta')))}</td>"
+            f"<td>{html.escape(percent_text)}</td>"
+            f"<td>{html.escape(str(row.get('unit') or ''))}</td>"
+            f"<td>{html.escape(str(row.get('load_case_id') or ''))}</td>"
+            f"<td>{html.escape(str(note))}</td>"
+            "</tr>"
+        )
+    if not rows:
+        return header + "<p class=\"muted\">No metric is present in both runs.</p>"
+
+    table = (
+        "<div class=\"table-wrap\"><table><thead><tr>"
+        "<th>Metric</th><th>Before</th><th>After</th><th>Delta</th><th>Change</th>"
+        "<th>Unit</th><th>Load case</th><th>Note</th>"
+        "</tr></thead><tbody>" + "".join(rows) + "</tbody></table></div>"
+    )
+    sources = (
+        "<p class=\"muted\">Each column is re-derived from its own run's result file: "
+        f"{html.escape(str(baseline.get('result_file') or 'n/a'))} and "
+        f"{html.escape(str(current.get('result_file') or 'n/a'))}.</p>"
+    )
+    return header + table + sources
+
+
 def _provenance_html(provenance: dict[str, Any]) -> str:
     solver_runs = provenance.get("solver_runs") if isinstance(provenance, dict) else []
     deck_paths = provenance.get("deck_paths") if isinstance(provenance, dict) else []
@@ -508,6 +602,11 @@ def _html_report(payload: dict[str, Any]) -> str:
   </section>
 
   <section class="section">
+    <h2>Design Change (Before / After)</h2>
+    {_run_comparison_html(payload.get("run_comparison") or {})}
+  </section>
+
+  <section class="section">
     <h2>Provenance</h2>
     {_provenance_html(provenance)}
   </section>
@@ -545,9 +644,14 @@ def generate_engineering_report(settings: Settings, project_id: str) -> dict[str
     credibility = _credibility(settings, project_id, package_path)
     result_evidence = credibility.get("result_evidence") if isinstance(credibility, dict) else {}
     thumbnail_uri = _thumbnail_data_uri(package_path)
+    run_comparison = _run_comparison(package_path)
     warnings = list(bom_warnings)
     warnings.extend(str(item) for item in (review_packet.get("warnings") or []))
     warnings.extend(str(item) for item in (credibility.get("warnings") or []))
+    # A comparison whose run did not complete, or whose FRD is missing a field,
+    # says so in its own warnings. Rendering only the table would drop exactly
+    # the caveat that decides whether the delta means anything.
+    warnings.extend(str(item) for item in (run_comparison.get("warnings") or []))
 
     payload: dict[str, Any] = {
         "ok": True,
@@ -568,6 +672,7 @@ def generate_engineering_report(settings: Settings, project_id: str) -> dict[str
             "warnings": warnings,
         },
         "credibility": credibility,
+        "run_comparison": run_comparison,
         "provenance": _provenance(package_path, result_evidence if isinstance(result_evidence, dict) else {}),
         "review_packet": review_packet,
     }

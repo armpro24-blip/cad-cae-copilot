@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from aieng.cae_run_comparison import compare_runs as _compare_runs
 from aieng.simulation.cae_mapping_writer import mapping_target_id
 
 from .. import blocked_reason_codes as _blocked_reason_codes
@@ -1254,6 +1255,49 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             "artifact_diffs": artifact_diffs,
             "warnings": all_warnings,
         }
+
+    def _tool_cae_compare_runs(inp: dict[str, Any], _ctx: dict[str, Any]) -> dict[str, Any]:
+        """The before/after half of the promised task.
+
+        `results/computed_metrics.json` is one fixed path, so the re-solve's
+        extraction replaces the baseline's numbers. Until this tool the only
+        comparison in the repo lived in the assertions of
+        `tests/test_acceptance_edit_resolve_compare.py` — the deliverable
+        existed as a test rather than as something a user could be handed.
+        """
+        from pathlib import Path as _Path
+
+        package_path: str | None = inp.get("packagePath") or inp.get("package_path")
+        project_id: str | None = inp.get("project_id")
+        if not package_path and project_id:
+            proj = get_project(active_settings, project_id)
+            pkg = resolve_project_path(active_settings, project_id, proj.get("aieng_file"))
+            if pkg is not None and pkg.exists():
+                package_path = str(pkg)
+        if not package_path:
+            return {
+                "status": "error",
+                "code": "missing_package_path",
+                "message": (
+                    "No package path provided and no project_id could be resolved. "
+                    "Pass package_path or a project_id with an .aieng file."
+                ),
+            }
+        if not _Path(package_path).exists():
+            return {
+                "status": "error",
+                "code": "file_not_found",
+                "message": f"Package not found: {package_path}",
+            }
+
+        result = _compare_runs(
+            package_path,
+            baseline_run=str(inp.get("baselineRun") or inp.get("baseline_run") or "") or None,
+            current_run=str(inp.get("currentRun") or inp.get("current_run") or "") or None,
+            load_case_id=str(inp.get("loadCaseId") or inp.get("load_case_id") or "") or None,
+        )
+        result.setdefault("project_id", project_id)
+        return result
 
     def _tool_cae_extract_solver_results(inp: dict[str, Any], _ctx: dict[str, Any]) -> dict[str, Any]:
         from .. import aieng_bridge
@@ -3171,6 +3215,20 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             "Extracts real numerical extrema from per-node field data."
         ),
         input_schema=_schema("cae.extract_solver_results"),
+    )
+    rt.register_tool(
+        "cae.compare_runs",
+        _tool_cae_compare_runs,
+        description=(
+            "Read-only before/after comparison of two solver runs in one .aieng package. "
+            "Each side's metrics are re-derived from that run's own FRD (not from the "
+            "shared computed_metrics.json, which holds only the latest extraction) and "
+            "reported beside the geometry revision its deck was built for — so a "
+            "comparison of two solves of the SAME geometry says so instead of reading "
+            "as 'the edit changed nothing'. Runs no solver and writes nothing."
+        ),
+        input_schema=_schema("cae.compare_runs"),
+        read_only=True,
     )
     rt.register_tool(
         "cae.extract_field_regions",

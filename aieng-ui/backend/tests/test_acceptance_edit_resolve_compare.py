@@ -144,6 +144,12 @@ def acceptance(tmp_path_factory: pytest.TempPathFactory):
         exported = root / "exported.aieng"
         shutil.copy2(package, exported)
         record["exported"] = exported
+        # The deliverable, taken off the exported copy — the review's step 6 is
+        # "export and reopen", so the comparison has to survive leaving the
+        # workbench, not just be computable while the project is still open.
+        record["comparison"] = runtime.invoke_tool(
+            "cae.compare_runs", {"package_path": str(exported)}
+        )
         return record
     finally:
         os.chdir(previous_cwd)
@@ -239,6 +245,44 @@ class TestTheComparisonIsPhysicallyRight:
     def test_the_numbers_actually_differ(self, acceptance) -> None:
         """The blunt version, because the defect produced EXACTLY equal values."""
         assert acceptance["baseline"] != acceptance["after"]
+
+
+class TestTheComparisonIsDelivered:
+    """The promise ends at "交付…前后对比" — a deliverable, not a test assertion.
+
+    Every assertion above reads `record["baseline"]` and `record["after"]`,
+    which this test module held in memory across the two solves. The package
+    itself could not produce them: `results/computed_metrics.json` is one fixed
+    path, so the re-solve's extraction had already replaced the baseline's
+    numbers. `cae.compare_runs` re-derives each side from its own run's FRD, and
+    these tests check the SHIPPED comparison against the numbers the chain
+    actually produced.
+    """
+
+    def test_the_tool_finds_both_runs_without_being_told(self, acceptance) -> None:
+        comparison = acceptance["comparison"]
+        assert comparison["status"] == "ok", comparison
+        assert comparison["baseline"]["run_id"] == "run_001"
+        assert comparison["current"]["run_id"] == "run_002"
+
+    def test_it_reports_the_same_numbers_the_solves_produced(self, acceptance) -> None:
+        rows = {row["metric"]: row for row in acceptance["comparison"]["comparison"]}
+        for metric in ("max_displacement", "max_von_mises_stress"):
+            row = rows[metric]
+            assert row["before"] == pytest.approx(acceptance["baseline"][metric], rel=1e-6), row
+            assert row["after"] == pytest.approx(acceptance["after"][metric], rel=1e-6), row
+
+    def test_it_carries_the_geometry_revision_of_each_deck(self, acceptance) -> None:
+        """"Traceable to the geometry version" is half the promised sentence."""
+        comparison = acceptance["comparison"]
+        assert comparison["baseline"]["geometry_revision"] == 0
+        assert comparison["current"]["geometry_revision"] == 1
+        assert comparison["geometry_changed"] is True
+
+    def test_the_reported_change_matches_beam_theory(self, acceptance) -> None:
+        rows = {row["metric"]: row for row in acceptance["comparison"]["comparison"]}
+        assert -95.0 < rows["max_displacement"]["percent_change"] < -75.0
+        assert -85.0 < rows["max_von_mises_stress"]["percent_change"] < -55.0
 
 
 class TestTheExportedPackageCanExplainItself:

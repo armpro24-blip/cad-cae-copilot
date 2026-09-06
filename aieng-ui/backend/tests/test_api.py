@@ -6454,6 +6454,62 @@ def test_run_solver_extracts_results_when_requested(tmp_path: Path) -> None:
     assert "extracted_metrics" in result
 
 
+def test_cae_compare_runs_reaches_the_tool_layer(tmp_path: Path) -> None:
+    """The deliverable half of the promised task, invoked the way a user gets it.
+
+    The core comparison is covered in `aieng/tests/test_cae_run_comparison.py`;
+    this pins that it is reachable as an MCP tool from a project_id, which is
+    the only way anyone but a test can call it.
+    """
+    from app.main import create_app, default_project, project_dir, save_project
+    from starlette.testclient import TestClient
+
+    settings = _make_patch_settings(tmp_path)
+    app = create_app(settings)
+    client = TestClient(app)
+
+    project = save_project(settings, default_project("compare-runs"))
+    project_id = project["id"]
+    pkg_path = project_dir(settings, project_id) / "beam.aieng"
+    with zipfile.ZipFile(pkg_path, "w") as zf:
+        zf.writestr("manifest.json", json.dumps({"model_id": "beam"}))
+        for run_id, disp, revision in (("run_001", 2.4, 0), ("run_002", 0.3, 1)):
+            zf.writestr(
+                f"simulation/runs/{run_id}/outputs/result.frd",
+                _make_test_frd({1: [disp, 0.0, 0.0, disp]}, {1: [disp * 50, 0, 0, 0, 0, 0]}),
+            )
+            zf.writestr(
+                f"simulation/runs/{run_id}/solver_run.json",
+                json.dumps({
+                    "run_id": run_id, "solver": "CalculiX", "state": "completed",
+                    "solved": True, "analysis_type": "static",
+                }),
+            )
+            zf.writestr(
+                f"simulation/runs/{run_id}/deck_provenance.json",
+                json.dumps({"run_id": run_id, "geometry_revision": revision}),
+            )
+    project["aieng_file"] = "beam.aieng"
+    save_project(settings, project)
+
+    # The agent surface, not the keyword-planned /api/runtime/runs: an MCP
+    # client calls the tool by name.
+    resp = client.post("/api/agent/invoke-tool", json={
+        "tool": "cae.compare_runs",
+        "input": {"project_id": project_id},
+    })
+    assert resp.status_code == 200, resp.text
+    result = resp.json()
+
+    assert result["status"] == "ok", result
+    assert result["baseline"]["run_id"] == "run_001"
+    assert result["current"]["run_id"] == "run_002"
+    assert result["geometry_changed"] is True
+    disp = next(r for r in result["comparison"] if r["metric"] == "max_displacement")
+    assert disp["before"] > disp["after"] > 0
+    assert disp["percent_change"] < -50.0
+
+
 def test_run_solver_does_not_name_a_stale_frd_as_the_new_metrics_source(
     tmp_path: Path,
 ) -> None:
