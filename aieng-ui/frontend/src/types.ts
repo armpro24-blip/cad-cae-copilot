@@ -670,7 +670,8 @@ export type ProjectSummary = {
     loads_count: number;
     evidence_count: number;
     result_evidence_count: number;
-    results_available: boolean;
+    /** null when the package records no evidence index at all. */
+    results_available: boolean | null;
     available_fields: string[];
     simulation_targets: Array<Record<string, unknown>>;
     protected_regions: Array<Record<string, unknown>>;

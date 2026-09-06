@@ -10,7 +10,7 @@ from typing import Any
 
 import yaml
 
-from .config import Settings
+from .config import Settings, ensure_aieng_on_path
 
 PackageArchiveLike = Any
 
@@ -131,7 +131,14 @@ _EVIDENCE_CONTAINER_KEYS = ("evidence_items", "entries")
 
 
 def summarize_evidence_items(evidence_index: Any) -> list[dict[str, Any]]:
-    evidence_items = package_member_items(evidence_index, _EVIDENCE_CONTAINER_KEYS)
+    # Both containers, concatenated: `package_member_items` returns the first
+    # key that matches, which would drop a populated `entries` sitting beside
+    # an empty `evidence_items`.
+    evidence_items = [
+        item
+        for key in _EVIDENCE_CONTAINER_KEYS
+        for item in package_member_items(evidence_index, (key,))
+    ]
     summarized: list[dict[str, Any]] = []
     for item in evidence_items:
         if not isinstance(item, dict):
@@ -177,8 +184,11 @@ def summarize_cae_payload(
     # matched nothing in any real package.
     #
     # Imported here rather than at module scope to keep this module's stated
-    # property — it does not require `aieng` to be pip-installed, and
-    # `_detect_cae_artifacts` injects the path from settings when it is not.
+    # property: it does not require `aieng` to be pip-installed. The first
+    # version of this comment claimed that without doing it — the import would
+    # have raised in exactly the deployment it described. `ensure_aieng_on_path`
+    # exists for lazy importers like this one and is idempotent.
+    ensure_aieng_on_path()
     from aieng.cae_result_summary import read_result_evidence
 
     result_evidence_reading = read_result_evidence(evidence_index)
@@ -388,7 +398,7 @@ def build_cae_review_report(
     if not isinstance(design_target_comparisons, dict):
         design_target_comparisons = {"present": False}
 
-    evidence_items = package_member_items(evidence_index, _EVIDENCE_CONTAINER_KEYS)
+    evidence_items = summarize_evidence_items(evidence_index)
     stale_artifacts = _list_at(revalidation_status, "stale_artifacts") or _list_at(
         revalidation_status, "affected_artifacts"
     )

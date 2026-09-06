@@ -1139,8 +1139,9 @@ class ResultEvidence(TypedDict):
     #: counting those would report evidence the package does not have.
     present_entry_count: int
     result_entry_count: int
-    #: Which container key this package used, so a caller can say "legacy" out
-    #: loud rather than treating an older shape as an absence.
+    #: Which container key(s) this package used, so a caller can say "legacy"
+    #: out loud rather than treating an older shape as an absence. Both joined
+    #: with "+" when an index carries both.
     index_shape: str | None
 
 
@@ -1159,16 +1160,23 @@ def read_result_evidence(evidence_index: Any) -> ResultEvidence:
         return {"registered": None, "entry_count": 0, "present_entry_count": 0,
                 "result_entry_count": 0, "index_shape": None}
 
-    shape = next(
-        (key for key in _EVIDENCE_CONTAINER_KEYS
-         if isinstance(evidence_index.get(key), list)),
-        None,
-    )
-    if shape is None:
+    # Every recognised container, not the first one found. A migrated or
+    # hand-merged index can carry an empty `evidence_items` beside a populated
+    # `entries`; picking the first match would discard the real evidence and
+    # report `registered: False` — a normaliser that loses the data it was
+    # asked to normalise.
+    present_shapes = [
+        key for key in _EVIDENCE_CONTAINER_KEYS
+        if isinstance(evidence_index.get(key), list)
+    ]
+    if not present_shapes:
         return {"registered": None, "entry_count": 0, "present_entry_count": 0,
                 "result_entry_count": 0, "index_shape": None}
 
-    entries = [e for e in evidence_index[shape] if isinstance(e, dict)]
+    shape = "+".join(present_shapes)
+    entries = [
+        e for key in present_shapes for e in evidence_index[key] if isinstance(e, dict)
+    ]
     # `exists` absent means the writer did not track presence — treat that as
     # present rather than inventing an absence it never claimed.
     present = [e for e in entries if e.get("exists") is not False]

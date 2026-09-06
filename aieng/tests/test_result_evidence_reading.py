@@ -27,7 +27,7 @@ import pytest
 from aieng.cae_result_summary import read_result_evidence
 
 
-def _entry(**overrides) -> dict:
+def _entry(**overrides: object) -> dict:
     """An entry in the shape `aieng_bridge._upsert_evidence` actually writes."""
     return {
         "id": "results_computed_metrics_json",
@@ -58,6 +58,29 @@ class TestBothSpellingsRead:
         """P0-1 asks for old evaluations to be marked, not silently inherited."""
         assert read_result_evidence({"entries": []})["index_shape"] == "entries"
         assert read_result_evidence({"evidence_items": []})["index_shape"] == "evidence_items"
+
+    def test_an_index_carrying_both_keeps_the_evidence_from_both(self) -> None:
+        """A migrated or hand-merged index is the case a first-match loses.
+
+        An empty `evidence_items` beside a populated `entries` would report
+        `registered: False` — the reader discarding the very data it exists to
+        find, which is worse than not reading it at all.
+        """
+        reading = read_result_evidence({
+            "evidence_items": [],
+            "entries": [_entry()],
+        })
+        assert reading["registered"] is True, reading
+        assert reading["result_entry_count"] == 1
+        assert reading["index_shape"] == "evidence_items+entries"
+
+    def test_entries_from_both_containers_are_counted_together(self) -> None:
+        reading = read_result_evidence({
+            "evidence_items": [{"evidence_type": "solver_result", "exists": True}],
+            "entries": [_entry(), _entry(kind="setup")],
+        })
+        assert reading["entry_count"] == 3
+        assert reading["result_entry_count"] == 2
 
 
 class TestTheThreeAnswersAreDistinct:
