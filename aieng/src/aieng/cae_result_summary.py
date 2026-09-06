@@ -1108,6 +1108,92 @@ def _legacy_rest_summary_to_computed_metrics(
     }
 
 
+#: The evidence index has been written under two container keys. The schema
+#: requires `evidence_items`; the workbench's own writer (`aieng_bridge`) has
+#: always produced `entries`. Measured across the 44 packages on disk: 8 carry
+#: an index, all 8 use `entries`, none uses `evidence_items`.
+_EVIDENCE_CONTAINER_KEYS = ("evidence_items", "entries")
+
+#: And two spellings for an entry's type, with different vocabularies. A reader
+#: that knows one silently sees an empty index — which is exactly what
+#: `results_available` did: False on 8 of 8 packages that have results.
+_EVIDENCE_TYPE_KEYS = ("evidence_type", "kind")
+
+#: Types that count as a RESULT, across both vocabularies. `setup`, `task` and
+#: `validation` entries are evidence of something else.
+_RESULT_EVIDENCE_TYPES = frozenset({
+    "result", "solver_result", "computed_metrics", "mesh_evidence",
+})
+
+
+class ResultEvidence(TypedDict):
+    """What a package's evidence index says about registered results."""
+
+    #: True when the index registers result evidence that EXISTS, False when an
+    #: index is present but registers none, and None when the package carries no
+    #: index at all. As with `solver_executed`, the last two are different facts.
+    registered: bool | None
+    entry_count: int
+    #: Entries whose artifact is actually in the package. The index also lists
+    #: evidence that is merely expected, with `exists: false` and no `supports`;
+    #: counting those would report evidence the package does not have.
+    present_entry_count: int
+    result_entry_count: int
+    #: Which container key(s) this package used, so a caller can say "legacy"
+    #: out loud rather than treating an older shape as an absence. Both joined
+    #: with "+" when an index carries both.
+    index_shape: str | None
+
+
+def read_result_evidence(evidence_index: Any) -> ResultEvidence:
+    """Read a parsed `results/evidence_index.json`, whichever era wrote it.
+
+    Pure: it takes the parsed document, so the backend can call it on the
+    member it has already read and the library can call it after unzipping.
+
+    The reason it accepts both shapes rather than picking one: the writer, the
+    reader and the schema each used a different spelling, so `results_available`
+    was structurally incapable of being true. Renaming one of them would fix
+    new packages and silently redefine every existing one as having no results.
+    """
+    if not isinstance(evidence_index, dict):
+        return {"registered": None, "entry_count": 0, "present_entry_count": 0,
+                "result_entry_count": 0, "index_shape": None}
+
+    # Every recognised container, not the first one found. A migrated or
+    # hand-merged index can carry an empty `evidence_items` beside a populated
+    # `entries`; picking the first match would discard the real evidence and
+    # report `registered: False` — a normaliser that loses the data it was
+    # asked to normalise.
+    present_shapes = [
+        key for key in _EVIDENCE_CONTAINER_KEYS
+        if isinstance(evidence_index.get(key), list)
+    ]
+    if not present_shapes:
+        return {"registered": None, "entry_count": 0, "present_entry_count": 0,
+                "result_entry_count": 0, "index_shape": None}
+
+    shape = "+".join(present_shapes)
+    entries = [
+        e for key in present_shapes for e in evidence_index[key] if isinstance(e, dict)
+    ]
+    # `exists` absent means the writer did not track presence — treat that as
+    # present rather than inventing an absence it never claimed.
+    present = [e for e in entries if e.get("exists") is not False]
+    results = [
+        entry for entry in present
+        if any(str(entry.get(key) or "") in _RESULT_EVIDENCE_TYPES
+               for key in _EVIDENCE_TYPE_KEYS)
+    ]
+    return {
+        "registered": bool(results),
+        "entry_count": len(entries),
+        "present_entry_count": len(present),
+        "result_entry_count": len(results),
+        "index_shape": shape,
+    }
+
+
 class SolverEvidence(TypedDict):
     """What a package can say about its own solver run.
 

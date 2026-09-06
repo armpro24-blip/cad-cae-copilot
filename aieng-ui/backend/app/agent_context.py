@@ -419,7 +419,10 @@ def _cae_block(
         "materials_count": cae.get("materials_count") or 0,
         "loads_count": cae.get("loads_count") or 0,
         "boundary_conditions_count": cae.get("boundary_conditions_count") or 0,
-        "results_available": bool(cae.get("results_available")),
+        # Not `bool(...)`: that collapses None ("this package records no
+        # evidence index at all") into False ("recorded, and there is none"),
+        # which is the distinction this field was just given.
+        "results_available": cae.get("results_available"),
         "available_fields": cae.get("available_fields") or [],
         "solver_status": cae.get("solver_status") or {},
         "mapping": cae.get("mapping"),
