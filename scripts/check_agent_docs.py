@@ -88,11 +88,45 @@ def check_skill_alignment() -> list[str]:
     return errors
 
 
+def check_docs_index() -> list[str]:
+    """Every file in docs/ must be named in docs/README.md.
+
+    31 files with no index made the directory unreadable to anyone new: a plan
+    abandoned in May sat beside the contract the runtime enforces today, and two
+    of them still called FreeCAD the CAD backend. An index fixes that exactly
+    once; this check is what stops it drifting back, because an index nobody
+    updates is just one more stale artifact.
+
+    Checked in ONE direction on purpose — a doc on disk must be indexed. The
+    reverse (an indexed doc must exist) would fail on any working copy holding
+    an untracked note, and would also forbid the "Removed" section from naming
+    what was deleted and why, which is the part a reader coming from an old link
+    actually needs.
+    """
+    errors: list[str] = []
+    docs_dir = REPO_ROOT / "docs"
+    index = docs_dir / "README.md"
+    if not index.exists():
+        return ["docs/README.md is missing — docs/ needs an index"]
+
+    text = _read(index)
+    for path in sorted(docs_dir.glob("*.md")):
+        if path.name == "README.md":
+            continue
+        if path.name not in text:
+            errors.append(
+                f"docs/{path.name} is not listed in docs/README.md — add it under "
+                "Current or Historical so a reader can tell which it is"
+            )
+    return errors
+
+
 def main() -> int:
     all_errors: list[str] = []
     all_errors.extend(check_agents_md())
     all_errors.extend(check_thin_wrappers())
     all_errors.extend(check_skill_alignment())
+    all_errors.extend(check_docs_index())
 
     if all_errors:
         print("Agent doc anti-drift check FAILED:")
