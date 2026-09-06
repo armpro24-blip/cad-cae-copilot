@@ -75,7 +75,11 @@ def build_engineering_action_plan(
         names = _package_names(package_path)
         has_generated_cad = "geometry/source.py" in names or "geometry/generated.step" in names
         has_setup = "simulation/setup.yaml" in names
-        has_results = "simulation/results_summary.json" in names
+        # Not `simulation/results_summary.json` alone: that is the pre-canonical
+        # path, and it exists in 0 of the 44 packages on disk — so this field
+        # was False for every project, including the 8 that have results. The
+        # library detector owns the definition; this entry point consumes it.
+        has_results = any(name in names for name in _RESULT_MEMBERS)
 
     return classify_engineering_message(
         text,
@@ -84,6 +88,18 @@ def build_engineering_action_plan(
         has_results=has_results,
         project_id=project_id,
     )
+
+
+#: Members that mean "this package carries results", kept in step with
+#: `aieng.cae_artifact_detector._RESULT_PATHS` — the library's definition. A
+#: test asserts the two stay equal rather than drifting apart again.
+_RESULT_MEMBERS = (
+    "results/result_summary.json",
+    "results/evidence_index.json",
+    "results/field_regions.json",
+    "results/field_summary.json",
+    "simulation/results_summary.json",
+)
 
 
 def classify_engineering_message(

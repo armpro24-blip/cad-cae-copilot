@@ -1164,6 +1164,37 @@ artifact carrying a `credibility` stamp derives its flags from
 plus the mesh band). If you add another, use that reader; a stamp with no
 evidence behind it downgrades to `unverified`, which is the honest answer.
 
+### The result states are separate questions — read the right one
+
+"Does this project have results?" is four different questions, and collapsing
+them is how an agent ends up citing a number nothing produced. Each has one
+definition and one reader:
+
+| Question | Field | Read from |
+|---|---|---|
+| Did a solver run finish? | `solver_executed` | `cae_result_summary.read_solver_evidence(zf)` — completed `simulation/runs/*/solver_run.json` |
+| Does the package register result evidence that exists? | `cae.results_available` | `cae_result_summary.read_result_evidence(index)` |
+| Is a result-shaped artifact present at all? | `cae.artifact_detection.has_results` | `cae_artifact_detector` — member presence, not content |
+| Do the results still apply to this geometry? | `edit_impact.stale` | `state/revalidation_status.json` |
+
+**Each is tri-state where it can be.** `solver_executed` and
+`results_available` are `None` when the package records nothing at all — which
+is a different fact from `False` ("recorded, and there is none"). Do not
+collapse them; 36 of the 44 packages on disk are in the `None` state.
+
+These disagreed until #530. `results_available` was `False` on **all 8**
+packages that have results, because the evidence index is written under
+`entries` with `kind`, the reader looked for `evidence_items` with
+`evidence_type`, and the schema requires a third spelling — so the field was
+structurally unable to be true. `/engineering-action-plan`'s own `has_results`
+checked one pre-canonical member that exists in **0 of 44**. The readers accept
+every spelling rather than renaming one, because renaming fixes new packages
+and silently redefines every existing one as having no results.
+
+An entry with `exists: false` is a **placeholder** — the index lists evidence it
+expects as well as evidence it has — so it is carried through as
+`artifact_exists` but never counted as evidence.
+
 ---
 
 ## Tool taxonomy

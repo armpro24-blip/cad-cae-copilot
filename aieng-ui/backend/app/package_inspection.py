@@ -121,8 +121,17 @@ def package_member_items(value: Any, preferred_keys: tuple[str, ...] = ()) -> li
     return []
 
 
+#: Both container spellings, and both per-entry vocabularies. The schema says
+#: `evidence_items` with an `artifact` sub-object; the workbench's own writer
+#: (`aieng_bridge._upsert_evidence`) writes `entries` with flat `path`/`kind`.
+#: Reading only the first returned an empty list for every real package, so
+#: `evidence_count` was 0 and `results_available` False on all 8 packages that
+#: have results.
+_EVIDENCE_CONTAINER_KEYS = ("evidence_items", "entries")
+
+
 def summarize_evidence_items(evidence_index: Any) -> list[dict[str, Any]]:
-    evidence_items = package_member_items(evidence_index, ("evidence_items",))
+    evidence_items = package_member_items(evidence_index, _EVIDENCE_CONTAINER_KEYS)
     summarized: list[dict[str, Any]] = []
     for item in evidence_items:
         if not isinstance(item, dict):
@@ -132,13 +141,17 @@ def summarize_evidence_items(evidence_index: Any) -> list[dict[str, Any]]:
         claim_support = item.get("claim_support") if isinstance(item.get("claim_support"), list) else []
         summarized.append(
             {
-                "evidence_id": item.get("evidence_id"),
-                "evidence_type": item.get("evidence_type"),
-                "artifact_path": artifact.get("path"),
-                "artifact_kind": artifact.get("kind"),
+                "evidence_id": item.get("evidence_id") or item.get("id"),
+                "evidence_type": item.get("evidence_type") or item.get("kind"),
+                "artifact_path": artifact.get("path") or item.get("path"),
+                "artifact_kind": artifact.get("kind") or item.get("kind"),
                 "verification_status": verification.get("status"),
                 "notes": item.get("notes") or artifact.get("notes") or verification.get("notes"),
-                "claim_support": claim_support,
+                "claim_support": claim_support or item.get("supports") or [],
+                # The index also lists evidence it merely EXPECTS. Carrying the
+                # flag through means a consumer can tell an artifact that is
+                # there from one that is only planned.
+                "artifact_exists": item.get("exists"),
             }
         )
     return summarized
@@ -159,9 +172,16 @@ def summarize_cae_payload(
     boundary_condition_items = package_member_items(parsed_boundary_conditions, ("boundary_conditions", "constraints", "bcs"))
     load_items = package_member_items(parsed_loads, ("loads", "forces"))
     evidence_items = summarize_evidence_items(evidence_index)
-    result_evidence = [
-        item for item in evidence_items if item.get("evidence_type") in {"solver_result", "mesh_evidence"}
-    ]
+    # One definition, shared with the library, rather than a second filter over
+    # a vocabulary no writer produces: `{"solver_result", "mesh_evidence"}`
+    # matched nothing in any real package.
+    #
+    # Imported here rather than at module scope to keep this module's stated
+    # property — it does not require `aieng` to be pip-installed, and
+    # `_detect_cae_artifacts` injects the path from settings when it is not.
+    from aieng.cae_result_summary import read_result_evidence
+
+    result_evidence_reading = read_result_evidence(evidence_index)
 
     available_fields: list[str] = []
     for constraint in constraint_items:
@@ -222,8 +242,12 @@ def summarize_cae_payload(
         "boundary_conditions_count": len(boundary_condition_items),
         "loads_count": len(load_items),
         "evidence_count": len(evidence_items),
-        "result_evidence_count": len(result_evidence),
-        "results_available": bool(result_evidence),
+        "result_evidence_count": result_evidence_reading["result_entry_count"],
+        #: Whether the package REGISTERS result evidence that exists. None when
+        #: it carries no evidence index at all — "nothing recorded" is not the
+        #: same answer as "recorded, and there is none".
+        "results_available": result_evidence_reading["registered"],
+        "evidence_index_shape": result_evidence_reading["index_shape"],
         "available_fields": available_fields,
         "simulation_targets": simulation_targets,
         "protected_regions": protected_regions,
@@ -364,7 +388,7 @@ def build_cae_review_report(
     if not isinstance(design_target_comparisons, dict):
         design_target_comparisons = {"present": False}
 
-    evidence_items = package_member_items(evidence_index, ("evidence_items",))
+    evidence_items = package_member_items(evidence_index, _EVIDENCE_CONTAINER_KEYS)
     stale_artifacts = _list_at(revalidation_status, "stale_artifacts") or _list_at(
         revalidation_status, "affected_artifacts"
     )
