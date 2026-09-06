@@ -272,3 +272,45 @@ class TestTheExportedPackageCanExplainItself:
         assert status["current_geometry_revision"] == status["last_validated_geometry_revision"], (
             "the re-solve validated the current geometry, so these must agree"
         )
+
+
+def test_a_run_id_that_contradicts_the_deck_is_refused(acceptance) -> None:
+    """Two ways to name the run, and the results go under only one of them."""
+    from app import runtime
+
+    conflicted = runtime.invoke_tool("cae.run_solver", {
+        "project_id": acceptance["project_id"],
+        "input_deck_path": "simulation/runs/run_002/solver_input.inp",
+        "run_id": "run_001",
+    })
+    assert conflicted["status"] == "error", conflicted
+    assert conflicted["code"] == "run_id_conflict", conflicted
+    assert conflicted["solver_execution_performed"] is False
+
+
+def test_overwriting_a_run_leaves_one_provenance_entry(tmp_path: Path) -> None:
+    """Two entries of the same name and `zipfile` reads the FIRST — the old one.
+
+    Carrying the existing `deck_provenance.json` forward AND writing a new one
+    would make the staleness check read the revision the deck was built for
+    BEFORE the overwrite, which is the wrong answer the provenance exists to
+    prevent.
+    """
+    from aieng.simulation.deck_generator import DECK_PROVENANCE_PATH_TEMPLATE
+
+    member = DECK_PROVENANCE_PATH_TEMPLATE.format(run_id="run_001")
+    package = tmp_path / "twice.aieng"
+    with zipfile.ZipFile(package, "w") as zf:
+        zf.writestr("manifest.json", json.dumps({"model_id": "m"}))
+        zf.writestr(member, json.dumps({"geometry_revision": 0}))
+        zf.writestr("simulation/runs/run_001/solver_input.inp", "*STEP\n")
+
+    from aieng.simulation.deck_generator import _read_existing_members
+
+    with zipfile.ZipFile(package) as zf:
+        carried = _read_existing_members(
+            zf, "simulation/runs/run_001/solver_input.inp", member
+        )
+    assert member not in {info.filename for info, _ in carried}, (
+        "the old provenance must not be carried forward when it is rewritten"
+    )

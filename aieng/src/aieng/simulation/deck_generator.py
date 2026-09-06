@@ -183,7 +183,9 @@ def generate_solver_input_package(
                 else None
             )
             geometry_revision = _current_geometry_revision(zf)
-            members = _read_existing_members(zf, out_path_in_zip)
+            members = _read_existing_members(
+                zf, out_path_in_zip, DECK_PROVENANCE_PATH_TEMPLATE.format(run_id=run_id)
+            )
     except zipfile.BadZipFile as exc:
         raise ValueError(f"package is not a valid zip archive: {package_file}") from exc
 
@@ -1106,8 +1108,17 @@ def _read_optional_yaml(zf: zipfile.ZipFile, member: str) -> Any | None:
 def _read_existing_members(
     zf: zipfile.ZipFile,
     skip_path: str,
+    *extra_skips: str,
 ) -> list[tuple[zipfile.ZipInfo, bytes]]:
-    skip = {"manifest.json", skip_path}
+    """Everything to carry forward, minus what the caller is about to rewrite.
+
+    `extra_skips` matters when overwriting a run: the old
+    `deck_provenance.json` would otherwise be copied AND rewritten, leaving two
+    entries with the same name. `zipfile` reads the first, so the staleness
+    check would see the OLD geometry revision — the exact wrong answer this
+    provenance exists to prevent.
+    """
+    skip = {"manifest.json", skip_path, *extra_skips}
     seen: set[str] = set()
     members: list[tuple[zipfile.ZipInfo, bytes]] = []
     for info in zf.infolist():

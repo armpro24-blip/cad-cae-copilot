@@ -1285,7 +1285,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         # path to hand over. Default to the package's own newest run output.
         frd_source = "caller"
         frd_tempdir: str | None = None
-        frd_run_id: str = str(inp.get("run_id") or "").strip()
+        frd_run_id: str = str(inp.get("runId") or inp.get("run_id") or "").strip()
         if not frd_path:
             found = _find_package_frd(_Path(package_path), str(inp.get("run_id") or "").strip())
             if not found:
@@ -1321,7 +1321,11 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 load_case_id=load_case_id,
                 software=software,
                 overwrite=overwrite,
-                run_id=frd_run_id or None,
+                # Only when the FRD came OUT of this package. A caller-supplied
+                # external file is not the package member a run_id names, and
+                # stamping that path would point the record at an artifact the
+                # metrics did not come from.
+                run_id=frd_run_id if frd_source == "package" else None,
             )
         except Exception as exc:
             return {"status": "error", "code": "extraction_error", "message": str(exc)}
@@ -2100,7 +2104,22 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         # before/after comparison depends on, and reporting `run_id: run_001`
         # for a solve of run_002's deck.
         deck_run_id = _run_id_from_deck_path(input_deck_path_str)
-        if requested_run_id and deck_run_id and requested_run_id != deck_run_id:
+        run_id_conflict = bool(
+            requested_run_id and deck_run_id and requested_run_id != deck_run_id
+        )
+        run_id: str = requested_run_id or deck_run_id or "run_001"
+        extract_results: bool = bool(inp.get("extractResults", inp.get("extract_results", True)))
+        refresh_summary: bool = bool(inp.get("refreshSummary", inp.get("refresh_summary", True)))
+        overwrite: bool = bool(inp.get("overwrite", True))
+        timeout_seconds: int = int(inp.get("timeout_seconds", inp.get("timeoutSeconds", 120)))
+        auto_import_evidence: bool = bool(inp.get("autoImportEvidence", inp.get("auto_import_evidence", True)))
+
+        def _with_run_solver_receipt(result: dict[str, Any]) -> dict[str, Any]:
+            result.setdefault("project_id", project_id)
+            result.setdefault("run_id", run_id)
+            return _receipt.receipt_from_run_solver(result)
+
+        if run_id_conflict:
             return _with_run_solver_receipt({
                 "ok": False,
                 "tool": "cae.run_solver",
@@ -2113,17 +2132,6 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 ),
                 "solver_execution_performed": False,
             })
-        run_id: str = requested_run_id or deck_run_id or "run_001"
-        extract_results: bool = bool(inp.get("extractResults", inp.get("extract_results", True)))
-        refresh_summary: bool = bool(inp.get("refreshSummary", inp.get("refresh_summary", True)))
-        overwrite: bool = bool(inp.get("overwrite", True))
-        timeout_seconds: int = int(inp.get("timeout_seconds", inp.get("timeoutSeconds", 120)))
-        auto_import_evidence: bool = bool(inp.get("autoImportEvidence", inp.get("auto_import_evidence", True)))
-
-        def _with_run_solver_receipt(result: dict[str, Any]) -> dict[str, Any]:
-            result.setdefault("project_id", project_id)
-            result.setdefault("run_id", run_id)
-            return _receipt.receipt_from_run_solver(result)
 
         # Resolve package path
         if not package_path_str and project_id:
@@ -2453,6 +2461,11 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                     warnings.append(f"DAT extraction failed: {exc}")
             elif extract_results and frd_path:
                 try:
+                    # This run's own FRD, so the record can name it. Without
+                    # `run_id` here the auto-extraction path wrote the staged
+                    # temp path into `metrics_source` — the very defect fixed
+                    # for `cae.extract_solver_results`, still live on the path
+                    # that runs by default.
                     ext_result = aieng_bridge.extract_frd_solver_results(
                         str(package_path),
                         str(frd_path),
@@ -2460,6 +2473,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                         load_case_id=load_case_id,
                         software=solver,
                         overwrite=overwrite,
+                        run_id=run_id,
                     )
                     extracted_metrics = ext_result.get("metrics")
                     changed_artifacts.extend(ext_result.get("artifacts", []))
