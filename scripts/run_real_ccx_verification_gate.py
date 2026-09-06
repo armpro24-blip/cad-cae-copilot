@@ -107,8 +107,16 @@ def parse_junit_summary(path: Path) -> JUnitSummary:
 
 
 def selected_targets(suite: str) -> list[PytestTarget]:
+    """The targets a suite name selects. "all" means every one of them.
+
+    It used to name two of them literally, so a target added to `TARGETS` was
+    registered and never run — and CI runs exactly this default. The acceptance
+    suite was added, the lane went green, and the acceptance run had not
+    executed. A registry two lines above a consumer that hardcodes its own copy
+    is the same drift this gate exists to catch in the product.
+    """
     if suite == "all":
-        return [TARGETS["nafems"], TARGETS["backend"]]
+        return list(TARGETS.values())
     return [TARGETS[suite]]
 
 
@@ -159,7 +167,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--suite",
-        choices=("all", "nafems", "backend", "acceptance"),
+        choices=("all", *TARGETS),
         default="all",
         help="Verification suite to run.",
     )
