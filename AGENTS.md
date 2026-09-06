@@ -1079,6 +1079,35 @@ radius, and area, then continues the solve only when every match is high
 confidence. Ambiguous or low-confidence matches are still refused and reported;
 the baseline package is never mutated.
 
+**A face that MOVED is recovered from the words that chose it.** Stable face
+ids survive a topology-*changing* edit, but not an edit that relocates the face:
+`topology_identity` matches by exact geometry first, then by unique surface-type
+and orientation, so a face that has moved among several look-alike planes gets a
+fresh id — correctly, since guessing would be worse. Measured on the canonical
+two-body bracket (AGENTS.md's own Engineering Mode example, where
+`PLATE_THICKNESS` both dimensions the plate and *positions* the rib via
+`rib.moved(Location((0, 0, PLATE_THICKNESS)))`): doubling it retired `face_012`
+and the rib's top came back as `face_022`, so the recorded `@face:` pointer
+resolved to nothing and `cae.generate_solver_input` refused with
+`unbound_setup_faces`. The promised edit → re-solve → compare task could not
+complete on a bracket, and the only documented recovery
+(`ai_preprocessing.run_ai_preprocessing`) needs an Anthropic API key.
+
+So `cae.setup_static` now records the phrase it resolved —
+`target_selector: "rib_main top"` — beside the pointer it resolved it to, and
+deck-time binding re-runs **the same deterministic resolver** when the recorded
+face id is gone. This is not a looser matcher:
+
+- `resolve_face_intent` refuses ambiguity, so a phrase that no longer picks
+  exactly one face fails here exactly as it would have at authoring time;
+- a package written before `target_selector` existed carries no evidence and
+  keeps the old conservative refusal — the same discipline as `face_signatures`;
+- a binding whose faces still resolve is left alone, so a rebind stays a real
+  signal rather than routine noise;
+- every recovery is reported in `rebound_from_selector` (id, selector, the new
+  `face_id`, and the target it replaced). "The face your setup named is gone and
+  another one is carrying the load now" is not something to apply quietly.
+
 To recover:
 1. For parametric variants / design-study candidates, enable adaptive rebind by
    calling the solver with `rebind_faces=True` and a `baseline_package_path`.

@@ -892,6 +892,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                     "\"bottom\", \"bolt holes\", \"base_plate bottom\", or an @face: pointer."
                 ),
             }
+        fix_selector = fix_intent if isinstance(fix_intent, str) else None
         fix_hit = _intent.resolve_face_intent(topology, fix_intent)
         if fix_hit["status"] != "ok":
             return {
@@ -904,10 +905,13 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
 
         load_spec = inp.get("load")
         load_hit: dict[str, Any] | None = None
+        load_selector: str | None = None
         force_n = 0.0
         direction: list[float] = [0.0, 0.0, -1.0]
         if isinstance(load_spec, dict) and load_spec:
-            load_hit = _intent.resolve_face_intent(topology, load_spec.get("at"))
+            load_at = load_spec.get("at")
+            load_selector = load_at if isinstance(load_at, str) else None
+            load_hit = _intent.resolve_face_intent(topology, load_at)
             if load_hit["status"] != "ok":
                 return {
                     "status": "needs_user_input",
@@ -959,8 +963,17 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         if inp.get("mesh_size_mm"):
             solver_settings["mesh_size_mm"] = inp["mesh_size_mm"]
 
+        # `target_selector` keeps the WORDS that chose this face, beside the face
+        # they chose. A resolved pointer alone cannot survive an edit that moves
+        # the face: measured on the canonical two-body bracket, editing the
+        # constant that both dimensions the plate and positions the rib retires
+        # the rib's top face id, and the promised task dead-ends at
+        # `unbound_setup_faces` with `ai_preprocessing` (an API key) as the only
+        # documented recovery. The phrase re-resolves deterministically against
+        # the new topology, or refuses exactly as it would have the first time.
         boundary_conditions = [
             {"id": f"bc_{i + 1:03d}", "type": "fixed", "target": f"@face:{fid}",
+             "target_selector": fix_selector,
              "dof_start": 1, "dof_end": 3, "value": 0}
             for i, fid in enumerate(fix_hit["face_ids"])
         ]
@@ -992,6 +1005,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             share = force_n / len(load_hit["face_ids"])
             loads = [
                 {"id": f"load_{i + 1:03d}", "type": "force", "target": f"@face:{fid}",
+                 "target_selector": load_selector,
                  "value_n": share, "direction": direction}
                 for i, fid in enumerate(load_hit["face_ids"])
             ]
