@@ -350,6 +350,8 @@ def extract_computed_metrics(
     load_case_id: str = "load_case_001",
     load_case_ids: list[str] | None = None,
     software: str = "CalculiX",
+    source_files: list[str] | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     """Extract scalar extrema from a CalculiX FRD file.
 
@@ -362,6 +364,11 @@ def extract_computed_metrics(
             ``load_case_ids`` is supplied or when the FRD contains multiple steps.
         load_case_ids: Optional explicit load-case ids, one per FRD step.
         software: Name of the solver software (used in metrics_source).
+        source_files: In-package artifact paths to record instead of the
+            filesystem path the FRD was staged at. A temp path is useless to
+            anyone who opens the package later.
+        run_id: The solver run these metrics came from, recorded so an exported
+            package can still say which run supports which number.
 
     Returns:
         Dict with ``schema_version``, ``metrics_source``, ``load_cases``,
@@ -392,13 +399,20 @@ def extract_computed_metrics(
         )
         load_cases.append({"id": case_id, "metrics": case_metrics})
 
+    # `frd_path` is wherever the caller staged the file — usually a temp
+    # directory that no longer exists by the time anyone reads the package. A
+    # caller that knows the in-package artifact and the run should say so, or
+    # an exported package cannot answer "which run produced this number".
+    metrics_source: dict[str, Any] = {
+        "tool": "frd_parser_v1",
+        "software": software,
+        "source_files": list(source_files) if source_files else [str(frd_path)],
+    }
+    if run_id:
+        metrics_source["run_id"] = run_id
     return {
         "schema_version": FRD_COMPUTED_METRICS_SCHEMA,
-        "metrics_source": {
-            "tool": "frd_parser_v1",
-            "software": software,
-            "source_files": [str(frd_path)],
-        },
+        "metrics_source": metrics_source,
         "load_cases": load_cases,
         "warnings": warnings,
     }
@@ -415,6 +429,8 @@ def write_computed_metrics_package(
     load_case_id: str = "load_case_001",
     software: str = "CalculiX",
     overwrite: bool = True,
+    source_files: list[str] | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     """Extract FRD metrics and write ``results/computed_metrics.json`` into
     the package atomically.
@@ -430,7 +446,8 @@ def write_computed_metrics_package(
         The computed metrics dict (same as :func:`extract_computed_metrics`).
     """
     metrics = extract_computed_metrics(
-        frd_path, load_case_id=load_case_id, software=software
+        frd_path, load_case_id=load_case_id, software=software,
+        source_files=source_files, run_id=run_id,
     )
     metrics_bytes = (json.dumps(metrics, indent=2, sort_keys=True) + "\n").encode()
 

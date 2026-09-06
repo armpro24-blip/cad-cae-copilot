@@ -20,6 +20,7 @@ on:
       - "aieng-ui/backend/app/simulation_runner.py"
       - "aieng/src/aieng/cae_setup_view.py"
       - "aieng-ui/backend/tests/test_cae_solve_integration.py"
+      - "aieng-ui/backend/tests/test_acceptance_edit_resolve_compare.py"
       - "aieng-ui/backend/tests/test_simulation_runner.py"
       # Package conformance (#513) rides this lane because it is the only one
       # with the real CAD + mesh stack installed. Either side of the
@@ -46,6 +47,7 @@ on:
       - "aieng-ui/backend/app/simulation_runner.py"
       - "aieng/src/aieng/cae_setup_view.py"
       - "aieng-ui/backend/tests/test_cae_solve_integration.py"
+      - "aieng-ui/backend/tests/test_acceptance_edit_resolve_compare.py"
       - "aieng-ui/backend/tests/test_simulation_runner.py"
       # Package conformance (#513) rides this lane because it is the only one
       # with the real CAD + mesh stack installed. Either side of the

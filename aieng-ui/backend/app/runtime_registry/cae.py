@@ -195,8 +195,13 @@ def _describe_cae_setup(package_path: Path) -> list[str]:
     return lines
 
 
-def _find_package_frd(package_path: Path, run_id: str = "") -> tuple[str, str] | None:
-    """Extract the package's own newest `.frd` to a temp file → (path, tempdir).
+def _find_package_frd(package_path: Path, run_id: str = "") -> tuple[str, str, str] | None:
+    """Extract the package's own newest `.frd` to a temp file → (path, tempdir, member).
+
+    The member name is returned because the temp path is useless to anyone who
+    opens the package later: `metrics_source` used to record it verbatim, so an
+    exported package pointed at a directory that no longer existed and could not
+    say which run produced its numbers.
 
     The result of a solve lives inside the `.aieng` zip, so a tool that wants a
     filesystem path cannot simply be handed the member name. Callers must remove
@@ -227,7 +232,7 @@ def _find_package_frd(package_path: Path, run_id: str = "") -> tuple[str, str] |
             out = _Path(tmpdir) / _Path(chosen.filename).name
             with zf.open(chosen) as src, open(out, "wb") as dst:
                 _shutil.copyfileobj(src, dst)
-            return str(out), tmpdir
+            return str(out), tmpdir, chosen.filename
     except Exception as exc:  # noqa: BLE001 - caller reports its own error
         # Swallowing this silently once already hid a NameError behind a
         # "no result in this package" message; leave a trace.
@@ -472,6 +477,50 @@ def _validate_cae_mapping_for_solver(package_path: Path) -> dict[str, Any]:
         and not result["missing_face_ids"]
     )
     return result
+
+
+def _run_id_from_deck_path(deck_path: str | None) -> str:
+    """The run a deck lives under, e.g. `simulation/runs/run_002/...` -> run_002."""
+    parts = str(deck_path or "").replace("\\", "/").split("/")
+    if len(parts) > 3 and parts[0] == "simulation" and parts[1] == "runs":
+        return parts[2]
+    return ""
+
+
+def _deck_and_current_revision(zf, deck_path: str) -> tuple[int | None, int | None]:
+    """(the revision this deck was built for, the revision the project is at).
+
+    Either may be None, and a None means "cannot tell", not "they differ": a
+    deck generated before decks recorded their provenance carries no revision,
+    and a package that never tracked geometry revisions has no current one.
+    Refusing on an unknown would block every pre-existing package.
+    """
+    import json as _json
+
+    revision = None
+    provenance_path = f"{deck_path.rsplit('/', 1)[0]}/deck_provenance.json"
+    try:
+        if provenance_path in zf.namelist():
+            provenance = _json.loads(zf.read(provenance_path))
+            if isinstance(provenance, dict):
+                candidate = provenance.get("geometry_revision")
+                revision = candidate if isinstance(candidate, int) else None
+    except Exception:  # noqa: BLE001 - unreadable provenance is "cannot tell"
+        revision = None
+
+    # No recorded edit means revision 0 — the number the edit path counts up
+    # from — not "unknown". Reading it as unknown would disable the check on
+    # exactly the sequence it exists for: baseline solve, edit, re-solve.
+    current = 0 if revision is not None else None
+    try:
+        if "state/revalidation_status.json" in zf.namelist():
+            status = _json.loads(zf.read("state/revalidation_status.json"))
+            if isinstance(status, dict):
+                candidate = status.get("current_geometry_revision")
+                current = candidate if isinstance(candidate, int) else current
+    except Exception:  # noqa: BLE001
+        pass
+    return revision, current
 
 
 def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema: Any) -> dict[str, Any]:
@@ -1236,6 +1285,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         # path to hand over. Default to the package's own newest run output.
         frd_source = "caller"
         frd_tempdir: str | None = None
+        frd_run_id: str = str(inp.get("run_id") or "").strip()
         if not frd_path:
             found = _find_package_frd(_Path(package_path), str(inp.get("run_id") or "").strip())
             if not found:
@@ -1248,8 +1298,9 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                         "frd_path for an externally produced .frd."
                     ),
                 }
-            frd_path, frd_tempdir = found
+            frd_path, frd_tempdir, frd_member = found
             frd_source = "package"
+            frd_run_id = _run_id_from_deck_path(frd_member)
 
         if not _Path(frd_path).exists():
             return {
@@ -1270,6 +1321,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 load_case_id=load_case_id,
                 software=software,
                 overwrite=overwrite,
+                run_id=frd_run_id or None,
             )
         except Exception as exc:
             return {"status": "error", "code": "extraction_error", "message": str(exc)}
@@ -2037,10 +2089,31 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
 
         package_path_str: str | None = inp.get("packagePath") or inp.get("package_path")
         project_id: str | None = inp.get("project_id")
-        run_id: str = inp.get("runId") or inp.get("run_id") or "run_001"
+        requested_run_id: str = inp.get("runId") or inp.get("run_id") or ""
         solver: str = inp.get("solver") or "CalculiX"
         load_case_id: str = inp.get("loadCaseId") or inp.get("load_case_id") or "load_case_001"
         input_deck_path_str: str | None = inp.get("inputDeckPath") or inp.get("input_deck_path")
+        # The run the deck belongs to. `run_id` used to default to "run_001"
+        # regardless of the deck given, so solving
+        # `simulation/runs/run_002/solver_input.inp` wrote its FRD, log and
+        # `solver_run.json` OVER run_001 — destroying the baseline the whole
+        # before/after comparison depends on, and reporting `run_id: run_001`
+        # for a solve of run_002's deck.
+        deck_run_id = _run_id_from_deck_path(input_deck_path_str)
+        if requested_run_id and deck_run_id and requested_run_id != deck_run_id:
+            return _with_run_solver_receipt({
+                "ok": False,
+                "tool": "cae.run_solver",
+                "status": "error",
+                "code": "run_id_conflict",
+                "message": (
+                    f"run_id={requested_run_id!r} does not match the deck's run "
+                    f"directory ({deck_run_id!r}). Pass one or the other, not two "
+                    "that disagree — the results are written under run_id."
+                ),
+                "solver_execution_performed": False,
+            })
+        run_id: str = requested_run_id or deck_run_id or "run_001"
         extract_results: bool = bool(inp.get("extractResults", inp.get("extract_results", True)))
         refresh_summary: bool = bool(inp.get("refreshSummary", inp.get("refresh_summary", True)))
         overwrite: bool = bool(inp.get("overwrite", True))
@@ -2127,6 +2200,9 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                         "solver_execution_performed": False,
                     })
                 inp_data = zf.read(input_deck_path_str)
+                deck_revision, current_revision = _deck_and_current_revision(
+                    zf, input_deck_path_str
+                )
         except Exception as exc:
             return _with_run_solver_receipt({
                 "ok": False,
@@ -2134,6 +2210,36 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 "status": "error",
                 "code": "package_read_error",
                 "message": f"Failed to read package: {exc}",
+                "solver_execution_performed": False,
+            })
+
+        # Refuse to run a deck that describes geometry the project has moved on
+        # from. Measured on the acceptance run: after a parameter edit,
+        # `cae.generate_solver_input` correctly refused to overwrite run_001,
+        # and `cae.run_solver` then re-ran that first deck and reported its
+        # numbers as the new result — 0.0% change on a beam whose thickness had
+        # doubled, `status: completed`, nothing flagged. Three tools each
+        # behaving correctly in isolation produced a wrong engineering answer.
+        if (
+            deck_revision is not None
+            and current_revision is not None
+            and deck_revision != current_revision
+        ):
+            return _with_run_solver_receipt({
+                "ok": False,
+                "tool": "cae.run_solver",
+                "status": "error",
+                "code": "stale_deck",
+                "message": (
+                    f"{input_deck_path_str} was generated for geometry revision "
+                    f"{deck_revision}; the project is now at revision "
+                    f"{current_revision}. Running it would report the old "
+                    "geometry's results as the current ones. Generate a deck for "
+                    "the current geometry with cae.generate_solver_input using a "
+                    "new run_id, then run that."
+                ),
+                "deck_geometry_revision": deck_revision,
+                "current_geometry_revision": current_revision,
                 "solver_execution_performed": False,
             })
 

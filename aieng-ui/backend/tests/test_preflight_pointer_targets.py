@@ -120,8 +120,12 @@ def test_package_frd_is_found_without_being_told_where(tmp_path: Path) -> None:
     found = _find_package_frd(pkg)
 
     assert found is not None
-    path, tmpdir = found
+    # The member name comes back too: the temp path is meaningless to anyone
+    # who opens the package later, and `metrics_source` needs the in-package
+    # artifact and its run to say which run produced a number.
+    path, tmpdir, member = found
     assert Path(path).exists() and Path(path).suffix == ".frd"
+    assert member == "simulation/runs/run_001/outputs/result.frd"
     import shutil
 
     shutil.rmtree(tmpdir, ignore_errors=True)

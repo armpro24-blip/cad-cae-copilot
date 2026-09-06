@@ -1573,8 +1573,36 @@ can click to highlight them.
 1. aieng.agent_context     { project_id }
 2. cad.edit_parameter      { project_id, featureId, parameterName, newValue }  [APPROVAL]
 3. cae.prepare_solver_run  { project_id }   (re-verifies the CAE bindings against the new geometry)
-4. (re-run the CAE pipeline if geometry changed)
+4. cae.generate_mesh       { project_id, mesh_size_mm }
+5. cae.generate_solver_input { project_id, run_id: "run_002" }   ← A NEW run id
+6. cae.run_solver          { project_id, input_deck_path: "simulation/runs/run_002/solver_input.inp" }  [APPROVAL]
+7. cae.extract_solver_results { project_id }
 ```
+
+**Re-solving after an edit needs a new `run_id`, and that is not optional.**
+Each run owns a directory: its deck, its FRD, its log, its `solver_run.json`,
+and a `deck_provenance.json` recording the geometry revision the deck was built
+for. Reusing `run_001` either fails (it already exists) or overwrites the
+baseline you are comparing against.
+
+Three guards make the wrong path fail loudly instead of quietly:
+
+- `cae.generate_solver_input` refuses an existing run and **names a free
+  `run_id`**; `overwrite: true` is the option that destroys the earlier result.
+- `cae.run_solver` refuses a deck built for a different geometry revision
+  (`code: "stale_deck"`). Without it, re-running the pre-edit deck reported the
+  old numbers as the new ones — measured: **0.0% change on a beam whose
+  thickness had doubled**, `status: completed`, nothing flagged.
+- `cae.run_solver` takes the run from `input_deck_path` when you do not pass
+  `run_id`, and refuses if the two disagree. It used to default to `run_001`
+  whatever deck it was given, so solving run_002's deck wrote its results over
+  run_001's.
+
+`results/computed_metrics.json` records `metrics_source.run_id` and the
+in-package FRD, so an exported package can still say which run supports which
+number. `aieng-ui/backend/tests/test_acceptance_edit_resolve_compare.py` runs
+this whole chain against real CalculiX and checks the comparison against beam
+theory, not against `status == "completed"`.
 
 ---
 

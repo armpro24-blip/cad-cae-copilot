@@ -60,6 +60,14 @@ import yaml
 from aieng import FORMAT_VERSION
 
 SOLVER_INPUT_PATH_TEMPLATE = "simulation/runs/{run_id}/solver_input.inp"
+
+#: What geometry a deck was built for, written beside it. Without this a deck
+#: outlives the model it describes and nothing downstream can tell: measured on
+#: the acceptance run, re-solving after a parameter edit re-ran the FIRST deck
+#: and reported the old displacement and stress as the new ones, 0.0% change on
+#: a beam whose thickness had doubled.
+DECK_PROVENANCE_PATH_TEMPLATE = "simulation/runs/{run_id}/deck_provenance.json"
+REVALIDATION_STATUS_PATH = "state/revalidation_status.json"
 SOURCE_DECK_PATH = "simulation/cae_imports/source_solver_deck.inp"
 SETUP_PATH = "simulation/setup.yaml"
 PARSED_MATERIALS_PATH = "simulation/cae_imports/parsed_materials.json"
@@ -151,8 +159,15 @@ def generate_solver_input_package(
                 raise ValueError("package is missing manifest.json")
 
             if out_path_in_zip in names and not overwrite:
+                # Name the way forward, and which one keeps the baseline. The
+                # old text said "use --overwrite", a CLI flag this tool does
+                # not take, and overwriting is the option that DESTROYS the
+                # run you are comparing against.
                 raise FileExistsError(
-                    f"{out_path_in_zip} already exists; use --overwrite to replace it"
+                    f"{out_path_in_zip} already exists. Pass a new run_id "
+                    f"(e.g. run_id='{_next_run_id(names)}') to solve the current "
+                    "geometry while keeping this run, or overwrite=True to "
+                    "replace it and lose the earlier result."
                 )
 
             manifest = json.loads(zf.read("manifest.json"))
@@ -167,6 +182,7 @@ def generate_solver_input_package(
                 if SOURCE_DECK_PATH in names
                 else None
             )
+            geometry_revision = _current_geometry_revision(zf)
             members = _read_existing_members(zf, out_path_in_zip)
     except zipfile.BadZipFile as exc:
         raise ValueError(f"package is not a valid zip archive: {package_file}") from exc
@@ -239,7 +255,21 @@ def generate_solver_input_package(
     )
 
     # --- write back into package ---------------------------------------------
-    _rewrite_package(package_file, members, manifest, out_path_in_zip, deck_text)
+    provenance = {
+        "schema_version": "0.1",
+        "run_id": run_id,
+        "geometry_revision": geometry_revision,
+        "generated_at_utc": datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z"),
+        "solver_input": out_path_in_zip,
+    }
+    _rewrite_package(
+        package_file, members, manifest, out_path_in_zip, deck_text,
+        provenance_path=DECK_PROVENANCE_PATH_TEMPLATE.format(run_id=run_id),
+        provenance=provenance,
+    )
 
     return {
         "ok": True,
@@ -1022,6 +1052,39 @@ def _step_block(
 # ---------------------------------------------------------------------------
 
 
+def _next_run_id(names: set[str]) -> str:
+    """The first `run_NNN` not already in the package."""
+    used = set()
+    for name in names:
+        parts = name.split("/")
+        if len(parts) > 2 and parts[0] == "simulation" and parts[1] == "runs":
+            used.add(parts[2])
+    index = 1
+    while f"run_{index:03d}" in used:
+        index += 1
+    return f"run_{index:03d}"
+
+
+def _current_geometry_revision(zf: zipfile.ZipFile) -> int:
+    """The geometry revision the package is currently at.
+
+    A package with no `state/revalidation_status.json` has had no recorded
+    geometry edit, which is revision 0 — the number `record_geometry_edit_status`
+    counts up from, as the edit path itself shows: the first
+    `cad.edit_parameter` reports `current_geometry_revision: 1` beside
+    `last_validated_geometry_revision: 0`.
+
+    Recording 0 rather than None matters. A baseline deck is generated BEFORE
+    any edit, so with None it said "unknown" and the staleness check could never
+    fire on the very sequence it exists for: baseline solve, edit, re-solve.
+    """
+    status = _read_optional_json(zf, REVALIDATION_STATUS_PATH)
+    if not isinstance(status, dict):
+        return 0
+    revision = status.get("current_geometry_revision")
+    return revision if isinstance(revision, int) else 0
+
+
 def _read_optional_json(zf: zipfile.ZipFile, member: str) -> Any | None:
     if member not in set(zf.namelist()):
         return None
@@ -1062,6 +1125,9 @@ def _rewrite_package(
     manifest: dict[str, Any],
     out_path_in_zip: str,
     deck_text: str,
+    *,
+    provenance_path: str | None = None,
+    provenance: dict[str, Any] | None = None,
 ) -> None:
     """Atomically rewrite the .aieng package with the new solver input deck."""
     resources = manifest.setdefault("resources", {})
@@ -1078,6 +1144,8 @@ def _rewrite_package(
         run_entry = {}
         runs[Path(out_path_in_zip).parent.name] = run_entry
     run_entry["solver_input"] = out_path_in_zip
+    if provenance_path:
+        run_entry["deck_provenance"] = provenance_path
 
     manifest_json = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
     deck_bytes = deck_text.encode()
@@ -1096,6 +1164,11 @@ def _rewrite_package(
                 zf.writestr(dir_entry, b"")
             zf.writestr("manifest.json", manifest_json)
             zf.writestr(out_path_in_zip, deck_bytes)
+            if provenance_path and provenance is not None:
+                zf.writestr(
+                    provenance_path,
+                    (json.dumps(provenance, indent=2, sort_keys=True) + "\n").encode(),
+                )
         shutil.move(str(temp_path), path)
     finally:
         if temp_path.exists():
