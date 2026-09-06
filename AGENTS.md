@@ -1600,7 +1600,12 @@ Three guards make the wrong path fail loudly instead of quietly:
 
 `results/computed_metrics.json` records `metrics_source.run_id` and the
 in-package FRD, so an exported package can still say which run supports which
-number. `aieng-ui/backend/tests/test_acceptance_edit_resolve_compare.py` runs
+number. Two rules keep that record from pointing at the wrong artifact:
+`cae.extract_solver_results { run_id }` reads **that run's** FRD or refuses —
+it never falls back to the newest result from another run and stamps the
+requested id on it; and `cae.run_solver` names the package member as the
+metrics' source only when this run's FRD actually landed there (with
+`overwrite: false` over an existing result it does not, and says so). `aieng-ui/backend/tests/test_acceptance_edit_resolve_compare.py` runs
 this whole chain against real CalculiX and checks the comparison against beam
 theory, not against `status == "completed"`.
 

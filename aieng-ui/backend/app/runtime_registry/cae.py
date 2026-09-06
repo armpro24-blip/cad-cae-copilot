@@ -195,7 +195,9 @@ def _describe_cae_setup(package_path: Path) -> list[str]:
     return lines
 
 
-def _find_package_frd(package_path: Path, run_id: str = "") -> tuple[str, str, str] | None:
+def _find_package_frd(
+    package_path: Path, run_id: str = "", *, require_run: bool = False
+) -> tuple[str, str, str] | None:
     """Extract the package's own newest `.frd` to a temp file → (path, tempdir, member).
 
     The member name is returned because the temp path is useless to anyone who
@@ -223,7 +225,13 @@ def _find_package_frd(package_path: Path, run_id: str = "") -> tuple[str, str, s
             ]
             if run_id:
                 scoped = [c for c in candidates if f"/runs/{run_id}/" in c.filename]
-                candidates = scoped or candidates
+                if require_run:
+                    # An explicit request answered with a different run's result
+                    # is the caller asking for A and getting B — and the metrics
+                    # would then be recorded against the run they asked for.
+                    candidates = scoped
+                else:
+                    candidates = scoped or candidates
             if not candidates:
                 return None
             # Newest by archive timestamp, then by name so ties are deterministic.
@@ -1287,16 +1295,30 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         frd_tempdir: str | None = None
         frd_run_id: str = str(inp.get("runId") or inp.get("run_id") or "").strip()
         if not frd_path:
-            found = _find_package_frd(_Path(package_path), str(inp.get("run_id") or "").strip())
+            # `frd_run_id`, not a second read of `run_id`: this line used to miss
+            # the `runId` spelling accepted two lines above, so a caller asking
+            # for one run could be handed the newest FRD from another — and then
+            # have their requested run stamped on it.
+            found = _find_package_frd(
+                _Path(package_path), frd_run_id, require_run=bool(frd_run_id)
+            )
             if not found:
+                if frd_run_id:
+                    message = (
+                        f"Run {frd_run_id!r} has no solver result in this package "
+                        "(simulation/runs/<run_id>/outputs/*.frd). Run cae.run_solver "
+                        "for it first."
+                    )
+                else:
+                    message = (
+                        "This package contains no solver result (no "
+                        "simulation/runs/*/outputs/*.frd). Run cae.run_solver first, "
+                        "or pass frd_path for an externally produced .frd."
+                    )
                 return {
                     "status": "error",
                     "code": "missing_frd_path",
-                    "message": (
-                        "This package contains no solver result (no "
-                        "simulation/runs/*/outputs/*.frd). Run cae.run_solver first, or pass "
-                        "frd_path for an externally produced .frd."
-                    ),
+                    "message": message,
                 }
             frd_path, frd_tempdir, frd_member = found
             frd_source = "package"
@@ -2415,16 +2437,26 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             # Write artifacts back into package
             run_prefix = f"simulation/runs/{run_id}"
 
-            def _write_safe(artifact_path: str, source: _Path) -> None:
+            def _write_safe(artifact_path: str, source: _Path) -> bool:
+                """Copy `source` into the package; report whether it landed.
+
+                The return value is load-bearing for the FRD: with
+                `overwrite=False` and a result already sitting under this run,
+                the package keeps the OLD file while this run's metrics come
+                from the new one. A caller that assumes the write happened
+                names the old member as the new metrics' source.
+                """
                 try:
                     art = write_artifact_to_package(
                         package_path, artifact_path, source, overwrite=overwrite
                     )
                     changed_artifacts.append(art)
+                    return True
                 except FileExistsError:
                     warnings.append(f"{artifact_path} already exists and overwrite=False")
                 except Exception as exc:
                     warnings.append(f"Failed to write {artifact_path}: {exc}")
+                return False
 
             _write_safe(f"{run_prefix}/solver_input.inp", local_inp)
             _write_safe(f"{run_prefix}/solver_log.txt", log_path)
@@ -2433,8 +2465,16 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             run_json_path.write_text(json.dumps(solver_run, indent=2), encoding="utf-8")
             _write_safe(f"{run_prefix}/solver_run.json", run_json_path)
 
+            frd_member = f"{run_prefix}/outputs/result.frd"
+            frd_in_package = False
             if frd_path:
-                _write_safe(f"{run_prefix}/outputs/result.frd", frd_path)
+                frd_in_package = _write_safe(frd_member, frd_path)
+                if not frd_in_package:
+                    warnings.append(
+                        f"{frd_member} is NOT this run's result — the extracted "
+                        "metrics come from the solver's output file, which was "
+                        "not written into the package."
+                    )
             if dat_path:
                 _write_safe(f"{run_prefix}/outputs/result.dat", dat_path)
 
@@ -2473,7 +2513,12 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                         load_case_id=load_case_id,
                         software=solver,
                         overwrite=overwrite,
-                        run_id=run_id,
+                        # ...and only when the package member IS this run's FRD.
+                        # If the write was refused (overwrite=False over an
+                        # existing result), that member is the PREVIOUS run's
+                        # file, and naming it would point the record at an
+                        # artifact these metrics did not come from.
+                        run_id=run_id if frd_in_package else None,
                     )
                     extracted_metrics = ext_result.get("metrics")
                     changed_artifacts.extend(ext_result.get("artifacts", []))
