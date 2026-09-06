@@ -462,6 +462,7 @@ def extract_frd_solver_results(
     load_case_id: str = "load_case_001",
     software: str = "CalculiX",
     overwrite: bool = True,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     """Parse a CalculiX FRD file and write computed_metrics.json into a package.
 
@@ -499,12 +500,19 @@ def extract_frd_solver_results(
             injected = True
         from aieng.simulation.frd_result_extractor import write_computed_metrics_package  # type: ignore[import]
 
+        # `frd` is a staged temp file; record the in-package artifact and the
+        # run instead, so a package that is exported and reopened elsewhere can
+        # still say which run supports which number.
         metrics = write_computed_metrics_package(
             pkg,
             frd,
             load_case_id=load_case_id,
             software=software,
             overwrite=overwrite,
+            run_id=run_id,
+            source_files=(
+                [f"simulation/runs/{run_id}/outputs/result.frd"] if run_id else None
+            ),
         )
         return {
             "status": "ok",

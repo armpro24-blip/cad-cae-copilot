@@ -120,11 +120,37 @@ def test_package_frd_is_found_without_being_told_where(tmp_path: Path) -> None:
     found = _find_package_frd(pkg)
 
     assert found is not None
-    path, tmpdir = found
+    # The member name comes back too: the temp path is meaningless to anyone
+    # who opens the package later, and `metrics_source` needs the in-package
+    # artifact and its run to say which run produced a number.
+    path, tmpdir, member = found
     assert Path(path).exists() and Path(path).suffix == ".frd"
+    assert member == "simulation/runs/run_001/outputs/result.frd"
     import shutil
 
     shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_a_requested_run_is_never_answered_with_another_runs_frd(tmp_path: Path) -> None:
+    """`asked-a-got-b`: the newest FRD is the right default, not the right answer.
+
+    With no run named, "the newest" is the only sensible pick. But when the
+    caller names `run_001`, falling back to whatever else is in the package
+    hands them run_002's numbers — and `cae.extract_solver_results` then records
+    them under the run they asked for. Wrong result, right-looking provenance.
+    """
+    pkg = tmp_path / "two_runs.aieng"
+    with zipfile.ZipFile(pkg, "w") as zf:
+        zf.writestr("simulation/runs/run_002/outputs/result.frd", "  1C" + "x" * 40)
+
+    assert _find_package_frd(pkg, "run_001", require_run=True) is None
+
+    # Unnamed, the newest result is still what you get.
+    found = _find_package_frd(pkg)
+    assert found is not None and found[2].startswith("simulation/runs/run_002/")
+    import shutil
+
+    shutil.rmtree(found[1], ignore_errors=True)
 
 
 def test_no_frd_in_package_returns_none(tmp_path: Path) -> None:

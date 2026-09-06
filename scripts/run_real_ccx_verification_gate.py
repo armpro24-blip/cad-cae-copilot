@@ -43,6 +43,15 @@ TARGETS: dict[str, PytestTarget] = {
         label="Backend CAD->CAE real-ccx solve loop",
         args=("aieng-ui/backend/tests/test_cae_solve_integration.py", "-q"),
     ),
+    # The whole promised task, through the tool surface: build, set up, solve,
+    # edit, re-solve, compare, export. It belongs in the gate rather than the
+    # ordinary lanes because a skip here must not read as a pass — an
+    # acceptance run that quietly does not run is the failure it exists to
+    # catch.
+    "acceptance": PytestTarget(
+        label="Acceptance: edit -> re-solve -> compare -> export",
+        args=("aieng-ui/backend/tests/test_acceptance_edit_resolve_compare.py", "-q"),
+    ),
 }
 
 
@@ -98,8 +107,16 @@ def parse_junit_summary(path: Path) -> JUnitSummary:
 
 
 def selected_targets(suite: str) -> list[PytestTarget]:
+    """The targets a suite name selects. "all" means every one of them.
+
+    It used to name two of them literally, so a target added to `TARGETS` was
+    registered and never run — and CI runs exactly this default. The acceptance
+    suite was added, the lane went green, and the acceptance run had not
+    executed. A registry two lines above a consumer that hardcodes its own copy
+    is the same drift this gate exists to catch in the product.
+    """
     if suite == "all":
-        return [TARGETS["nafems"], TARGETS["backend"]]
+        return list(TARGETS.values())
     return [TARGETS[suite]]
 
 
@@ -150,7 +167,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--suite",
-        choices=("all", "nafems", "backend"),
+        choices=("all", *TARGETS),
         default="all",
         help="Verification suite to run.",
     )

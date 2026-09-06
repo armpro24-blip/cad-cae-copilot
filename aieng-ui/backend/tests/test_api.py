@@ -6421,11 +6421,15 @@ def test_run_solver_extracts_results_when_requested(tmp_path: Path) -> None:
         frd_path.write_text(_make_test_frd({1: [1.0, 0.0, 0.0, 1.0]}, None), encoding="utf-8")
         return MagicMock(returncode=0, stdout="", stderr="")
 
-    def fake_extract(package_path, frd_path, *, aieng_root, load_case_id, software, overwrite):
+    def fake_extract(package_path, frd_path, *, aieng_root, load_case_id, software,
+                     overwrite, run_id=None):
         extract_called["package_path"] = package_path
         extract_called["frd_path"] = frd_path
         extract_called["load_case_id"] = load_case_id
         extract_called["software"] = software
+        # The run this FRD came from, so `metrics_source` can name it instead of
+        # the temp path the file was staged at.
+        extract_called["run_id"] = run_id
         return {
             "status": "ok",
             "metrics": {"load_cases": [{"id": load_case_id, "metrics": {}}]},
@@ -6445,8 +6449,74 @@ def test_run_solver_extracts_results_when_requested(tmp_path: Path) -> None:
     result = data["tool_results"][0]["output"]
     assert result["ok"] is True
     assert extract_called.get("load_case_id") == "load_case_001"
+    assert extract_called.get("run_id") == "run_001"
     assert extract_called.get("software") == "CalculiX"
     assert "extracted_metrics" in result
+
+
+def test_run_solver_does_not_name_a_stale_frd_as_the_new_metrics_source(
+    tmp_path: Path,
+) -> None:
+    """`overwrite=False` over an existing result keeps the OLD file in the package.
+
+    The metrics still come from the solver's fresh output — so stamping this
+    run's package path onto them points `metrics_source` at an artifact the
+    numbers did not come from. The extractor is told `run_id=None` instead, and
+    the discrepancy is warned about rather than papered over.
+    """
+    from unittest.mock import patch, MagicMock
+    from app.main import create_app, default_project, project_dir, save_project
+    from starlette.testclient import TestClient
+
+    settings = _make_patch_settings(tmp_path)
+    app = create_app(settings)
+    client = TestClient(app)
+
+    project = save_project(settings, default_project("solver-stale-frd"))
+    project_id = project["id"]
+    pkg_path = project_dir(settings, project_id) / "solver.aieng"
+    _make_preflight_package(pkg_path, input_deck=True)
+    with zipfile.ZipFile(pkg_path, "a") as zf:
+        zf.writestr("simulation/runs/run_001/outputs/result.frd", "OLD RESULT")
+    project["aieng_file"] = "solver.aieng"
+    save_project(settings, project)
+
+    extract_called: dict[str, Any] = {}
+
+    def fake_run(cmd, **kwargs):
+        cwd = Path(kwargs.get("cwd", "."))
+        (cwd / "solver_input.frd").write_text(
+            _make_test_frd({1: [1.0, 0.0, 0.0, 1.0]}, None), encoding="utf-8"
+        )
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    def fake_extract(package_path, frd_path, *, aieng_root, load_case_id, software,
+                     overwrite, run_id=None):
+        extract_called["run_id"] = run_id
+        return {
+            "status": "ok",
+            "metrics": {"load_cases": [{"id": load_case_id, "metrics": {}}]},
+            "artifacts": [],
+        }
+
+    with patch("app.main.shutil.which", return_value="/fake/ccx"),          patch("subprocess.run", side_effect=fake_run),          patch("app.aieng_bridge.extract_frd_solver_results", fake_extract):
+        data = _execute_run_solver(client, project_id, {
+            "project_id": project_id,
+            "input_deck_path": "simulation/runs/run_001/solver_input.inp",
+            "extract_results": True,
+            "refresh_summary": False,
+            "overwrite": False,
+        })
+
+    result = data["tool_results"][0]["output"]
+    assert "run_id" in extract_called, "the FRD extraction path did not run"
+    assert extract_called["run_id"] is None
+    warnings = " ".join(result.get("warnings", []))
+    assert "is NOT this run's result" in warnings
+
+    # And the package still holds the old file — that is what overwrite=False asked for.
+    with zipfile.ZipFile(pkg_path) as zf:
+        assert zf.read("simulation/runs/run_001/outputs/result.frd") == b"OLD RESULT"
 
 
 def test_run_solver_refreshes_summaries_when_requested(tmp_path: Path) -> None:

@@ -121,3 +121,36 @@ def test_the_check_can_actually_fail() -> None:
     assert _matches("aieng/*.toml", ["aieng/pyproject.toml"])
     assert not _matches("aieng/*.py", ["aieng/nested/file.py"])
     assert _matches("aieng/**/*.py", ["aieng/nested/file.py"])
+
+
+def test_the_ccx_gate_runs_every_target_it_registers() -> None:
+    """"all" must mean all, or a registered suite silently never runs.
+
+    `selected_targets("all")` named two targets literally while `TARGETS` held
+    three, and CI invokes exactly that default — so the acceptance suite was
+    added, the lane reported green, and the acceptance run had not executed.
+    The lane passing is not evidence that what it gates ran.
+    """
+    import importlib.util
+    import sys
+
+    script = _REPO / "scripts" / "run_real_ccx_verification_gate.py"
+    spec = importlib.util.spec_from_file_location("_ccx_gate", script)
+    assert spec and spec.loader
+    gate = importlib.util.module_from_spec(spec)
+    # Registered before exec: `@dataclass` resolves the defining module through
+    # `sys.modules`, and fails on a module that is not there yet.
+    sys.modules["_ccx_gate"] = gate
+    try:
+        spec.loader.exec_module(gate)
+    finally:
+        sys.modules.pop("_ccx_gate", None)
+
+    selected = {target.label for target in gate.selected_targets("all")}
+    registered = {target.label for target in gate.TARGETS.values()}
+    assert selected == registered, (
+        f"targets registered but not run by --suite all: {registered - selected}"
+    )
+
+    for name in gate.TARGETS:
+        assert gate.selected_targets(name), f"--suite {name} selects nothing"

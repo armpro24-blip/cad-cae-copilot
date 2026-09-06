@@ -72,11 +72,18 @@ def test_parse_junit_summary_counts_testsuites_children(tmp_path: Path) -> None:
 
 
 def test_selected_targets() -> None:
-    assert [target.label for target in gate.selected_targets("all")] == [
-        "NAFEMS real-ccx numerical verification",
-        "Backend CAD->CAE real-ccx solve loop",
-    ]
+    """"all" means every registered target, not a list that happens to match.
+
+    This asserted the two labels literally, which pinned the defect as the
+    expectation: `selected_targets("all")` named two while `TARGETS` held three,
+    CI runs that default, and the acceptance suite was registered without ever
+    running — with the lane green. A literal list here would have had to be
+    edited to allow the fix, which is the tell.
+    """
+    assert list(gate.selected_targets("all")) == list(gate.TARGETS.values())
     assert gate.selected_targets("nafems") == [gate.TARGETS["nafems"]]
+    for name in gate.TARGETS:
+        assert gate.selected_targets(name) == [gate.TARGETS[name]]
 
 
 def test_main_requires_resolvable_ccx_unless_skips_are_allowed(monkeypatch) -> None:
