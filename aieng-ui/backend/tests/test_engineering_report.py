@@ -150,6 +150,120 @@ def test_engineering_report_endpoint_returns_self_contained_html_read_only(tmp_p
     assert "claim advancement" in html.lower()
 
 
+def _frd(disp: float, stress: float) -> str:
+    def value(v: float) -> str:
+        return f"{v:12.5E}"
+
+    def node(nid: int, values: list[float]) -> str:
+        return "    -1" + f"{nid:12d}" + "".join(value(v) for v in values)
+
+    return "\n".join([
+        "    1C                                                                         1",
+        "    1UCUT.......................                                                2",
+        "    -4  DISP        4    1",
+        "    -5  D1          1    2    1    0",
+        "    -5  D2          1    2    2    0",
+        "    -5  D3          1    2    3    0",
+        "    -5  ALL         1    2    0    1",
+        node(1, [disp, 0.0, 0.0, disp]),
+        "    -3",
+        "    -4  S           6    1",
+        "    -5  SXX         1    4    1    1",
+        "    -5  SYY         1    4    2    1",
+        "    -5  SZZ         1    4    3    1",
+        "    -5  SXY         1    4    4    1",
+        "    -5  SXZ         1    4    5    1",
+        "    -5  SYZ         1    4    6    1",
+        node(1, [stress, 0.0, 0.0, 0.0, 0.0, 0.0]),
+        "    -3",
+        " 9999",
+    ]) + "\n"
+
+
+def _add_second_run(pkg_path: Path, *, second_run_completed: bool = True) -> None:
+    """Give the fixture the two runs a before/after actually needs.
+
+    run_001 already has its `solver_run.json` from `_write_report_package`; only
+    the second run's record is written here, so its completion can be varied.
+    """
+    with zipfile.ZipFile(pkg_path, "a") as zf:
+        for run_id, disp, stress, revision in (
+            ("run_001", 2.4, 140.0, 0),
+            ("run_002", 0.3, 34.0, 1),
+        ):
+            zf.writestr(f"simulation/runs/{run_id}/outputs/result.frd", _frd(disp, stress))
+            zf.writestr(f"simulation/runs/{run_id}/deck_provenance.json", json.dumps(
+                {"run_id": run_id, "geometry_revision": revision}
+            ))
+        zf.writestr("simulation/runs/run_002/solver_run.json", json.dumps({
+            "run_id": "run_002",
+            "solver": "CalculiX",
+            "state": "completed" if second_run_completed else "failed",
+            "solved": second_run_completed,
+            "analysis_type": "static",
+        }))
+
+
+def test_report_carries_the_before_after_comparison(tmp_path: Path) -> None:
+    """The deliverable the promised task ends with, in the artifact a user is handed.
+
+    Before this the report could only show where the design ENDED UP:
+    `results/computed_metrics.json` is one fixed path, so the re-solve's
+    extraction had already replaced the baseline's numbers. The section
+    re-derives each column from its own run's FRD.
+    """
+    settings = _make_settings(tmp_path)
+    client = TestClient(create_app(settings))
+    project_id, pkg_path = _make_project(settings)
+    _write_report_package(pkg_path)
+    _add_second_run(pkg_path)
+    before = _digest(pkg_path)
+
+    response = client.get(f"/api/projects/{project_id}/report")
+
+    assert response.status_code == 200, response.text
+    assert _digest(pkg_path) == before, "the report must not write into the package"
+    html = response.text
+    assert "Design Change (Before / After)" in html
+    assert "geometry revision 0" in html and "geometry revision 1" in html
+    assert "-87.5%" in html, "the displacement change should be reported as a percentage"
+    assert "simulation/runs/run_001/outputs/result.frd" in html
+    assert "simulation/runs/run_002/outputs/result.frd" in html
+
+
+def test_a_caveat_on_the_comparison_reaches_the_report_warnings(tmp_path: Path) -> None:
+    """The delta is only worth as much as the runs behind it.
+
+    Here the second solve did not finish. The numbers still parse out of the
+    FRD it left behind, so the table renders — and rendering only the table
+    would drop exactly the caveat that decides whether the change means
+    anything. The comparison's own warnings join the report's.
+    """
+    settings = _make_settings(tmp_path)
+    client = TestClient(create_app(settings))
+    project_id, pkg_path = _make_project(settings)
+    _write_report_package(pkg_path)
+    _add_second_run(pkg_path, second_run_completed=False)
+
+    html = client.get(f"/api/projects/{project_id}/report").text
+
+    assert "Design Change (Before / After)" in html
+    assert "run_002 did not complete" in html
+
+
+def test_report_with_one_run_says_there_is_nothing_to_compare(tmp_path: Path) -> None:
+    """An empty section would read as "nothing changed"; the refusal is the answer."""
+    settings = _make_settings(tmp_path)
+    client = TestClient(create_app(settings))
+    project_id, pkg_path = _make_project(settings)
+    _write_report_package(pkg_path)
+
+    html = client.get(f"/api/projects/{project_id}/report").text
+
+    assert "Design Change (Before / After)" in html
+    assert "needs two runs with results" in html
+
+
 def test_report_generate_runtime_tool_returns_html_without_claim_advancement(tmp_path: Path) -> None:
     from app import runtime as _rt
 

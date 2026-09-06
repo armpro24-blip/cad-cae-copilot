@@ -2037,6 +2037,33 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         },
         "additionalProperties": True,
     },
+    "cae.compare_runs": {
+        "type": "object",
+        "required": ["project_id"],
+        "description": (
+            "Read-only before/after comparison of two solver runs in one package. "
+            "Each side's numbers are re-derived from THAT run's own "
+            "simulation/runs/<run_id>/outputs/*.frd, not from the shared "
+            "results/computed_metrics.json (which holds only the latest extraction), "
+            "and each is reported with the geometry revision its deck was built for. "
+            "Defaults to the oldest and newest runs that have a result. Runs nothing "
+            "and writes nothing."
+        ),
+        "properties": {
+            "project_id": {"type": "string"},
+            "package_path": {"type": "string", "description": "Explicit .aieng path instead of project_id."},
+            "baseline_run": {
+                "type": "string",
+                "description": (
+                    "The 'before' run id (e.g. 'run_001'). A named run with no result "
+                    "is refused, never replaced by another run's result."
+                ),
+            },
+            "current_run": {"type": "string", "description": "The 'after' run id (e.g. 'run_002')."},
+            "load_case_id": {"type": "string", "description": "Compare only this load case."},
+        },
+        "additionalProperties": True,
+    },
     "cae.extract_field_regions": {
         "type": "object",
         "required": ["project_id"],

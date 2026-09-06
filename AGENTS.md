@@ -1307,6 +1307,7 @@ is possible).
 | Tool | Purpose |
 |------|---------|
 | `cae.extract_solver_results` | Parse CalculiX FRD → `computed_metrics.json` |
+| `cae.compare_runs` | Read-only **before/after** of two runs in one package: each side's metrics re-derived from **that run's own FRD** (not the shared `computed_metrics.json`, which holds only the latest extraction), reported beside the geometry revision its deck was built for. Defaults to the oldest and newest runs that have a result; a named run with no result is refused, never replaced by another run's. Runs nothing, writes nothing |
 | `cae.extract_field_regions` | Cluster high-stress / high-displacement regions |
 | `cae.map_results` | Map stress/deflection results back to topology entities, object_registry objects, and `source_ir_node` → `analysis/cae_result_map.json` (unmapped regions reported honestly) |
 | `cad.tolerance_stackup` | Read-only 1D tolerance stack-up: pass an ordered list of contributors (name, nominal, plus, minus, optional distribution) and get worst-case arithmetic min/max, RSS sigma and confidence-band min/max, controlling contributors, and honesty notes. Assumes independence and +/- 3-sigma tolerance coverage; not a GD&T solver. No geometry mutation. |
@@ -1577,6 +1578,7 @@ can click to highlight them.
 5. cae.generate_solver_input { project_id, run_id: "run_002" }   ← A NEW run id
 6. cae.run_solver          { project_id, input_deck_path: "simulation/runs/run_002/solver_input.inp" }  [APPROVAL]
 7. cae.extract_solver_results { project_id }
+8. cae.compare_runs        { project_id }   ← the before/after you hand over
 ```
 
 **Re-solving after an edit needs a new `run_id`, and that is not optional.**
@@ -1608,6 +1610,25 @@ metrics' source only when this run's FRD actually landed there (with
 `overwrite: false` over an existing result it does not, and says so). `aieng-ui/backend/tests/test_acceptance_edit_resolve_compare.py` runs
 this whole chain against real CalculiX and checks the comparison against beam
 theory, not against `status == "completed"`.
+
+**Step 8 exists because the package cannot answer "what changed" on its own.**
+`results/computed_metrics.json` is a single fixed path, so the re-solve's
+extraction replaces the baseline's numbers; the FRD that produced them survives
+under `simulation/runs/run_001/outputs/`, but digging it back out was the
+reader's problem. `cae.compare_runs` re-derives **each** side from its own run's
+FRD and prints the geometry revision beside it, so the two failure modes stay
+visible rather than reading as an answer:
+
+- both decks built for the **same** revision → `geometry_changed: false` plus a
+  warning that this compares two solves of the same geometry. That is exactly
+  what the stale-deck defect looked like (0.0% change on a doubled thickness);
+- a deck with **no** recorded revision → `geometry_changed: null`, never `0`.
+
+The same comparison is a section of `report.generate`'s HTML ("Design Change
+(Before / After)"), which is the form a user is actually handed. A project with
+one run gets the refusal text there rather than an empty table — "there is
+nothing to compare yet" is the useful answer, and a blank section would read as
+"nothing changed".
 
 ---
 
