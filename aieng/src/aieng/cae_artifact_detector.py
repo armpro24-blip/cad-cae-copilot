@@ -71,6 +71,41 @@ _FIELD_PATHS: set[str] = {
     "results/fields/safety_factor.vtu",
 }
 
+#: Where the workbench actually writes field artifacts, and with what suffix.
+#: The three `.vtu` paths above are an import-era shape that nothing produces:
+#: measured across the 44 packages on disk, `has_fields` was False on ALL of
+#: them, including the 8 that carry `results/fields/*.summary.json` and can
+#: serve two fields each through `/cae-result-fields`.
+_FIELD_MEMBER_PREFIX = "results/fields/"
+_FIELD_MEMBER_SUFFIXES = (".summary.json", ".vtu")
+
+
+def field_members(members: set[str] | frozenset[str]) -> list[str]:
+    """Field artifacts present in a package, whichever era wrote them.
+
+    Public because "which fields does this package carry" is asked in more than
+    one place, and the answer drifted apart once already.
+    """
+    return sorted(
+        name for name in members
+        if name.startswith(_FIELD_MEMBER_PREFIX)
+        and name.endswith(_FIELD_MEMBER_SUFFIXES)
+    )
+
+
+def field_names(members: set[str] | frozenset[str]) -> list[str]:
+    """The field NAMES a package carries, e.g. ["displacement", "stress"]."""
+    names: list[str] = []
+    for member in field_members(members):
+        stem = member[len(_FIELD_MEMBER_PREFIX):]
+        for suffix in _FIELD_MEMBER_SUFFIXES:
+            if stem.endswith(suffix):
+                stem = stem[: -len(suffix)]
+                break
+        if stem and stem not in names:
+            names.append(stem)
+    return names
+
 
 def detect_cae_artifacts(package_path: str | Path) -> dict[str, Any]:
     """Scan a .aieng package and return honest CAE artifact presence.
@@ -108,7 +143,7 @@ def detect_cae_artifacts(package_path: str | Path) -> dict[str, Any]:
     has_mesh = any(artifacts[p] for p in _MESH_PATHS)
     has_solver_settings = artifacts.get("simulation/solver_settings.json", False)
     has_results = any(artifacts[p] for p in _RESULT_PATHS)
-    has_fields = any(artifacts[p] for p in _FIELD_PATHS)
+    has_fields = any(artifacts[p] for p in _FIELD_PATHS) or bool(field_members(members))
     has_validation = artifacts.get("validation/status.yaml", False)
 
     # Determine mode

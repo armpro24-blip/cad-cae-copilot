@@ -933,8 +933,16 @@ def test_summarize_cae_payload_does_not_include_solver_fields() -> None:
         evidence_index=None,
         validation_status=None,
     )
-    assert "stress" in result["available_fields"]
     assert "solver_fields" not in result
+
+    # This used to also assert `"stress" in result["available_fields"]` — the
+    # old derivation, where a design target that merely MENTIONS stress made the
+    # payload claim a stress field was available. The assertion encoded the
+    # defect as the expectation; the field now reports what the package carries
+    # (see tests/test_cae_state_agreement.py), and the target is still visible
+    # through `constraints_count`.
+    assert result["available_fields"] == []
+    assert result["constraints_count"] == 1
 
 
 # ── runtime tests ──────────────────────────────────────────────────────────────

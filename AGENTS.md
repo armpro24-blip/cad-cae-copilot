@@ -1174,13 +1174,23 @@ definition and one reader:
 |---|---|---|
 | Did a solver run finish? | `solver_executed` | `cae_result_summary.read_solver_evidence(zf)` — completed `simulation/runs/*/solver_run.json` |
 | Does the package register result evidence that exists? | `cae.results_available` | `cae_result_summary.read_result_evidence(index)` |
+| Were numbers actually extracted? | `cae.metrics_parsed` + `parsed_metric_names` | `cae_result_summary.read_parsed_metrics(doc)` — a metric whose `value` is `null` does **not** count |
+| Which fields can be shown? | `cae.available_fields` / `artifact_detection.has_fields` | `cae_artifact_detector.field_names(members)` — the fields the package carries |
 | Is a result-shaped artifact present at all? | `cae.artifact_detection.has_results` | `cae_artifact_detector` — member presence, not content |
 | Do the results still apply to this geometry? | `edit_impact.stale` | `state/revalidation_status.json` |
 
-**Each is tri-state where it can be.** `solver_executed` and
-`results_available` are `None` when the package records nothing at all — which
+**Each is tri-state where it can be.** `solver_executed`, `results_available`
+and `metrics_parsed` are `None` when the package records nothing at all — which
 is a different fact from `False` ("recorded, and there is none"). Do not
 collapse them; 36 of the 44 packages on disk are in the `None` state.
+
+`available_fields` used to be derived from design constraints that merely
+*mention* "stress" or "displacement", so a project with targets and no solver
+run reported `["stress"]`. It now reports the fields the package carries; the
+target-side information is what `simulation_targets` and `constraints` in the
+same payload are for. `has_fields` looked only for three `results/fields/*.vtu`
+paths nothing writes — **False on all 44 packages**, including the 8 that carry
+`results/fields/*.summary.json` and can serve two fields each.
 
 These disagreed until #530. `results_available` was `False` on **all 8**
 packages that have results, because the evidence index is written under

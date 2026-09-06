@@ -701,6 +701,7 @@ def package_summary(settings: Settings, project_id: str) -> dict[str, Any]:
             summary["completeness_report"] = result.get("completeness_report")
             summary["evidence_report"] = result.get("evidence_report")
             summary["cae"] = result.get("cae") or summarize_cae_payload(
+                package_members=result.get("members"),
                 constraints=result.get("constraints"),
                 parsed_materials=result.get("parsed_materials"),
                 parsed_boundary_conditions=result.get("parsed_boundary_conditions"),

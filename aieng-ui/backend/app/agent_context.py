@@ -423,6 +423,13 @@ def _cae_block(
         # evidence index at all") into False ("recorded, and there is none"),
         # which is the distinction this field was just given.
         "results_available": cae.get("results_available"),
+        #: The other separated states. This block is an explicit allow-list, so
+        #: a state the producer defines but nobody lists here never reaches the
+        #: agent — which is how `evidence_index_shape` was defined and then
+        #: silently dropped one call later.
+        "metrics_parsed": cae.get("metrics_parsed"),
+        "parsed_metric_names": cae.get("parsed_metric_names") or [],
+        "evidence_index_shape": cae.get("evidence_index_shape"),
         "available_fields": cae.get("available_fields") or [],
         "solver_status": cae.get("solver_status") or {},
         "mapping": cae.get("mapping"),
