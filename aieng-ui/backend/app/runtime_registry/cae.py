@@ -23,6 +23,30 @@ LOGGER = logging.getLogger("app.app_factory")
 _WINDOWS_CRASH_THRESHOLD = 0xC0000000
 
 
+def rebind_warnings_for(source_deck_synthesis: Any) -> list[str]:
+    """One warning per binding that was recovered from its recorded selector.
+
+    A rebind is a signal, so it does not stay inside a sub-block — AGENTS.md
+    says exactly that of the stale flag, and it is just as true here: the face
+    the setup NAMED is gone and a different one is carrying the load now. That
+    is the right answer, and the caller still has to see it without digging
+    through `source_deck_synthesis`.
+    """
+    entries = (source_deck_synthesis or {}).get("rebound_from_selector") or []
+    warnings: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        warnings.append(
+            f"{entry.get('id')}: the face this setup named "
+            f"({entry.get('previous_face') or 'the recorded @face: pointer'}) no "
+            f"longer exists; {str(entry.get('selector'))!r} now resolves to "
+            f"@face:{entry.get('face_id')} and the binding was moved to it. "
+            "Confirm that is the face you intend."
+        )
+    return warnings
+
+
 def _audit_artifact_paths(artifacts: list) -> list[str]:
     """Normalise a ``changed_artifacts`` list to package-internal path strings.
 
@@ -892,6 +916,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                     "\"bottom\", \"bolt holes\", \"base_plate bottom\", or an @face: pointer."
                 ),
             }
+        fix_selector = fix_intent if isinstance(fix_intent, str) else None
         fix_hit = _intent.resolve_face_intent(topology, fix_intent)
         if fix_hit["status"] != "ok":
             return {
@@ -904,10 +929,13 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
 
         load_spec = inp.get("load")
         load_hit: dict[str, Any] | None = None
+        load_selector: str | None = None
         force_n = 0.0
         direction: list[float] = [0.0, 0.0, -1.0]
         if isinstance(load_spec, dict) and load_spec:
-            load_hit = _intent.resolve_face_intent(topology, load_spec.get("at"))
+            load_at = load_spec.get("at")
+            load_selector = load_at if isinstance(load_at, str) else None
+            load_hit = _intent.resolve_face_intent(topology, load_at)
             if load_hit["status"] != "ok":
                 return {
                     "status": "needs_user_input",
@@ -959,8 +987,17 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         if inp.get("mesh_size_mm"):
             solver_settings["mesh_size_mm"] = inp["mesh_size_mm"]
 
+        # `target_selector` keeps the WORDS that chose this face, beside the face
+        # they chose. A resolved pointer alone cannot survive an edit that moves
+        # the face: measured on the canonical two-body bracket, editing the
+        # constant that both dimensions the plate and positions the rib retires
+        # the rib's top face id, and the promised task dead-ends at
+        # `unbound_setup_faces` with `ai_preprocessing` (an API key) as the only
+        # documented recovery. The phrase re-resolves deterministically against
+        # the new topology, or refuses exactly as it would have the first time.
         boundary_conditions = [
             {"id": f"bc_{i + 1:03d}", "type": "fixed", "target": f"@face:{fid}",
+             "target_selector": fix_selector,
              "dof_start": 1, "dof_end": 3, "value": 0}
             for i, fid in enumerate(fix_hit["face_ids"])
         ]
@@ -992,6 +1029,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             share = force_n / len(load_hit["face_ids"])
             loads = [
                 {"id": f"load_{i + 1:03d}", "type": "force", "target": f"@face:{fid}",
+                 "target_selector": load_selector,
                  "value_n": share, "direction": direction}
                 for i, fid in enumerate(load_hit["face_ids"])
             ]
@@ -2081,6 +2119,13 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         except Exception as exc:  # noqa: BLE001 — best-effort; deck gen reports the real gap
             source_deck_synthesis = {"created": False, "status": "error", "message": str(exc)}
 
+        # A rebind is a signal, so it does not stay inside a sub-block. AGENTS.md
+        # says it of the stale flag and it is just as true here: the face the
+        # setup NAMED is gone and a different one is carrying the load now. That
+        # is the right answer — and the caller has to be able to see it without
+        # digging through `source_deck_synthesis`.
+        rebind_warnings = rebind_warnings_for(source_deck_synthesis)
+
         # Honesty gate: a load/BC face that resolved to ZERO mesh nodes would
         # otherwise yield a deck referencing an undefined NSET — a cryptic ccx
         # abort, or worse a silently dropped load. Block here with the exact
@@ -2138,7 +2183,10 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             "status": "completed",
             "package_path": str(package_path),
             "out_path": result.get("out_path"),
-            "warnings": result.get("warnings", []),
+            "warnings": list(result.get("warnings", [])) + rebind_warnings,
+            "rebound_from_selector": (
+                (source_deck_synthesis or {}).get("rebound_from_selector") or []
+            ),
             "source_deck_synthesis": source_deck_synthesis,
             "artifacts": [
                 {

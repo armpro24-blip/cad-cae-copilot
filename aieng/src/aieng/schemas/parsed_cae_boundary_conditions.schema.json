@@ -53,6 +53,11 @@
           "type": {
             "$comment": "Read by the deck generator to pick the *BOUNDARY DOF range.",
             "type": "string"
+          },
+          "target_selector": {
+            "$comment": "The engineering-language phrase that CHOSE this target face, e.g. \"rib_main top\", recorded beside the `@face:` pointer it resolved to. A resolved pointer cannot survive an edit that MOVES the face: the id retires and the binding resolves to nothing. Deck-time binding re-runs the same deterministic resolver over this phrase to recover the face, and refuses ambiguity exactly as the authoring path does. Absent on a document written before this field existed, which keeps the conservative refusal rather than guessing.",
+            "type": "string",
+            "minLength": 1
           }
         },
         "additionalProperties": false

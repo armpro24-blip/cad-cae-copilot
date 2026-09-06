@@ -1308,11 +1308,18 @@ def normalize_cae_bindings(package_path: Path) -> dict[str, Any]:
        target to the NSET name — so the existing deck-generation path resolves it.
        Explicit, already-correct mappings/targets are preserved.
 
-    Returns ``{normalized, derived_entities, loads_promoted}``. Best-effort: any
-    read/parse failure leaves the package untouched.
+    A third normalization recovers a binding whose recorded face id no longer
+    exists by re-running the deterministic resolver over the phrase that first
+    chose it (``target_selector``) — see ``_reresolve``. Recoveries are listed in
+    ``rebound_from_selector`` rather than applied quietly.
+
+    Returns ``{normalized, derived_entities, rebound_from_selector,
+    loads_promoted}``. Best-effort: any read/parse failure leaves the package
+    untouched.
     """
     package_path = Path(package_path)
     derived: list[str] = []
+    rebound: list[dict[str, Any]] = []
     loads_promoted = False
 
     topo_raw = _read_member(package_path, _TOPOLOGY_PATH)
@@ -1365,11 +1372,97 @@ def normalize_cae_bindings(package_path: Path) -> dict[str, Any]:
     bcs_changed = False
     loads_changed = False
 
+    def _entity_still_bound(target: Any) -> bool:
+        """Is `target` an NSET name whose mapped faces are all still in topology?"""
+        if not isinstance(target, str) or not target:
+            return False
+        for mapping in mappings:
+            if mapping.get("cae_entity") != target:
+                continue
+            faces = [str(f) for f in (mapping.get("face_ids") or [])]
+            return bool(faces) and all(f in face_ids for f in faces)
+        return False
+
+    def _reresolve(item: dict[str, Any]) -> str | None:
+        """Recover a face whose id is gone, from the words that first chose it.
+
+        A resolved `@face:` pointer cannot survive an edit that MOVES the face:
+        measured on the canonical two-body bracket, editing the constant that
+        both dimensions the plate and positions the rib retires the rib's top
+        face id, so the promised edit -> re-solve -> compare task dead-ended at
+        `unbound_setup_faces` — with `ai_preprocessing` (an Anthropic API key)
+        as the only documented recovery, on a workbench whose whole premise is
+        that the backend needs no key.
+
+        `cae.setup_static` now stores the phrase it resolved (`"rib_main top"`)
+        beside the pointer, and the SAME deterministic resolver runs again
+        against the current topology. It is not a loosening: `resolve_face_intent`
+        refuses ambiguity, so a phrase that no longer picks one face fails here
+        exactly as it would have failed at authoring time.
+        """
+        selector = item.get("target_selector")
+        if not isinstance(selector, str) or not selector.strip():
+            return None
+        try:
+            from .cae_setup_intent import resolve_face_intent
+        except Exception:  # noqa: BLE001 - never break deck generation on an import
+            return None
+        try:
+            hit = resolve_face_intent(topology, selector)
+        except Exception:  # noqa: BLE001
+            return None
+        if hit.get("status") != "ok":
+            return None
+        recovered = [str(f) for f in (hit.get("face_ids") or []) if str(f) in face_ids]
+        if len(recovered) != 1:
+            # Several faces (or none) is not a recovery — refuse rather than pick.
+            return None
+        return recovered[0]
+
     def _bind(item: dict[str, Any], kind: str) -> bool:
         """Rewrite item.target @face -> NSET name, adding a mapping if needed."""
         fid = _face_ref_from_target(item.get("target"), face_ids)
-        if fid is None:
+        if fid is None and _entity_still_bound(item.get("target")):
+            # Already normalised to an NSET whose faces all still exist. Nothing
+            # to do — and re-resolving here would report a rebind that did not
+            # happen, on every run after the first.
             return False
+        if fid is None:
+            fid = _reresolve(item)
+            if fid is None:
+                return False
+            # The existing NSET must MOVE to the recovered face, not gain a
+            # sibling. Leaving the old entry behind leaves an NSET bound to a
+            # retired face, which resolves to zero nodes — the same
+            # `unbound_setup_faces` refusal, now with the right face sitting
+            # next to it under a different name.
+            previous = str(item.get("target") or "")
+            target_id = str(item.get("id") or "")
+            previous_face: str | None = None
+            for mapping in mappings:
+                same_entity = previous and mapping.get("cae_entity") == previous
+                same_target = target_id and str(
+                    (mapping.get("maps_to") or {}).get("cae_target_id") or ""
+                ) == target_id
+                if not (same_entity or same_target):
+                    continue
+                for old_fid in mapping.get("face_ids") or []:
+                    previous_face = previous_face or f"@face:{old_fid}"
+                    face_to_entity.pop(str(old_fid), None)
+                mapping["face_ids"] = [fid]
+                # `face_signatures` describe the OLD face; keeping them would
+                # make the next re-verification compare against a face this
+                # binding no longer uses.
+                mapping.pop("face_signatures", None)
+                face_to_entity[fid] = str(mapping.get("cae_entity") or "")
+            item["target"] = f"@face:{fid}"
+            rebound.append({
+                "id": item.get("id"),
+                "selector": item.get("target_selector"),
+                "face_id": fid,
+                "previous_face": previous_face,
+                "previous_target": previous or None,
+            })
         entity = face_to_entity.get(fid)
         if entity is None:
             base = _sanitize_name(str(item.get("id") or f"{kind}_{fid}")).upper() or f"{kind.upper()}_SET"
@@ -1419,7 +1512,7 @@ def normalize_cae_bindings(package_path: Path) -> dict[str, Any]:
     writes: dict[str, bytes] = {}
     if materials_normalized:
         writes[_PARSED_MATERIALS_PATH] = json.dumps(mats_doc, indent=2).encode()
-    if derived or not cae_raw and mappings:
+    if derived or rebound or (not cae_raw and mappings):
         from aieng.simulation.cae_mapping_writer import METHOD_POINTER, finalize_cae_mapping
 
         out_mapping = {**cae_mapping, "mappings": mappings}
@@ -1461,6 +1554,10 @@ def normalize_cae_bindings(package_path: Path) -> dict[str, Any]:
     return {
         "normalized": bool(writes),
         "derived_entities": derived,
+        # Reported, never silent: a rebind means the face the setup NAMED is
+        # gone and another one is carrying the load now. It is the right answer
+        # and the user still has to be able to see that it happened.
+        "rebound_from_selector": rebound,
         "loads_promoted": loads_promoted,
         "materials_normalized": materials_normalized,
     }
@@ -1572,6 +1669,7 @@ def ensure_source_deck_from_mesh(package_path: Path) -> dict[str, Any]:
         "empty_nsets": empty_nsets,
         "empty_nset_faces": empty_nset_faces,
         "derived_entities": normalization["derived_entities"],
+        "rebound_from_selector": normalization.get("rebound_from_selector") or [],
         "loads_promoted": normalization["loads_promoted"],
         "input_hash": input_hash,
     }
