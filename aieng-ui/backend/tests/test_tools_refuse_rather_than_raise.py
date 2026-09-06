@@ -187,3 +187,35 @@ def test_generate_preview_without_a_project_id_refuses(tmp_path: Path) -> None:
     result = runtime.invoke_tool("aieng.generate_preview", {})
     assert result["status"] == "error"
     assert result["code"] == "missing_project_id"
+
+
+def test_every_registered_tool_publishes_a_parameter_schema() -> None:
+    """A tool with no schema is exposed over MCP as "takes any object".
+
+    `register_tool`'s own docstring says consumers fall back to a permissive
+    `{"type": "object"}` — which tells a connecting agent nothing: not the
+    parameter names, not which are required. Measured: four tools shipped that
+    way while their handlers raised `ValueError` on the very inputs the agent
+    had no way to discover — `mcp.parse_patch` refuses without `patch_json`, and
+    `patch_json` appeared nowhere in its advertised interface.
+
+    Asserted over the live registry rather than a list, so the next tool
+    registered without a schema fails here instead of in a session.
+    """
+    from app import runtime as _rt
+
+    # A tool that genuinely takes nothing SAYS so: `aieng.list_projects`
+    # declares `{"properties": {}, "additionalProperties": false}`. What is
+    # checked here is the absence — a tool registered with no schema at all,
+    # for which `list_tools_for_mcp` substitutes the permissive fallback.
+    missing = [
+        name
+        for name in _rt.registered_tool_names()
+        if (_rt.registered_tool_metadata(name) or {}).get("input_schema") is None
+    ]
+
+    assert not missing, (
+        "these tools are exposed over MCP with no parameter contract, so an "
+        "agent is shown a permissive object schema and cannot construct a valid "
+        f"call: {sorted(missing)}"
+    )

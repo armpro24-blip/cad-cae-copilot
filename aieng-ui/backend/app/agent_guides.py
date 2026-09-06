@@ -70,6 +70,16 @@ implemented in `aieng-ui/backend`.
   → `cad.edit_parameter` → inspect `regression_diff`.
 - Simulate: context/readiness → complete setup → `cae.prepare_solver_run` →
   generate input if needed → approved `cae.run_solver` → extract/postprocess.
+- **Resize and re-analyse (the full loop, and the one to know):**
+  `cad.edit_parameter` → `cae.generate_mesh` →
+  `cae.generate_solver_input {run_id: "run_002"}` — **a NEW run id, not
+  optional** → `cae.run_solver {input_deck_path: ".../run_002/solver_input.inp"}`
+  → `cae.extract_solver_results` → `cae.compare_runs` for the before/after.
+  Each run owns its deck, FRD, log and the geometry revision the deck was built
+  for; reusing `run_001` either fails or overwrites the baseline you are
+  comparing against. Re-running the pre-edit deck is refused
+  (`code: "stale_deck"`) — without that guard it reported the old numbers as
+  the new ones: 0.0% change on a beam whose thickness had doubled.
 
 ## Detailed guides
 
@@ -131,6 +141,15 @@ TOPIC_SECTIONS: dict[str, tuple[str, ...]] = {
         "Post-processing (no approval)",
         "C — CAD → CAE simulation pipeline",
         "D — Inspect results and explain findings",
+        # The guide gate is per CATEGORY, and workflow E is where the re-solve
+        # contract lives: the new-`run_id` requirement, `stale_deck`,
+        # `run_id_conflict`, and `cae.compare_runs`. Those govern
+        # `cae.generate_solver_input` and `cae.run_solver` — both gated on THIS
+        # topic — yet the section was served only under `cad`. An agent doing
+        # exactly what the gate asks got the CAE tool list without the rules for
+        # the tools it had just been gated on, re-solved into `run_001`, and met
+        # guards whose explanation it was never shown.
+        "E — Parametric modification (design iteration)",
         "Approval-gated tools",
         "Stale-artifact warnings",
     ),

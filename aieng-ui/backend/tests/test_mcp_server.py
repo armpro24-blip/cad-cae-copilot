@@ -103,6 +103,11 @@ def test_high_frequency_tools_carry_curated_schema(mcp_server) -> None:
             "aieng.convert",
             "aieng.find_projects_by_part",
             "cad.tolerance_stackup",
+            # Verified against the handler, not assumed: `_tool_mcp_parse_patch`
+            # reads `patch_json` and nothing else, and calls `parse_patch`
+            # without a project. It reaches this test only now because it
+            # previously shipped with no schema at all.
+            "mcp.parse_patch",
             "list_materials",
             "get_material_details",
             "compare_materials",

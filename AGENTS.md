@@ -1596,7 +1596,9 @@ Three guards make the wrong path fail loudly instead of quietly:
   old numbers as the new ones — measured: **0.0% change on a beam whose
   thickness had doubled**, `status: completed`, nothing flagged.
 - `cae.run_solver` takes the run from `input_deck_path` when you do not pass
-  `run_id`, and refuses if the two disagree. It used to default to `run_001`
+  `run_id`, and refuses if the two disagree (`code: "run_id_conflict"` — the
+  other two guards name their codes, so this one does too: an agent that
+  receives it should be able to find it here). It used to default to `run_001`
   whatever deck it was given, so solving run_002's deck wrote its results over
   run_001's.
 

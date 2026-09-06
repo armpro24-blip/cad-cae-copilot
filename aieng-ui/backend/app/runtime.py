@@ -163,6 +163,12 @@ def registered_tool_metadata(name: str) -> dict[str, Any] | None:
         "read_only": bool(meta.get("read_only", True)),
         "destructive": bool(meta.get("destructive", False)),
         "description": str(meta.get("description", "")),
+        # `None` here means the tool was registered with no schema and is being
+        # served the permissive fallback — which is a different fact from an
+        # explicit `{"properties": {}}` ("takes nothing", as aieng.list_projects
+        # declares). Omitting the field made the two indistinguishable to any
+        # caller checking whether a tool states its interface.
+        "input_schema": meta.get("input_schema"),
     }
 
 
