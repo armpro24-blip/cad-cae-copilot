@@ -233,3 +233,28 @@ def test_every_separated_state_reaches_the_agent(tmp_path) -> None:
 
     for key, value in producer_states.items():
         assert block[key] == value, f"{key} was dropped between producer and agent"
+
+
+def test_parsed_metric_names_is_bounded_by_compaction() -> None:
+    """The CAE block has a token budget; a new unbounded list breaks it.
+
+    `compact_cae_block` truncates the long lists it knows about. A list added
+    to the payload and not to that loop can hold the block above budget no
+    matter how much else is trimmed.
+    """
+    from app.cae_payload_profile import _MAX_LIST_LENGTH, compact_cae_block
+
+    # Compaction only engages above the token budget, so the block has to be
+    # genuinely oversized — a small one would pass this test without the fix.
+    block = {
+        "present": True,
+        "parsed_metric_names": [
+            f"max_von_mises_stress_on_a_long_feature_name_{i}" for i in range(400)
+        ],
+    }
+    compacted = compact_cae_block(block, max_tokens=64, label="test")
+    assert compacted is not block, "the premise: this block must exceed the budget"
+
+    names = compacted["parsed_metric_names"]
+    assert len(names) == _MAX_LIST_LENGTH + 1, len(names)
+    assert names[-1] == {"_truncated": True, "original_count": 400}

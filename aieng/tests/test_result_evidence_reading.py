@@ -84,7 +84,7 @@ class TestBothSpellingsRead:
 
 
 class TestTheThreeAnswersAreDistinct:
-    """"No index" and "an index with no results" are different facts."""
+    """`None` and `False` are different facts here, not two spellings of no."""
 
     def test_no_index_at_all_is_unknown_not_false(self) -> None:
         for absent in ({}, None, [], "not a document", {"schema_version": "0.1"}):
@@ -229,3 +229,26 @@ class TestFieldMembers:
                    "results/fields/", "results/fields/notes.txt"}
         assert field_members(members) == []
         assert field_names(members) == []
+
+
+@pytest.mark.parametrize("value,extracted", [
+    (0.14, True), (0, True), (-3, True), (15.0, True),
+    # "not None" was the old bar, and all of these cleared it while being
+    # unusable as a number.
+    (None, False), (False, False), (True, False),
+    ("n/a", False), ("0.14", False), ([], False), ([1.0], False), ({}, False),
+    (float("nan"), False), (float("inf"), False), (float("-inf"), False),
+])
+def test_only_a_finite_number_counts_as_an_extracted_metric(value, extracted: bool) -> None:
+    """A metric slot holding something unusable is not a parsed metric.
+
+    `bool` is excluded explicitly because it is an `int` subclass in Python, and
+    NaN/inf because a metric that did not converge was not extracted.
+    """
+    from aieng.cae_result_summary import read_parsed_metrics
+
+    reading = read_parsed_metrics(
+        {"load_cases": [{"metrics": {"max_displacement": {"value": value}}}]}
+    )
+    assert reading["parsed"] is extracted, value
+    assert reading["metric_names"] == (["max_displacement"] if extracted else [])

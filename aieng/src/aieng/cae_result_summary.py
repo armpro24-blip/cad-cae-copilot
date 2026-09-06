@@ -8,6 +8,7 @@ All claims are honest: presence-only unless explicitly parsed.
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import tempfile
 import zipfile
@@ -1206,6 +1207,19 @@ class ParsedMetrics(TypedDict):
     metric_names: list[str]
 
 
+def _is_extracted_value(value: Any) -> bool:
+    """Whether a metric's `value` is a number a consumer can actually use.
+
+    "Not None" is too weak: `False`, `"n/a"`, `[]` and `NaN` all pass it and
+    all put a number-shaped hole where a reader expects a number. `bool` is
+    excluded explicitly because it is a subclass of `int` in Python, and NaN /
+    infinity because a metric that did not converge is not an extracted one.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return math.isfinite(value)
+
+
 def read_parsed_metrics(computed_metrics: Any) -> ParsedMetrics:
     """Read a parsed `results/computed_metrics.json`.
 
@@ -1233,8 +1247,9 @@ def read_parsed_metrics(computed_metrics: Any) -> ParsedMetrics:
         if not isinstance(metrics, dict):
             continue
         for name, metric in metrics.items():
-            if isinstance(metric, dict) and metric.get("value") is not None and name not in names:
-                names.append(name)
+            if isinstance(metric, dict) and _is_extracted_value(metric.get("value")):
+                if name not in names:
+                    names.append(name)
     return {
         "parsed": bool(names),
         "load_case_count": len(load_cases),
