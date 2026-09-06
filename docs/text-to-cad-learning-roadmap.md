@@ -1,5 +1,9 @@
 # Text-to-CAD Learning Roadmap for AIENG Workbench
 
+> **Historical — kept for context, do not build from this.** A contributor learning path last updated 2026-05-27.
+> Where this disagrees with [`AGENTS.md`](../AGENTS.md), AGENTS.md is right.
+> See [`README.md`](README.md) for what is current.
+
 > A structured learning path for contributors working on LLM-driven CAD generation, agentic CAD/CAE workflows, and the AIENG workbench ecosystem.
 >
 > **Last updated:** 2026-05-27

@@ -1,5 +1,9 @@
 # FreeCAD Action Agent MVP (v0.38)
 
+> **Historical — kept for context, do not build from this.** It describes the FreeCAD action agent driven from the Pilot Console; both the console and the whole backend intent-routing layer were removed in the MCP-first cutover (#17, #8), and FreeCAD is not the runtime — build123d/OCP is.
+> Where this disagrees with [`AGENTS.md`](../AGENTS.md), AGENTS.md is right.
+> See [`README.md`](README.md) for what is current.
+
 ## What this is
 
 The FreeCAD Action Agent is an **action-first** capability that lets a user type a CAD request in the Pilot Console and have the system propose, approve, and execute a real FreeCAD operation through a controlled runner.

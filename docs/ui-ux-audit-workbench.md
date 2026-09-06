@@ -1,5 +1,9 @@
 # AIENG Workbench — UI/UX Audit
 
+> **Historical — kept for context, do not build from this.** A dated audit of the web workbench (2026-07-01); the UI has moved on.
+> Where this disagrees with [`AGENTS.md`](../AGENTS.md), AGENTS.md is right.
+> See [`README.md`](README.md) for what is current.
+
 Audit date: 2026-07-01
 Scope: the live web workbench (`aieng-ui/frontend`) after PR #454–#457.
 Method: live inspection at 1600×1000 against the running app (`:5173` + backend

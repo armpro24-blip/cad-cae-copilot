@@ -1,7 +1,10 @@
 # Runtime and Agent Integration
 
 The local orchestration runtime is the primary integration point for the UI,
-external CLI scripts, and future MCP/agent clients. This document explains how
+external CLI scripts, and MCP/agent clients. (MCP was "future" when this
+was written; it is now the PRIMARY interface — see [`../AGENTS.md`](../AGENTS.md).
+What follows describes the REST/runtime layer underneath it, which is still
+accurate.) This document explains how
 it works and how external agents connect to it.
 
 ---

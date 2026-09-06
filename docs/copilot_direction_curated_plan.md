@@ -1,5 +1,9 @@
 # AIENG Copilot Direction — Curated Execution Plan
 
+> **Historical — kept for context, do not build from this.** A 2026-05-19 execution plan written around the old in-app UI and a FreeCAD backend.
+> Where this disagrees with [`AGENTS.md`](../AGENTS.md), AGENTS.md is right.
+> See [`README.md`](README.md) for what is current.
+
 Date: 2026-05-19
 
 This is the concise working plan after reviewing the new strategy notes,

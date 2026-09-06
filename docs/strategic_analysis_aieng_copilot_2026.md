@@ -1,5 +1,9 @@
 # AIENG 战略分析报告：从安全插件到工程 Copilot 证据执行层
 
+> **Historical — kept for context, do not build from this.** A 2026-05-19 strategy assessment.
+> Where this disagrees with [`AGENTS.md`](../AGENTS.md), AGENTS.md is right.
+> See [`README.md`](README.md) for what is current.
+
 > 日期：2026-05-19
 > 作者：架构顾问分析
 > 面向：AIENG 核心团队

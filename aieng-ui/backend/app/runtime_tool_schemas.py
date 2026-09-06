@@ -2037,6 +2037,49 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         },
         "additionalProperties": True,
     },
+    "aieng.write_evidence_scaffold": {
+        "type": "object",
+        "description": (
+            "Write a results/evidence_index.json scaffold into a .aieng package. "
+            "Required before importing external solver or mesh evidence; creates and "
+            "advances no claim map."
+        ),
+        "properties": {
+            "project_id": {"type": "string"},
+            "package_path": {"type": "string", "description": "Explicit .aieng path instead of project_id."},
+            "overwrite": {"type": "boolean", "description": "Replace an existing scaffold (default false)."},
+        },
+        "additionalProperties": True,
+    },
+    "mcp.check": {
+        "type": "object",
+        "required": ["project_id"],
+        "description": "Report MCP guardrails, capability gaps, and operation policy for a project.",
+        "properties": {"project_id": {"type": "string"}},
+        "additionalProperties": True,
+    },
+    "mcp.parse_patch": {
+        "type": "object",
+        "required": ["patch_json"],
+        "description": "Validate an .aieng patch proposal without applying it.",
+        "properties": {
+            "patch_json": {
+                "type": "object",
+                "description": "The patch proposal object. Required — the tool refuses anything else.",
+            }
+        },
+        "additionalProperties": True,
+    },
+    "mcp.prepare_execution": {
+        "type": "object",
+        "required": ["project_id", "patch_json"],
+        "description": "Dry-run a patch proposal and return its preflight side effects.",
+        "properties": {
+            "project_id": {"type": "string"},
+            "patch_json": {"type": "object", "description": "The patch proposal object."},
+        },
+        "additionalProperties": True,
+    },
     "cae.compare_runs": {
         "type": "object",
         "required": ["project_id"],

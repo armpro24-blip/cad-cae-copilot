@@ -5,6 +5,48 @@ from pathlib import Path
 import pytest
 
 
+def test_the_cae_guide_states_the_rules_for_the_tools_it_gates() -> None:
+    """The guide gate is per CATEGORY, so a tool's contract must be in ITS category.
+
+    Measured before the fix: `TOPIC_SECTIONS["cae"]` served the CAE tool list,
+    workflows C and D — but not workflow E, the only place the re-solve contract
+    lives. `cae.generate_solver_input` and `cae.run_solver` are gated on `cae`;
+    the rules governing them were served only under `cad`. So an agent doing
+    exactly what the gate asks re-solved into `run_001` and hit guards whose
+    explanation it had never been shown.
+
+    Asserted as an invariant — the rules must be reachable — not as a section
+    list, which could be satisfied by editing the expectation.
+    """
+    from app import agent_guides
+
+    content = agent_guides.guide_result("cae")["content"]
+
+    for rule in ("run_id", "stale_deck", "run_id_conflict", "cae.compare_runs"):
+        assert rule in content, (
+            f"{rule!r} governs a cae.* tool but is not in the guide that gates it"
+        )
+
+
+def test_the_quickstart_describes_the_loop_it_guards() -> None:
+    """The one document every session reads must contain the promised task.
+
+    It listed CAD, dimension edit and simulate as three DISCONNECTED workflows:
+    "Modify dimension" ended at `regression_diff` with no re-solve, and
+    "Simulate" named no `run_id` discipline. The guards that make the wrong path
+    fail loudly were built without the right path appearing in the only file
+    everyone reads.
+    """
+    from app import agent_guides
+
+    content = agent_guides.quickstart_result()["content"]
+
+    assert "cad.edit_parameter" in content
+    assert "cae.compare_runs" in content
+    assert "run_002" in content, "the quickstart must show that a re-solve needs a NEW run id"
+    assert "stale_deck" in content
+
+
 def test_quickstart_is_compact_and_preserves_first_three_calls() -> None:
     from app import agent_guides
 

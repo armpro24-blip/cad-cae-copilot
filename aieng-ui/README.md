@@ -402,7 +402,7 @@ Workspace-level docs (covers all three repos):
 
 - [System architecture](../docs/system_architecture.md) — three-repo overview and data flow
 - [Repo boundaries](../docs/repo_boundaries.md) — ownership, coupling points, what must not cross
-- [Runtime and agents](../docs/runtime_and_agents.md) — run lifecycle, REST API, future MCP integration
-- [CAD adapter strategy](../docs/cad_adapter_strategy.md) — provider interface, adding new backends
+- [Runtime and agents](../docs/runtime_and_agents.md) — run lifecycle, REST API, event model
+- [Docs index](../docs/README.md) — which workspace docs are current and which are historical
 - [Package contract](../docs/package_contract.md) — `.aieng` ZIP format and package states
 - [Roadmap](../docs/roadmap.md) — phases 1–5

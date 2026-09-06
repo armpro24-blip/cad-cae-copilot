@@ -207,25 +207,42 @@ def register_aieng_tools(rt: Any, active_settings: Any, app_context: Any, _schem
 
         return {**result, "status": "ok"}
 
+    # These three raised `ValueError` at a missing argument. The rule (#528) is
+    # that a tool ANSWERS a wrong input rather than raising at it, and the
+    # dispatch boundary only converts `HTTPException` — a `ValueError` reaches
+    # the caller as `code: "tool_exception"`, indistinguishable from a crash.
+    #
+    # They escaped the sweep in `test_tools_refuse_rather_than_raise.py` only
+    # because it selects tools whose SCHEMA requires `project_id`, and these had
+    # no schema at all. A missing parameter contract bought exemption from the
+    # rule as well as invisibility to the agent.
+    def _missing(tool: str, field: str) -> dict[str, Any]:
+        return {
+            "status": "error",
+            "code": "missing_argument",
+            "tool": tool,
+            "message": f"{field} is required for {tool}.",
+        }
+
     def _tool_mcp_check(inp: dict[str, Any], _ctx: dict[str, Any]) -> dict[str, Any]:
         pid = inp.get("project_id")
         if not pid:
-            raise ValueError("project_id is required for mcp.check")
+            return _missing("mcp.check", "project_id")
         return mcp_check(active_settings, pid, inp)
 
     def _tool_mcp_parse_patch(inp: dict[str, Any], _ctx: dict[str, Any]) -> dict[str, Any]:
         patch_json = inp.get("patch_json")
         if not isinstance(patch_json, dict):
-            raise ValueError("patch_json is required for mcp.parse_patch")
+            return _missing("mcp.parse_patch", "patch_json (a JSON object)")
         return parse_patch(active_settings, {"patch_json": patch_json})
 
     def _tool_mcp_prepare_execution(inp: dict[str, Any], _ctx: dict[str, Any]) -> dict[str, Any]:
         pid = inp.get("project_id")
         if not pid:
-            raise ValueError("project_id is required for mcp.prepare_execution")
+            return _missing("mcp.prepare_execution", "project_id")
         patch_json = inp.get("patch_json")
         if not isinstance(patch_json, dict):
-            raise ValueError("patch_json is required for mcp.prepare_execution")
+            return _missing("mcp.prepare_execution", "patch_json (a JSON object)")
         return prepare_patch_execution(active_settings, pid, inp)
 
     def _tool_aieng_validate(inp: dict[str, Any], _ctx: dict[str, Any]) -> dict[str, Any]:
@@ -1256,6 +1273,7 @@ def register_aieng_tools(rt: Any, active_settings: Any, app_context: Any, _schem
             "Write results/evidence_index.json scaffold into a .aieng package. "
             "Required before importing external solver or mesh evidence; does not create or advance claim maps."
         ),
+        input_schema=_schema("aieng.write_evidence_scaffold"),
     )
     rt.register_tool(
         "aieng.validate",
@@ -1296,16 +1314,19 @@ def register_aieng_tools(rt: Any, active_settings: Any, app_context: Any, _schem
         "mcp.check",
         _tool_mcp_check,
         description="Check MCP guardrails, capability gaps, and operation policy for this project",
+        input_schema=_schema("mcp.check"),
     )
     rt.register_tool(
         "mcp.parse_patch",
         _tool_mcp_parse_patch,
         description="Parse an .aieng patch proposal without executing it",
+        input_schema=_schema("mcp.parse_patch"),
     )
     rt.register_tool(
         "mcp.prepare_execution",
         _tool_mcp_prepare_execution,
         description="Dry-run an .aieng patch proposal and return preflight side effects",
+        input_schema=_schema("mcp.prepare_execution"),
     )
     return {
         "apply_shape_ir_patch": _tool_aieng_apply_shape_ir_patch,

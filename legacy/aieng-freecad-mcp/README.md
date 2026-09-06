@@ -333,7 +333,6 @@ Cross-repo context:
 
 - [`../docs/system_architecture.md`](../docs/system_architecture.md) — three-repo overview
 - [`../docs/repo_boundaries.md`](../docs/repo_boundaries.md) — ownership and coupling points
-- [`../docs/cad_adapter_strategy.md`](../docs/cad_adapter_strategy.md) — provider interface strategy
 - [`../docs/package_contract.md`](../docs/package_contract.md) — `.aieng` ZIP format
 - [`../docs/roadmap.md`](../docs/roadmap.md) — phases 1–5
 

@@ -101,6 +101,47 @@ def register_engineering_template_tools(rt: Any, settings: Settings) -> None:
 
         return _handler
 
+    # Every one of these reads `template_id` and refuses without it, plus four
+    # optional payload fields — none of which appeared in the tool's advertised
+    # interface, because all four registered with no `input_schema` and were
+    # therefore served the permissive `{"type": "object"}` fallback. A handler
+    # that refuses correctly is no help if the agent cannot see what to send.
+    def _template_schema(*, targets: bool = False, overwrite: bool = False) -> dict[str, Any]:
+        properties: dict[str, Any] = {
+            "project_id": {"type": "string"},
+            "template_id": {
+                "type": "string",
+                "description": "The engineering template to apply. Required.",
+            },
+            "parameters": {
+                "type": "object",
+                "description": "Template parameter overrides.",
+            },
+            "suggestions": {
+                "type": "array",
+                "description": "Design-target suggestions carried with the template.",
+            },
+        }
+        if targets:
+            properties["target_ids"] = {
+                "type": "array",
+                "description": "Restrict the operation to these design-target ids.",
+            }
+        if overwrite:
+            properties["overwrite_existing"] = {
+                "type": "boolean",
+                "description": (
+                    "Replace design targets whose ids already exist "
+                    "(default false — existing ids are preserved)."
+                ),
+            }
+        return {
+            "type": "object",
+            "required": ["project_id", "template_id"],
+            "properties": properties,
+            "additionalProperties": True,
+        }
+
     rt.register_tool(
         "engineering_template.preview",
         _engineering_template_tool("preview"),
@@ -108,6 +149,7 @@ def register_engineering_template_tools(rt: Any, settings: Settings) -> None:
             "Read-only preview of a controlled engineering template (CAD script preview, "
             "FEA setup draft, design target suggestions). No package write."
         ),
+        input_schema=_template_schema(),
     )
     rt.register_tool(
         "engineering_template.save_draft",
@@ -118,6 +160,7 @@ def register_engineering_template_tools(rt: Any, settings: Settings) -> None:
             "(manifest, CAD script preview, FEA setup, design target suggestions) into "
             "the .aieng package. Never overwrites task/design_targets.yaml."
         ),
+        input_schema=_template_schema(),
     )
     rt.register_tool(
         "engineering_template.adopt_targets",
@@ -128,6 +171,7 @@ def register_engineering_template_tools(rt: Any, settings: Settings) -> None:
             "task/design_targets.yaml. Existing target IDs are preserved unless "
             "overwrite_existing=true is supplied."
         ),
+        input_schema=_template_schema(targets=True, overwrite=True),
     )
     rt.register_tool(
         "engineering_template.generate_cad_fixture",
@@ -138,4 +182,5 @@ def register_engineering_template_tools(rt: Any, settings: Settings) -> None:
             "geometry/template_cad_fixture.json plus the standard stale revalidation "
             "marker; never runs Gmsh/CalculiX."
         ),
+        input_schema=_template_schema(),
     )
