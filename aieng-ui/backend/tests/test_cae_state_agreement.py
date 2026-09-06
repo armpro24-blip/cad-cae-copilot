@@ -155,3 +155,106 @@ class TestTheEntryPointsAgree:
             evidence_index={"entries": [_evidence_entry("task/spec.yaml", "task")]},
         )
         assert payload["results_available"] is False, payload
+
+
+class TestTheFieldAndMetricStates:
+    """The other two states P0-1 asks to separate."""
+
+    @staticmethod
+    def _payload(**overrides):
+        from app.package_inspection import summarize_cae_payload
+
+        base = dict(
+            package_members=None, computed_metrics=None, constraints=None,
+            parsed_materials=None, parsed_boundary_conditions=None,
+            parsed_loads=None, cae_mapping=None, evidence_index=None,
+            validation_status=None,
+        )
+        return summarize_cae_payload(**{**base, **overrides})
+
+    def test_available_fields_reports_what_the_package_carries(self) -> None:
+        payload = self._payload(package_members=[
+            "results/fields/displacement.summary.json",
+            "results/fields/stress.summary.json",
+            "geometry/source.py",
+        ])
+        assert payload["available_fields"] == ["displacement", "stress"]
+
+    def test_a_target_that_merely_mentions_stress_is_not_a_field(self) -> None:
+        """The defect: it was derived from constraints, not from field data.
+
+        A project with design targets and no solver run reported
+        `available_fields: ["stress"]`, which an agent would reasonably read as
+        "there is a stress field to look at".
+        """
+        payload = self._payload(
+            package_members=["geometry/source.py"],
+            constraints={"constraints": [
+                {"metric": "max_von_mises_stress", "type": "max"},
+                {"metric": "max_displacement", "type": "max"},
+            ]},
+        )
+        assert payload["available_fields"] == [], payload["available_fields"]
+        assert payload["constraints_count"] == 2, "the targets are still reported"
+
+    def test_metrics_parsed_is_tri_state(self) -> None:
+        assert self._payload()["metrics_parsed"] is None
+        assert self._payload(computed_metrics={"load_cases": []})["metrics_parsed"] is False
+        parsed = self._payload(computed_metrics={"load_cases": [
+            {"metrics": {"max_displacement": {"value": 0.14, "unit": "mm"}}}
+        ]})
+        assert parsed["metrics_parsed"] is True
+        assert parsed["parsed_metric_names"] == ["max_displacement"]
+
+    def test_a_metric_slot_with_no_value_is_not_parsed(self) -> None:
+        payload = self._payload(computed_metrics={"load_cases": [
+            {"metrics": {"max_displacement": {"value": None, "unit": "mm"}}}
+        ]})
+        assert payload["metrics_parsed"] is False, payload
+
+
+def test_every_separated_state_reaches_the_agent(tmp_path) -> None:
+    """`_cae_block` is an explicit allow-list, and it silently drops what it omits.
+
+    `evidence_index_shape` was defined by the producer in #530 and never listed
+    here, so it never reached an agent — a state defined and then lost one call
+    later is not a defined state.
+    """
+    from app.agent_context import _cae_block
+
+    producer_states = {
+        "results_available": True,
+        "metrics_parsed": True,
+        "parsed_metric_names": ["max_displacement"],
+        "evidence_index_shape": "entries",
+        "available_fields": ["displacement"],
+    }
+    block = _cae_block({"cae": producer_states}, {})
+
+    for key, value in producer_states.items():
+        assert block[key] == value, f"{key} was dropped between producer and agent"
+
+
+def test_parsed_metric_names_is_bounded_by_compaction() -> None:
+    """The CAE block has a token budget; a new unbounded list breaks it.
+
+    `compact_cae_block` truncates the long lists it knows about. A list added
+    to the payload and not to that loop can hold the block above budget no
+    matter how much else is trimmed.
+    """
+    from app.cae_payload_profile import _MAX_LIST_LENGTH, compact_cae_block
+
+    # Compaction only engages above the token budget, so the block has to be
+    # genuinely oversized — a small one would pass this test without the fix.
+    block = {
+        "present": True,
+        "parsed_metric_names": [
+            f"max_von_mises_stress_on_a_long_feature_name_{i}" for i in range(400)
+        ],
+    }
+    compacted = compact_cae_block(block, max_tokens=64, label="test")
+    assert compacted is not block, "the premise: this block must exceed the budget"
+
+    names = compacted["parsed_metric_names"]
+    assert len(names) == _MAX_LIST_LENGTH + 1, len(names)
+    assert names[-1] == {"_truncated": True, "original_count": 400}

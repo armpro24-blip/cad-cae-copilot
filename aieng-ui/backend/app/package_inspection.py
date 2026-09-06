@@ -166,6 +166,8 @@ def summarize_evidence_items(evidence_index: Any) -> list[dict[str, Any]]:
 
 def summarize_cae_payload(
     *,
+    package_members: Any = None,
+    computed_metrics: Any = None,
     constraints: Any,
     parsed_materials: Any,
     parsed_boundary_conditions: Any,
@@ -189,24 +191,24 @@ def summarize_cae_payload(
     # have raised in exactly the deployment it described. `ensure_aieng_on_path`
     # exists for lazy importers like this one and is idempotent.
     ensure_aieng_on_path()
-    from aieng.cae_result_summary import read_result_evidence
+    from aieng.cae_result_summary import read_parsed_metrics, read_result_evidence
 
     result_evidence_reading = read_result_evidence(evidence_index)
 
-    available_fields: list[str] = []
-    for constraint in constraint_items:
-        metric = str(constraint.get("metric") or "").lower()
-        if "stress" in metric and "stress" not in available_fields:
-            available_fields.append("stress")
-        if "displacement" in metric and "displacement" not in available_fields:
-            available_fields.append("displacement")
+    # Fields the package actually CARRIES, which is what the name says. It used
+    # to be derived from design constraints and validation keys that merely
+    # MENTION "stress" or "displacement" — so a project with targets and no
+    # solver run reported `available_fields: ["stress"]`, and an agent reading
+    # it would reasonably conclude a stress field was there to look at. The
+    # constraint-side information is not lost: it is what `simulation_targets`
+    # and `constraints` in this same payload are for.
+    from aieng.cae_artifact_detector import field_names
+
+    available_fields = field_names(set(package_members or ()))
+
+    metrics_reading = read_parsed_metrics(computed_metrics)
 
     solver_mesh_status = validation_status.get("solver_mesh_status", {}) if isinstance(validation_status, dict) else {}
-    if isinstance(solver_mesh_status, dict):
-        if "stress_validation" in solver_mesh_status and "stress" not in available_fields:
-            available_fields.append("stress")
-        if "displacement_validation" in solver_mesh_status and "displacement" not in available_fields:
-            available_fields.append("displacement")
 
     constraint_type_counts = dict(Counter(str(item.get("type") or "unknown") for item in constraint_items))
     simulation_targets = [
@@ -258,6 +260,13 @@ def summarize_cae_payload(
         #: same answer as "recorded, and there is none".
         "results_available": result_evidence_reading["registered"],
         "evidence_index_shape": result_evidence_reading["index_shape"],
+        #: Whether numbers were actually parsed out of a solver run. None when
+        #: the package carries no `results/computed_metrics.json` at all — the
+        #: same three-way distinction as `results_available`, because "no
+        #: metrics document" and "a metrics document with nothing in it" send a
+        #: reader to different places.
+        "metrics_parsed": metrics_reading["parsed"],
+        "parsed_metric_names": metrics_reading["metric_names"],
         "available_fields": available_fields,
         "simulation_targets": simulation_targets,
         "protected_regions": protected_regions,
@@ -301,6 +310,7 @@ def package_summary_fallback(
         parsed_loads = read_package_json(archive, "simulation/cae_imports/parsed_loads.json")
         cae_mapping = read_package_json(archive, "simulation/cae_mapping.json")
         validation_status = read_package_yaml(archive, "validation/status.yaml")
+        computed_metrics = read_package_json(archive, "results/computed_metrics.json")
         ai_summary = read_package_text(archive, "ai/summary.md")
     finally:
         if owns_archive and isinstance(archive, PackageReadCache):
@@ -350,6 +360,8 @@ def package_summary_fallback(
         "cae_mapping": cae_mapping,
         "validation_status": validation_status,
         "cae": summarize_cae_payload(
+            package_members=members,
+            computed_metrics=computed_metrics,
             constraints=constraints,
             parsed_materials=parsed_materials,
             parsed_boundary_conditions=parsed_boundary_conditions,

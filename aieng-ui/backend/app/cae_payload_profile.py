@@ -99,7 +99,8 @@ def compact_cae_block(
         return compacted
 
     # Step 2: truncate long lists.
-    for key in ("materials", "loads", "boundary_conditions", "available_fields"):
+    for key in ("materials", "loads", "boundary_conditions", "available_fields",
+                "parsed_metric_names"):
         if key in compacted and isinstance(compacted[key], list):
             original = compacted[key]
             if len(original) > _MAX_LIST_LENGTH:

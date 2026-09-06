@@ -8,6 +8,7 @@ All claims are honest: presence-only unless explicitly parsed.
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import tempfile
 import zipfile
@@ -1191,6 +1192,68 @@ def read_result_evidence(evidence_index: Any) -> ResultEvidence:
         "present_entry_count": len(present),
         "result_entry_count": len(results),
         "index_shape": shape,
+    }
+
+
+class ParsedMetrics(TypedDict):
+    """What a package's `results/computed_metrics.json` actually carries."""
+
+    #: True when at least one load case carries a metric with a value, False
+    #: when the document is there and carries none, None when there is no
+    #: document. "Not extracted yet" and "extracted nothing" are different
+    #: answers and send a reader to different places.
+    parsed: bool | None
+    load_case_count: int
+    metric_names: list[str]
+
+
+def _is_extracted_value(value: Any) -> bool:
+    """Whether a metric's `value` is a number a consumer can actually use.
+
+    "Not None" is too weak: `False`, `"n/a"`, `[]` and `NaN` all pass it and
+    all put a number-shaped hole where a reader expects a number. `bool` is
+    excluded explicitly because it is a subclass of `int` in Python, and NaN /
+    infinity because a metric that did not converge is not an extracted one.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return math.isfinite(value)
+
+
+def read_parsed_metrics(computed_metrics: Any) -> ParsedMetrics:
+    """Read a parsed `results/computed_metrics.json`.
+
+    Pure, like `read_result_evidence`: the caller passes the document it has
+    already read. A metric whose `value` is None is present in the document but
+    was not extracted, so it does not count — reporting it as parsed would put
+    a number-shaped hole where a reader expects a number.
+    """
+    # `None` means there is no usable document — absent, the wrong type, or
+    # carrying no `load_cases` key at all. A document that DECLARES load cases
+    # and holds no values is `False`. Same rule as `read_result_evidence`, whose
+    # `None` likewise means "no recognised container", so the two states line up
+    # across both readers instead of each drawing the line somewhere else.
+    if not isinstance(computed_metrics, dict) or not isinstance(
+        computed_metrics.get("load_cases"), list
+    ):
+        return {"parsed": None, "load_case_count": 0, "metric_names": []}
+
+    load_cases = [
+        case for case in computed_metrics["load_cases"] if isinstance(case, dict)
+    ]
+    names: list[str] = []
+    for case in load_cases:
+        metrics = case.get("metrics")
+        if not isinstance(metrics, dict):
+            continue
+        for name, metric in metrics.items():
+            if isinstance(metric, dict) and _is_extracted_value(metric.get("value")):
+                if name not in names:
+                    names.append(name)
+    return {
+        "parsed": bool(names),
+        "load_case_count": len(load_cases),
+        "metric_names": sorted(names),
     }
 
 
