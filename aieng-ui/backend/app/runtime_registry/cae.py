@@ -23,6 +23,30 @@ LOGGER = logging.getLogger("app.app_factory")
 _WINDOWS_CRASH_THRESHOLD = 0xC0000000
 
 
+def rebind_warnings_for(source_deck_synthesis: Any) -> list[str]:
+    """One warning per binding that was recovered from its recorded selector.
+
+    A rebind is a signal, so it does not stay inside a sub-block — AGENTS.md
+    says exactly that of the stale flag, and it is just as true here: the face
+    the setup NAMED is gone and a different one is carrying the load now. That
+    is the right answer, and the caller still has to see it without digging
+    through `source_deck_synthesis`.
+    """
+    entries = (source_deck_synthesis or {}).get("rebound_from_selector") or []
+    warnings: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        warnings.append(
+            f"{entry.get('id')}: the face this setup named "
+            f"({entry.get('previous_face') or 'the recorded @face: pointer'}) no "
+            f"longer exists; {str(entry.get('selector'))!r} now resolves to "
+            f"@face:{entry.get('face_id')} and the binding was moved to it. "
+            "Confirm that is the face you intend."
+        )
+    return warnings
+
+
 def _audit_artifact_paths(artifacts: list) -> list[str]:
     """Normalise a ``changed_artifacts`` list to package-internal path strings.
 
@@ -2095,6 +2119,13 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         except Exception as exc:  # noqa: BLE001 — best-effort; deck gen reports the real gap
             source_deck_synthesis = {"created": False, "status": "error", "message": str(exc)}
 
+        # A rebind is a signal, so it does not stay inside a sub-block. AGENTS.md
+        # says it of the stale flag and it is just as true here: the face the
+        # setup NAMED is gone and a different one is carrying the load now. That
+        # is the right answer — and the caller has to be able to see it without
+        # digging through `source_deck_synthesis`.
+        rebind_warnings = rebind_warnings_for(source_deck_synthesis)
+
         # Honesty gate: a load/BC face that resolved to ZERO mesh nodes would
         # otherwise yield a deck referencing an undefined NSET — a cryptic ccx
         # abort, or worse a silently dropped load. Block here with the exact
@@ -2152,7 +2183,10 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             "status": "completed",
             "package_path": str(package_path),
             "out_path": result.get("out_path"),
-            "warnings": result.get("warnings", []),
+            "warnings": list(result.get("warnings", [])) + rebind_warnings,
+            "rebound_from_selector": (
+                (source_deck_synthesis or {}).get("rebound_from_selector") or []
+            ),
             "source_deck_synthesis": source_deck_synthesis,
             "artifacts": [
                 {

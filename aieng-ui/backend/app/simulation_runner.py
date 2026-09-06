@@ -1438,6 +1438,7 @@ def normalize_cae_bindings(package_path: Path) -> dict[str, Any]:
             # next to it under a different name.
             previous = str(item.get("target") or "")
             target_id = str(item.get("id") or "")
+            previous_face: str | None = None
             for mapping in mappings:
                 same_entity = previous and mapping.get("cae_entity") == previous
                 same_target = target_id and str(
@@ -1446,6 +1447,7 @@ def normalize_cae_bindings(package_path: Path) -> dict[str, Any]:
                 if not (same_entity or same_target):
                     continue
                 for old_fid in mapping.get("face_ids") or []:
+                    previous_face = previous_face or f"@face:{old_fid}"
                     face_to_entity.pop(str(old_fid), None)
                 mapping["face_ids"] = [fid]
                 # `face_signatures` describe the OLD face; keeping them would
@@ -1458,6 +1460,7 @@ def normalize_cae_bindings(package_path: Path) -> dict[str, Any]:
                 "id": item.get("id"),
                 "selector": item.get("target_selector"),
                 "face_id": fid,
+                "previous_face": previous_face,
                 "previous_target": previous or None,
             })
         entity = face_to_entity.get(fid)

@@ -103,6 +103,8 @@ def test_a_moved_face_is_recovered_from_the_words_that_chose_it(tmp_path: Path) 
     assert [r["id"] for r in rebound] == ["load_001"], rebound
     assert rebound[0]["face_id"] == "face_022"
     assert rebound[0]["selector"] == "rib_main top"
+    # The face that was REPLACED, so the warning can name both ends of the move.
+    assert rebound[0]["previous_face"] == "@face:face_012"
 
 
 def test_the_recovered_face_is_written_back_to_the_package(tmp_path: Path) -> None:
@@ -226,3 +228,37 @@ def test_setup_static_records_the_words_it_resolved(tmp_path: Path) -> None:
             zf.read("simulation/cae_imports/parsed_boundary_conditions.json")
         )["boundary_conditions"]
     assert bcs[0]["target_selector"] == "base_plate bottom"
+
+
+def test_a_rebind_is_reported_as_a_top_level_warning() -> None:
+    """"A signal buried in a sub-block is not a signal" — AGENTS.md, of the stale flag.
+
+    The recovery is the right answer, but it means the face the setup NAMED is
+    gone and a different one is carrying the load now. Reporting that only
+    inside `source_deck_synthesis` asks the caller to go digging for the single
+    fact they most need to confirm.
+    """
+    from app.runtime_registry.cae import rebind_warnings_for
+
+    warnings = rebind_warnings_for({
+        "rebound_from_selector": [
+            {"id": "load_001", "selector": "rib_main top",
+             "face_id": "face_022", "previous_face": "@face:face_012"},
+        ]
+    })
+
+    assert len(warnings) == 1
+    text = warnings[0]
+    assert "load_001" in text
+    assert "@face:face_012" in text, "the warning must name the face that was replaced"
+    assert "@face:face_022" in text, "and the one now carrying the binding"
+    assert "rib_main top" in text, "and the phrase that chose it"
+
+
+def test_no_rebind_produces_no_warning() -> None:
+    """The normal case must stay quiet, or the signal stops meaning anything."""
+    from app.runtime_registry.cae import rebind_warnings_for
+
+    assert rebind_warnings_for({"rebound_from_selector": []}) == []
+    assert rebind_warnings_for({}) == []
+    assert rebind_warnings_for(None) == []
