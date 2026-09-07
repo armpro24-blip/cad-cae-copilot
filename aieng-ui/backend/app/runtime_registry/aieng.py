@@ -71,10 +71,116 @@ def register_aieng_tools(rt: Any, active_settings: Any, app_context: Any, _schem
                 }
             raise
 
+    def _read_package_audit_entries(
+        project_id: str, limit: int
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """The package's own `audit_log.jsonl`, newest last. `(entries, present)`.
+
+        `present` distinguishes "this package records no audit log" from "the
+        log is there and empty" — different facts, and the caller cannot tell
+        them apart from an empty list.
+        """
+        import json as _json
+        import zipfile as _zipfile
+
+        try:
+            project = get_project(active_settings, project_id)
+            pkg = resolve_project_path(
+                active_settings, project_id, project.get("aieng_file")
+            )
+        except Exception:  # noqa: BLE001 - an unknown project has no audit log
+            return [], False
+        if pkg is None or not pkg.exists():
+            return [], False
+
+        try:
+            with _zipfile.ZipFile(pkg, "r") as zf:
+                if "audit_log.jsonl" not in zf.namelist():
+                    return [], False
+                raw = zf.read("audit_log.jsonl").decode("utf-8", errors="replace")
+        except Exception:  # noqa: BLE001 - an unreadable package is not an action list
+            log_exception(
+                LOGGER,
+                "Could not read the package audit log.",
+                subsystem="aieng.read_audit_log",
+                context={"project_id": project_id},
+            )
+            return [], False
+
+        entries: list[dict[str, Any]] = []
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = _json.loads(line)
+            except ValueError:
+                # A malformed line is reported, not dropped: silently skipping
+                # it would under-report the history this tool exists to show.
+                entries.append({"unparsed_line": line[:500]})
+                continue
+            entries.append(entry if isinstance(entry, dict) else {"entry": entry})
+        return entries[-limit:], True
+
     def _tool_read_audit_log(inp: dict[str, Any], _ctx: dict[str, Any]) -> dict[str, Any]:
+        """Recent recorded actions on this project.
+
+        Three things were wrong with this tool, all measured across the 50
+        projects on disk:
+
+        1. It read `<project_dir>/logs/*.json` — files written by the in-app
+           chat and agent-autopilot layer that the MCP-first cutover (#17, #8)
+           DELETED. The 6 projects that have any are pre-cutover leftovers
+           (`agent_autopilot_*.json`, `chat_*.json`); every project built through
+           today's path returns nothing. The reader outlived its writer.
+        2. The package's `audit_log.jsonl` — the location AGENTS.md documents as
+           the "append-only action history", and the one `cad.edit_parameter`
+           actually appends to — was read by nothing at all.
+        3. The schema declares a `limit` (default 50) that the body never read,
+           so every call returned `recent_logs`' own default of 8.
+
+        Coverage is stated rather than implied: only `cad.edit_parameter` writes
+        entries today, so an absent or empty log means "no parametric edit was
+        recorded", NOT "nothing happened". Reporting `[]` for that is how a
+        reader concludes a project has no history.
+        """
         pid = inp.get("project_id")
-        logs = recent_logs(active_settings, pid) if pid else []
-        return {"project_id": pid, "recent_logs": logs}
+        if not pid:
+            return {
+                "status": "error",
+                "code": "missing_project_id",
+                "message": "project_id is required for aieng.read_audit_log.",
+            }
+        try:
+            limit = int(inp.get("limit", 50))
+        except (TypeError, ValueError):
+            limit = 50
+        limit = max(1, min(limit, 500))
+
+        entries, present = _read_package_audit_entries(str(pid), limit)
+        legacy = recent_logs(active_settings, pid)
+        return {
+            "project_id": pid,
+            "audit_log_present": present,
+            "entries": entries,
+            "entry_count": len(entries),
+            "limit": limit,
+            # Kept under its historical key so existing readers keep working,
+            # and named for what it is: file metadata from a removed subsystem.
+            "recent_logs": legacy,
+            "legacy_log_file_count": len(legacy),
+            "coverage": (
+                "Entries come from the package's audit_log.jsonl. Only "
+                "cad.edit_parameter appends to it today, so an absent or empty "
+                "log means no parametric edit was recorded — not that nothing "
+                "happened. Geometry and solver history are traceable through "
+                "state/revalidation_status.json, "
+                "simulation/runs/*/deck_provenance.json, "
+                "simulation/runs/*/solver_run.json and cae.compare_runs. "
+                "`recent_logs` lists leftover files from the removed in-app "
+                "chat / autopilot layer, not current actions."
+            ),
+        }
 
     def _tool_recent_activity(inp: dict[str, Any], _ctx: dict[str, Any]) -> dict[str, Any]:
         """Recent CAD build/activity events for a project (#227).

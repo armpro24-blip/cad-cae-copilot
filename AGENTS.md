@@ -1366,7 +1366,7 @@ expects as well as evidence it has — so it is carried through as
 
 | Tool | Purpose |
 |------|---------|
-| `aieng.read_audit_log` | Recent agent/user actions on this project |
+| `aieng.read_audit_log` | Recorded actions from the package's `audit_log.jsonl` (newest last, `limit` default 50), plus `audit_log_present` and a `coverage` line. **Only `cad.edit_parameter` appends to that log today**, so an absent or empty result means "no parametric edit was recorded", not "nothing happened" — geometry and solver history are traceable through `state/revalidation_status.json`, `simulation/runs/*/deck_provenance.json`, `solver_run.json` and `cae.compare_runs`. It used to read `<project_dir>/logs/*.json` instead — files written by the in-app chat / autopilot layer the MCP-first cutover **deleted** — so it returned nothing on every project built through today's path while the live trail went unread, and it ignored its own declared `limit` (always 8). Those leftover files are still listed under `recent_logs`, as file metadata rather than actions |
 | `aieng.recent_activity` | Recent CAD build/activity events + iteration errors for a project (paginated by `limit` / `since_ts`) — headless build feedback without the web viewer. Poll with `since_ts=latest_ts` for new events |
 | `aieng.validate` | Schema + rule validation report (no mutation) |
 | `aieng.write_completeness_report` | What is missing before simulation |
