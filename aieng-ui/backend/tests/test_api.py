@@ -1268,7 +1268,9 @@ def test_agent_plan_dry_run_without_api_key_returns_guarded_plan(tmp_path: Path)
     tools = data["preview"]["tools"]
     assert "aieng.agent_context" in tools
     assert "aieng.inspect_package" in tools
-    assert "mcp.check" in tools
+    # The mcp.* bridge returned `unavailable` on every provider; this line used
+    # to assert it was LISTED, which is how three dead tools shipped green.
+    assert "mcp.check" not in tools
     assert data["agent_context"]["agent_brief"]["next_decision_focus"]
     assert data["action_selection"]["policy"]
     assert "allowed_actions" in data["action_selection"]

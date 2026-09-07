@@ -15,9 +15,6 @@ from .consistency_gate import (
     plan_decision_signature,
 )
 
-MCP_BRIDGE_TOOLS = {"mcp.check", "mcp.parse_patch", "mcp.prepare_execution"}
-
-
 def sanitize_llm_config(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return {}
@@ -396,46 +393,22 @@ def heuristic_agent_plan(
         for token in ["apply", "patch", "edit", "model"]
     )
     if wants_modification and not template_id:
-        if project_id and "mcp.check" in tools:
-            steps.append(
-                _step(
-                    "mcp_check",
-                    "tool",
-                    "mcp.check",
-                    "Check MCP guardrails and capability gaps for the requested CAD operation.",
-                    {
-                        **base_input,
-                        "operation": "cad_set_parameter" if patch_json else "cad_modeling_request",
-                        "is_modification": True,
-                        "requested_outputs": ["preview", "modified_artifact", "tool_trace"],
-                    },
-                )
-            )
+        # The mcp.check / mcp.parse_patch / mcp.prepare_execution steps that used
+        # to be planned here returned `status: unavailable` on every provider —
+        # the bridge they fronted never had an implementation. A patch proposal
+        # is applied through `aieng.apply_shape_ir_patch` (dry_run first), which
+        # is approval-gated and therefore never planned automatically.
         if project_id and patch_json:
-            if "mcp.parse_patch" in tools:
-                steps.append(
-                    _step(
-                        "parse_patch",
-                        "tool",
-                        "mcp.parse_patch",
-                        "Parse the provided .aieng patch proposal without executing it.",
-                        {**base_input, "patch_json": patch_json},
-                    )
-                )
-            if "mcp.prepare_execution" in tools:
-                steps.append(
-                    _step(
-                        "preflight_patch",
-                        "tool",
-                        "mcp.prepare_execution",
-                        "Dry-run patch execution using the MCP bridge and return side effects.",
-                        {**base_input, "patch_json": patch_json},
-                    )
-                )
+            warnings.append(
+                "A patch_json was provided. Patch proposals are applied with "
+                "aieng.apply_shape_ir_patch (use dry_run=true to preview); that "
+                "tool is approval-gated and is not planned automatically."
+            )
         else:
             warnings.append(
                 "Modeling request detected, but no executable patch_json was provided. "
-                "The agent can inspect and preflight capability gaps, then ask for a concrete patch proposal."
+                "Ask for a concrete patch proposal, or use the cad.* tools behind their "
+                "modeling-plan confirmation."
             )
 
     if project_id and any(token in text for token in ["preview", "glb", "stl"]) and "aieng.generate_preview" in tools:
@@ -445,7 +418,8 @@ def heuristic_agent_plan(
         steps.append(_step("inspect", "tool", "aieng.inspect_package", "Default safe inspection.", base_input))
 
     reply = (
-        "I built a guarded agent plan. Mutating CAD work is limited to MCP preflight unless a concrete, supported patch is supplied."
+        "I built a guarded agent plan. Mutating CAD work needs a concrete, supported "
+        "patch or the cad.* modeling tools behind their plan confirmation."
     )
     return steps, warnings, reply
 
@@ -484,8 +458,8 @@ def llm_agent_plan(
     system_prompt = (
         "You are an engineering CAD/CAE planning agent. Return only JSON. "
         "You may propose steps only using the provided executable runtime tools. "
-        "Do not invent tools. For CAD mutation, prefer mcp.check, mcp.parse_patch, "
-        "and mcp.prepare_execution; do not execute unsupported arbitrary modeling. "
+        "Do not invent tools. For CAD mutation, use the cad.* tools behind their "
+        "modeling-plan confirmation; do not execute unsupported arbitrary modeling. "
         "Never update claims unless an explicit claim update tool is provided."
     )
     user_prompt = json.dumps(
@@ -515,7 +489,7 @@ def llm_agent_plan(
     parsed = _coerce_json_object(raw)
     raw_steps = parsed.get("steps") if isinstance(parsed.get("steps"), list) else []
     tool_set = _tool_names(runtime_tools)
-    mcp_tool_names = MCP_BRIDGE_TOOLS | {
+    mcp_tool_names = {
         str(cap.get("name"))
         for cap in capabilities
         if str(cap.get("source") or "").lower().endswith("mcp")

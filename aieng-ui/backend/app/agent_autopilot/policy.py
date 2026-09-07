@@ -44,9 +44,6 @@ AUTO_READ_TOOLS = {
 
 AUTO_PREVIEW_TOOLS = {
     "cae.prepare_solver_run",
-    "mcp.check",
-    "mcp.parse_patch",
-    "mcp.prepare_execution",
 }
 
 AUTO_WRITE_SAFE_TOOLS = {
