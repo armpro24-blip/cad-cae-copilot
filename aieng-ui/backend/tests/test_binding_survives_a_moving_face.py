@@ -262,3 +262,109 @@ def test_no_rebind_produces_no_warning() -> None:
     assert rebind_warnings_for({"rebound_from_selector": []}) == []
     assert rebind_warnings_for({}) == []
     assert rebind_warnings_for(None) == []
+
+
+# ── a MULTI-face selector: "bolt holes" ─────────────────────────────────────
+#
+# Found by the part-family sweep. `cae.setup_static` splits `fix: "bolt holes"`
+# into one BC per hole, every entry carrying the same phrase, so recovering them
+# one at a time is impossible by construction: each entry asks "which single
+# face is 'bolt holes'?" and gets four. That refused the whole promised task on
+# a bolted mount plate — the most ordinary mechanical fixture there is.
+#
+# Measured after the fix, at a 3 mm mesh: all four recovered
+# (bc_001..bc_004 -> face_011..face_014) and the task completed at
+# -80.1% displacement / -65.4% stress for a doubled plate thickness.
+
+
+def _holes_topology(hole_ids: list[str]) -> dict:
+    entities: list[dict] = [{"id": "body_001", "type": "solid", "name": "mount_plate"}]
+    for index, fid in enumerate(hole_ids):
+        entities.append({
+            "id": fid, "type": "face", "surface_type": "cylinder", "area": 314.0,
+            "axis": [0.0, 0.0, 1.0], "radius": 5.0,
+            "centroid": [45.0 - 30 * index, 25.0, 5.0], "body_id": "body_001",
+        })
+    return {"entities": entities}
+
+
+def _bolted_package(
+    path: Path,
+    *,
+    hole_ids: list[str],
+    mapped_faces: list[str],
+    dof_ends: list[int] | None = None,
+) -> Path:
+    """N bolt-hole BCs sharing one selector, mapped to now-retired faces."""
+    ends = dof_ends or [3] * len(mapped_faces)
+    bcs = [
+        {"id": f"bc_{i + 1:03d}", "type": "fixed", "target": f"BC_{i + 1:03d}",
+         "target_selector": "bolt holes",
+         "dof_start": 1, "dof_end": ends[i], "value": 0}
+        for i in range(len(mapped_faces))
+    ]
+    mappings = [
+        {"cae_entity": f"BC_{i + 1:03d}", "face_ids": [face],
+         "maps_to": {"cae_target_id": f"bc_{i + 1:03d}", "role": "fixed_support"}}
+        for i, face in enumerate(mapped_faces)
+    ]
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("manifest.json", json.dumps({"model_id": "plate"}))
+        zf.writestr("geometry/topology_map.json", json.dumps(_holes_topology(hole_ids)))
+        zf.writestr("simulation/cae_imports/parsed_boundary_conditions.json",
+                    json.dumps({"boundary_conditions": bcs}))
+        zf.writestr("simulation/cae_imports/parsed_loads.json", json.dumps({"loads": []}))
+        zf.writestr("simulation/cae_mapping.json", json.dumps({"mappings": mappings}))
+    return path
+
+
+def test_all_four_bolt_holes_are_recovered_from_one_phrase(tmp_path: Path) -> None:
+    pkg = _bolted_package(
+        tmp_path / "bolted.aieng",
+        hole_ids=["face_011", "face_012", "face_013", "face_014"],   # after the edit
+        mapped_faces=["face_007", "face_008", "face_009", "face_010"],  # retired
+    )
+
+    result = normalize_cae_bindings(pkg)
+
+    rebound = {r["id"]: r["face_id"] for r in result["rebound_from_selector"]}
+    assert rebound == {
+        "bc_001": "face_011", "bc_002": "face_012",
+        "bc_003": "face_013", "bc_004": "face_014",
+    }, rebound
+    # Every hole ends up bound exactly once — the union is what the physics is.
+    bound = [f for m in _mapping(pkg) for f in m["face_ids"]]
+    assert sorted(bound) == ["face_011", "face_012", "face_013", "face_014"]
+
+
+def test_four_holes_becoming_three_is_refused(tmp_path: Path) -> None:
+    """The restraint genuinely changed. A rebind must not paper over that."""
+    pkg = _bolted_package(
+        tmp_path / "lost.aieng",
+        hole_ids=["face_011", "face_012", "face_013"],
+        mapped_faces=["face_007", "face_008", "face_009", "face_010"],
+    )
+
+    result = normalize_cae_bindings(pkg)
+
+    assert result["rebound_from_selector"] == []
+
+
+def test_entries_sharing_a_phrase_but_not_the_physics_are_refused(tmp_path: Path) -> None:
+    """Interchangeability is what makes the assignment immaterial.
+
+    Face ids are not stable, so no per-entry identity could be honoured. A
+    homogeneous group is exactly the case where none is needed; a group whose
+    entries restrain different DOFs is not, and guessing which hole was which
+    would be inventing a boundary condition.
+    """
+    pkg = _bolted_package(
+        tmp_path / "mixed.aieng",
+        hole_ids=["face_011", "face_012", "face_013", "face_014"],
+        mapped_faces=["face_007", "face_008", "face_009", "face_010"],
+        dof_ends=[3, 3, 3, 1],   # one hole restrains only DOF 1
+    )
+
+    result = normalize_cae_bindings(pkg)
+
+    assert result["rebound_from_selector"] == []

@@ -2030,6 +2030,15 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "properties": {
             "project_id": {"type": "string"},
             "frd_path": {"type": "string", "description": "Absolute path to the CalculiX .frd file."},
+            "run_id": {
+                "type": "string",
+                "description": (
+                    "Read THIS run's result (e.g. 'run_002'). Without it the "
+                    "package's newest .frd is used, which after a re-solve is a "
+                    "different run than you may mean. A named run that has no "
+                    "result is refused rather than answered with another run's."
+                ),
+            },
             "load_case_id": {"type": "string", "description": "Load case id, default load_case_001."},
             "software": {"type": "string", "description": "Solver software, default CalculiX."},
             "overwrite": {"type": "boolean", "description": "Overwrite existing computed_metrics.json."},

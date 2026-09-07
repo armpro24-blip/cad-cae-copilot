@@ -1127,6 +1127,24 @@ face id is gone. This is not a looser matcher:
   `face_id`, and the target it replaced). "The face your setup named is gone and
   another one is carrying the load now" is not something to apply quietly.
 
+**A multi-face phrase recovers as a group.** `fix: "bolt holes"` becomes one BC
+per hole, every entry carrying the same phrase — so recovering them one at a
+time is impossible by construction: each asks "which single face is 'bolt
+holes'?" and gets four. Measured in the part-family sweep, that refused the
+whole promised task on a bolted mount plate, the most ordinary mechanical
+fixture there is.
+
+A group recovers when it is **interchangeable** — same kind, same DOFs, same
+value — because then the physics is the union of the node sets and it does not
+matter which entry takes which face. Face ids are not stable, so no per-entry
+identity could be honoured anyway; a homogeneous group is exactly the case where
+none is needed. Two things still refuse: a group whose **count** changed (four
+holes becoming three is a different restraint, not a rebind), and a group whose
+entries differ physically (guessing which hole restrained which DOF would be
+inventing a boundary condition). Measured after the fix at a 3 mm mesh, the
+bolted plate completes at **-80.1% displacement / -65.4% stress** for a doubled
+plate thickness.
+
 To recover:
 1. For parametric variants / design-study candidates, enable adaptive rebind by
    calling the solver with `rebind_faces=True` and a `baseline_package_path`.
@@ -1340,7 +1358,10 @@ is possible).
 | `cae.apply_load_case` | Materialise a recorded load case into the CAE setup — the requirement becomes the analysis |
 | `cae.setup_static` | Author a complete static setup from ONE engineering-language call — material + where it is held + where the load acts. Resolves ordinary words to real faces, writes every artifact in the right shape, echoes back what it bound |
 | `cae.apply_setup_patch` | Patch CAE setup artifacts (materials, BCs, mesh params) — the low-level path for what `setup_static` does not cover |
-| `cae.generate_solver_input` | Generate CalculiX `.inp` deck from setup artifacts |
+| `cae.generate_mesh` | Mesh the current geometry with gmsh → `simulation/mesh/mesh.inp` + `mesh_metadata.json`. **Second-order tets (C3D10) by default** — read the `accuracy` block before quoting a stress. Records the geometry revision it was built for, so a deck cannot later be generated on a mesh from before an edit (`code: "stale_mesh"`). Was documented only in the workflows and the accuracy prose, never in a tool table — a cold-start agent trial noted it would have skipped meshing entirely had it planned from the tables |
+| `cae.generate_solver_input` | Generate CalculiX `.inp` deck from setup artifacts. Refuses `stale_mesh` when the mesh predates the current geometry |
+| `cae.mesh_convergence` | **[APPROVAL]** Solve the same setup at several mesh sizes and report GCI / apparent order / a converged verdict per metric — the real answer to "is this stress trustworthy", which the `accuracy` band only estimates. Runs on the CURRENT geometry only |
+| `report.generate` | Read-only self-contained HTML engineering report, returned as `html` in the tool response (it writes nothing into the package). Includes the "Design Change (Before / After)" section |
 | `cae.write_mesh_handoff` | Write mesh handoff contract for external Gmsh |
 | `cae.import_solver_evidence` | Import an external solver result file as evidence |
 
@@ -1459,6 +1480,7 @@ and freeform/NURBS fitting remains future work.
 
 | Tool | Purpose |
 |------|---------|
+| `aieng.create_project` | **Create an empty project** and return its `project_id` — the first call when nothing exists yet. Every other tool takes that id. It was absent from AGENTS.md, README.md and the prompt guide: a cold-start agent trial found it only by reading the raw MCP tool list, and the documented flow began at `aieng.list_projects` while silently assuming a project already existed |
 | `aieng.convert` | Import STEP/FCStd/Shape IR into a `.aieng` package. Shape IR compiles by `representation`: `brep_build123d` (default) → build123d STEP/B-Rep; `nurbs_brep` → OCP NURBS B-Rep surfaces (per-patch `bspline` faces); `implicit_sdf` → fogleman/sdf mesh; `manifold_mesh` → manifold3d CSG mesh. B-Rep reps give analytic per-face topology; mesh reps give region-level faces. Publishes a viewer preview |
 | `aieng.apply_shape_ir_patch` | **[APPROVAL]** Apply a surgical patch to a project's Shape IR (set_parameter / move_control_point / add_node / remove_node / replace_node / connect / disconnect / change_representation_backend). Atomic + validated; on success recompiles through runtime routing and refreshes verification + object registry. `dry_run` previews without writing. `set_parameter` writes the node's own field when it has one (that is what the compilers read) and its `parameters` map otherwise; it refuses `id`/`name`/`type`/`label` — use `replace_node` — and refuses to change a numeric field's type. `move_control_point` moves a point in its own dimension, including an `extruded_region`'s 2D polygon vertices |
 | `aieng.generate_preview` | Regenerate GLB/STL web preview from current STEP — the fix when the viewer shows nothing. A project with no geometry yet is refused with `code: "no_geometry"` rather than a STEP-not-found error |
@@ -1635,7 +1657,7 @@ and a `deck_provenance.json` recording the geometry revision the deck was built
 for. Reusing `run_001` either fails (it already exists) or overwrites the
 baseline you are comparing against.
 
-Three guards make the wrong path fail loudly instead of quietly:
+Four guards make the wrong path fail loudly instead of quietly:
 
 - `cae.generate_solver_input` refuses an existing run and **names a free
   `run_id`**; `overwrite: true` is the option that destroys the earlier result.
@@ -1643,6 +1665,25 @@ Three guards make the wrong path fail loudly instead of quietly:
   (`code: "stale_deck"`). Without it, re-running the pre-edit deck reported the
   old numbers as the new ones — measured: **0.0% change on a beam whose
   thickness had doubled**, `status: completed`, nothing flagged.
+- `cae.generate_solver_input` refuses a **mesh** built for a different geometry
+  revision (`code: "stale_mesh"`, naming both revisions). This is the sibling of
+  `stale_deck` one layer down, and it was missing: a deck generated *after* an
+  edit is new, so `stale_deck` cannot fire while the mesh underneath it is still
+  the pre-edit one. Measured on the reference beam — edit 10 → 20 mm, fresh deck
+  for `run_002`, skip step 4, solve:
+
+  ```
+  max_displacement:     2.480533 -> 2.480533  (0.0%)
+  max_von_mises_stress: 175.746  -> 175.746   (0.0%)
+  geometry_changed: true   binding_count_changed: false   warnings: []
+  ```
+
+  0.0% change on a doubled thickness, every existing guard passed, nothing
+  flagged — the same wrong answer `stale_deck` exists to prevent. Found by a
+  cold-start agent reading the docs, not the code: they guarded the deck and
+  said nothing about the mesh. **So step 4 is not optional.** A mesh written
+  before meshes recorded a revision carries none and keeps the old behaviour
+  with a warning, rather than refusing every existing package.
 - `cae.run_solver` takes the run from `input_deck_path` when you do not pass
   `run_id`, and refuses if the two disagree (`code: "run_id_conflict"` — the
   other two guards name their codes, so this one does too: an agent that

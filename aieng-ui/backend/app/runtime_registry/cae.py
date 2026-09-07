@@ -520,6 +520,36 @@ def _run_id_from_deck_path(deck_path: str | None) -> str:
     return ""
 
 
+def _stale_mesh_revisions(package_path: Path) -> tuple[int, int] | None:
+    """`(mesh revision, current revision)` when they disagree, else None.
+
+    `None` also covers "cannot tell": a mesh written before meshes recorded a
+    revision carries none, and refusing on an unknown would block every
+    pre-existing package. Same reasoning as `_deck_and_current_revision`.
+    """
+    import json as _json
+    import zipfile as _zipfile
+
+    try:
+        with _zipfile.ZipFile(package_path, "r") as zf:
+            names = set(zf.namelist())
+            if "simulation/mesh/mesh_metadata.json" not in names:
+                return None
+            meta = _json.loads(zf.read("simulation/mesh/mesh_metadata.json"))
+            mesh_revision = meta.get("geometry_revision") if isinstance(meta, dict) else None
+            if not isinstance(mesh_revision, int):
+                return None
+            current = 0
+            if "state/revalidation_status.json" in names:
+                status = _json.loads(zf.read("state/revalidation_status.json"))
+                if isinstance(status, dict):
+                    candidate = status.get("current_geometry_revision")
+                    current = candidate if isinstance(candidate, int) else 0
+    except Exception:  # noqa: BLE001 - an unreadable package is reported elsewhere
+        return None
+    return (mesh_revision, current) if mesh_revision != current else None
+
+
 def _deck_and_current_revision(zf, deck_path: str) -> tuple[int | None, int | None]:
     """(the revision this deck was built for, the revision the project is at).
 
@@ -2109,6 +2139,31 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
 
         # Close the decoupled solve loop: if the package has a Gmsh mesh
         # (simulation/mesh/mesh.inp, e.g. from cae.generate_mesh) but no imported
+        # A stale MESH is refused by name, the way a stale DECK is. The core
+        # generator also refuses it, but as `missing_setup` — and this repo has
+        # already paid for a code that cannot be branched on: "an agent
+        # branching on `code` could not tell 'you named a project that does not
+        # exist' from 'the tool crashed'". The mesh is not missing, it is old.
+        stale_mesh = _stale_mesh_revisions(package_path)
+        if stale_mesh is not None:
+            mesh_revision, current_revision = stale_mesh
+            return {
+                "ok": False,
+                "tool": "cae.generate_solver_input",
+                "status": "error",
+                "code": "stale_mesh",
+                "message": (
+                    f"The mesh was built for geometry revision {mesh_revision} "
+                    f"but this package is at revision {current_revision}. "
+                    "Solving a deck built on it would report the OLD geometry's "
+                    "numbers as the new ones — measured on the reference beam, "
+                    "0.0% change on a doubled thickness. Run cae.generate_mesh "
+                    "first, then generate the deck again."
+                ),
+                "mesh_geometry_revision": mesh_revision,
+                "current_geometry_revision": current_revision,
+            }
+
         # source solver deck, synthesize one (mesh + *SOLID SECTION + named NSETs)
         # so the deck generator can bind loads/BCs. An imported deck always wins.
         source_deck_synthesis: dict[str, Any] | None = None
