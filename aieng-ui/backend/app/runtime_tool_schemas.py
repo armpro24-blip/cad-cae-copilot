@@ -1841,7 +1841,13 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                     "max_mass_kg": {"type": "number"},
                 },
             },
-            "analysis_type": {"type": "string", "description": "Default \"static\"."},
+            "analysis_type": {
+                "type": "string",
+                "enum": ["static", "modal", "frequency", "buckling", "buckle", "thermal", "heat_transfer", "thermal_structural", "thermal_stress"],
+                "description": (
+                    "Default \"static\". Constrained on purpose: it was free text, so \"fatigue\" was accepted, silently aliased to static, emitted as a *STATIC step and returned stamped executed_solver_result while the package still said \"fatigue\". Deck generation now refuses an unrecognized value; this enum refuses it one step earlier, at the interface."
+                ),
+            },
             "mesh_size_mm": {"type": "number", "exclusiveMinimum": 0},
         },
         "additionalProperties": True,
@@ -1921,7 +1927,11 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             },
             "analysis_type": {
                 "type": "string",
-                "description": "Default \"static\". Use cae.apply_setup_patch for thermal/modal setups.",
+                "enum": ["static", "modal", "frequency", "buckling", "buckle", "thermal", "heat_transfer", "thermal_structural", "thermal_stress"],
+                "description": (
+                    "Default \"static\". Use cae.apply_setup_patch for thermal/modal "
+                    "setups. Constrained on purpose — see cae.setup_static."
+                ),
             },
             "mesh_size_mm": {
                 "type": "number",

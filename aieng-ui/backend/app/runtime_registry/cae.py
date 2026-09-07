@@ -115,6 +115,51 @@ def _material_display(material: dict[str, Any]) -> tuple[str, float | None, floa
     )
 
 
+def _load_magnitude_and_direction(
+    load: dict[str, Any],
+) -> tuple[float | None, list[float] | None]:
+    """Newtons and unit direction for EITHER documented load form.
+
+    `parsed_cae_loads.schema.json` declares two complete forms and says so:
+    `dof` + `value` is how a solver deck states a load, `value_n` + `direction`
+    is how an engineer does. This reader knew only the authored one, so a
+    package whose loads came from an imported deck rendered as **`0 N`** — the
+    exact value `cae.setup_static` REFUSES because it "would converge on an
+    unloaded model and report zero stress as a result". Measured on project
+    6bd4cbe32c00, whose `parsed_loads.json` holds `{"dof": 3, "value": -50}`:
+    the read-back AGENTS.md points at to answer "what is set up here?" said
+    `load: 0 N`.
+
+    The direction is derived, never defaulted. It used to fall back to
+    `[0, 0, -1]`, which happened to be right for that project and would be
+    wrong for any load on X or Y or any positive one — a default standing in
+    for missing input, indistinguishable from a stated value.
+    """
+    value_n = load.get("value_n")
+    direction = load.get("direction")
+    if isinstance(value_n, (int, float)) and not isinstance(value_n, bool):
+        axis: list[float] | None = None
+        if isinstance(direction, (list, tuple)) and len(direction) >= 3:
+            try:
+                axis = [float(c) for c in list(direction)[:3]]
+            except (TypeError, ValueError):
+                axis = None
+        return float(value_n), axis
+
+    value = load.get("value")
+    dof = load.get("dof")
+    if (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and isinstance(dof, int)
+        and dof in (1, 2, 3)
+    ):
+        axis = [0.0, 0.0, 0.0]
+        axis[dof - 1] = -1.0 if float(value) < 0 else 1.0
+        return abs(float(value)), axis
+    return None, None
+
+
 def _describe_cae_setup(package_path: Path) -> list[str]:
     """State the bound physics in engineering language, for a preflight read-back.
 
@@ -149,7 +194,15 @@ def _describe_cae_setup(package_path: Path) -> list[str]:
             loads = _read("simulation/cae_imports/parsed_loads.json") or {}
             settings = _read("simulation/solver_settings.json") or {}
             mapping = _read("simulation/cae_mapping.json") or {}
-            has_mesh = "simulation/mesh/mesh.inp" in names
+            # Both are legitimate: `cae.generate_mesh` writes
+            # simulation/mesh/mesh.inp, an imported source deck puts the mesh at
+            # simulation/mesh.inp. Checking only the first made this read-back
+            # say "mesh: not generated yet" in the SAME response whose preflight
+            # reported has_mesh: true and mesh_artifact_path: simulation/mesh.inp.
+            has_mesh = any(
+                candidate in names
+                for candidate in ("simulation/mesh/mesh.inp", "simulation/mesh.inp")
+            )
     except Exception:  # noqa: BLE001 - description is a courtesy, never a gate
         return []
 
@@ -202,14 +255,22 @@ def _describe_cae_setup(package_path: Path) -> list[str]:
             )
     for load in (loads.get("loads") or []):
         if isinstance(load, dict):
-            direction = load.get("direction") or [0, 0, -1]
-            try:
-                arrow = "[{:.2f}, {:.2f}, {:.2f}]".format(*[float(c) for c in direction[:3]])
-            except (TypeError, ValueError):
-                arrow = str(direction)
+            newtons, direction = _load_magnitude_and_direction(load)
+            if newtons is None:
+                lines.append(
+                    "load: magnitude not recorded in either documented form "
+                    "(value_n+direction, or dof+value) on {}".format(
+                        _render(load.get("target"))
+                    )
+                )
+                continue
+            if direction is None:
+                arrow = "an unrecorded direction"
+            else:
+                arrow = "[{:.2f}, {:.2f}, {:.2f}]".format(*direction)
             lines.append(
                 "load: {:g} N along {} on {}".format(
-                    float(load.get("value_n") or 0.0), arrow, _render(load.get("target"))
+                    newtons, arrow, _render(load.get("target"))
                 )
             )
     if not lines:

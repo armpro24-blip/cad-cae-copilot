@@ -850,6 +850,25 @@ stress. It runs CalculiX `*UNCOUPLED TEMPERATURE-DISPLACEMENT` (solve temperatur
 then the displacement it induces) and returns temperature, displacement and von
 Mises stress in one pass.
 
+**These five are the whole list, and the boundary is by QUESTION, not only by
+card.** A request this generator cannot express is refused rather than aliased:
+`analysis_type` used to be free text, so `"fatigue"` was accepted, silently
+mapped to `static`, emitted as a `*STATIC` step and returned stamped
+`executed_solver_result` while `solver_settings.json` still said `fatigue`.
+Deck generation now refuses an unrecognized value (naming the supported set)
+and the tool schemas carry an enum. An ABSENT value still means `static` —
+that is a default, not a substitution.
+
+**Fatigue and durability are not here at all.** There is no cyclic load, no
+cycle count, no required life, and the material library carries no endurance
+limit or S-N curve — so nothing downstream could compute a life even if a tool
+asked. A peak-stress result at the top of a cycle is not a durability answer,
+and `opt.sizing_sweep` ranking thicknesses against **yield** is not one either,
+however real its solves are. Say so rather than handing over the sweep's
+millimetre number: a cold-start agent trial identified that substitution as the
+most likely wrong answer this toolset can produce with a perfect credibility
+stamp on it.
+
 Honesty boundary: steady-state linear conduction / sequential (one-way)
 thermal-stress only — no transient, no radiation, no temperature-dependent
 properties, and no fully-coupled (two-way) thermomechanics.

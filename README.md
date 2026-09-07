@@ -638,6 +638,7 @@ cantilever), not assumed away; no synthetic fallback counts as a successful demo
 Honesty boundaries — outputs are review material, not production sign-off:
 
 - Not production-certified CAD/CAE. Outputs still require human engineering judgment.
+- **No fatigue or durability analysis.** Supported: linear static, modal, linear buckling, steady-state thermal, one-way thermal-stress. A cyclic load, a cycle count and a required life have nowhere to be entered, and the material library carries no endurance or S-N data. A cold-start agent trial found this boundary stated in exactly one document, so it is stated here too.
 - Assembly contact and bolt preload are proxy-only; real nonlinear contact is future work.
 - 3D SIMP is experimental/reference, not production-certified.
 - Mesh-to-CAD works best for plane/cylinder-dominant geometry; broader freeform
