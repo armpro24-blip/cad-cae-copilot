@@ -10,6 +10,7 @@ from typing import Any
 
 from aieng.cae_run_comparison import compare_runs as _compare_runs
 from aieng.simulation.cae_mapping_writer import mapping_target_id
+from aieng.simulation.deck_generator import next_run_id
 
 from .. import blocked_reason_codes as _blocked_reason_codes
 from .. import next_actions as _next_actions
@@ -1741,9 +1742,18 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         load_case_id: str,
         preflight: dict[str, Any],
         ready_to_run: bool,
+        *,
+        free_run_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Build actionable next-call recommendations for external agents."""
+        """Build actionable next-call recommendations for external agents.
+
+        `free_run_id` is the first unused `run_NNN` in this package, from the
+        same helper the deck generator's refusal quotes. Recommending the
+        caller's `run_id` instead means recommending `run_001` by default —
+        the baseline the caller is comparing against.
+        """
         recs: list[dict[str, Any]] = []
+        deck_run_id = free_run_id or run_id
         if not preflight["has_mesh"]:
             recs.append({
                 "tool": "cae.write_mesh_handoff",
@@ -1847,13 +1857,37 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 ),
                 "resolves_blocked_reason_codes": [_blocked_reason_codes.NSET_BINDING_INVALID],
             })
-        if not preflight["has_input_deck"]:
+        # A mesh from before the edit must be rebuilt BEFORE a deck is generated
+        # on it — `cae.generate_solver_input` refuses one (`stale_mesh`), and
+        # this ordering is why the re-mesh recommendation comes first.
+        stale_mesh = preflight.get("stale_mesh")
+        if stale_mesh is not None:
+            recs.append({
+                "tool": "cae.generate_mesh",
+                "input": {"project_id": project_id},
+                "reason": (
+                    f"The mesh was built for geometry revision {stale_mesh[0]} but "
+                    f"the project is at {stale_mesh[1]}. A deck generated on it is "
+                    "refused (stale_mesh), and solving it would report the old "
+                    "geometry's numbers as the new ones."
+                ),
+            })
+        if not preflight["has_input_deck"] or preflight.get("stale_deck"):
             recs.append({
                 "tool": "cae.generate_solver_input",
-                "input": {"project_id": project_id, "run_id": run_id, "overwrite": True},
+                # A free run id, and NO overwrite: AGENTS.md calls
+                # `overwrite: true` "the option that destroys the earlier
+                # result", and this response is the one an agent follows
+                # literally. It used to recommend exactly that, on run_001.
+                "input": {"project_id": project_id, "run_id": deck_run_id},
                 "reason": (
-                    "Missing solver input deck; generate it once mesh, solver settings, "
-                    "material, boundary conditions and loads are present."
+                    f"Generate the deck for the current geometry under {deck_run_id}, "
+                    "keeping the earlier run intact to compare against."
+                    if preflight.get("stale_deck")
+                    else (
+                        "Missing solver input deck; generate it once mesh, solver "
+                        "settings, material, boundary conditions and loads are present."
+                    )
                 ),
                 "resolves_blocked_reason_codes": [_blocked_reason_codes.DECK_NOT_PREPARED],
             })
@@ -1991,6 +2025,39 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         else:
             has_input_deck = f"simulation/runs/{run_id}/solver_input.inp" in names
 
+        # The two revisions the DOWNSTREAM guards compare, checked here too.
+        # `cae.run_solver` refuses a deck built for another geometry revision
+        # (`stale_deck`, #532) and `cae.generate_solver_input` refuses a mesh
+        # built for one (`stale_mesh`, #537) — but this preflight, whose
+        # documented job is "what do I do next", knew about neither. After a
+        # parameter edit it defaults to `run_id="run_001"`, finds that baseline
+        # deck present, and reported `ready_to_run: true` with
+        # `missing_items: []` while recommending `cae.run_solver` on the
+        # PRE-EDIT deck. The guard refused it, so no wrong number escaped — but
+        # the answer handed to the agent was "ready", and the way forward
+        # (re-mesh, then a deck under a new run id) went unnamed. That is step 3
+        # of AGENTS.md's own workflow E.
+        deck_member = input_deck_path_str or f"simulation/runs/{run_id}/solver_input.inp"
+        deck_revision: int | None = None
+        deck_current_revision: int | None = None
+        if deck_member in names:
+            try:
+                with _zipfile.ZipFile(package_path, "r") as _zf:
+                    deck_revision, deck_current_revision = _deck_and_current_revision(
+                        _zf, deck_member
+                    )
+            except Exception:  # noqa: BLE001 - unreadable provenance is "cannot tell"
+                deck_revision = deck_current_revision = None
+        # None on either side means "cannot tell", never "they differ" — a deck
+        # or package predating revision tracking must not be declared stale.
+        stale_deck = (
+            deck_revision is not None
+            and deck_current_revision is not None
+            and deck_revision != deck_current_revision
+        )
+        stale_mesh = _stale_mesh_revisions(package_path)
+        free_run_id = next_run_id(names)
+
         # Check ccx availability without executing it
         from ..runtime_tool_registry import resolve_ccx_command
 
@@ -2027,6 +2094,19 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         if not nset_binding_valid:
             missing_items.append(
                 f"nset_binding_invalid: {nset_validation.get('warnings') or ['see nset_validation']}"
+            )
+        if stale_mesh is not None:
+            missing_items.append(
+                f"stale_mesh: the mesh was built for geometry revision "
+                f"{stale_mesh[0]} but the project is at {stale_mesh[1]}. Re-run "
+                "cae.generate_mesh before generating a deck."
+            )
+        if stale_deck:
+            missing_items.append(
+                f"stale_deck: {deck_member} was generated for geometry revision "
+                f"{deck_revision} but the project is at {deck_current_revision}. "
+                f"Generate a deck for the current geometry under a new run_id "
+                f"(e.g. {free_run_id}); running this one is refused."
             )
 
         ready_to_run = (
@@ -2082,6 +2162,14 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             "stale_topology_references": topology_validation.get("stale_references", []),
             "nset_binding_valid": nset_binding_valid,
             "nset_validation": nset_validation,
+            # The evidence behind the two staleness verdicts, so a reader can
+            # tell "checked, and they agree" from "no revision recorded".
+            "deck_geometry_revision": deck_revision,
+            "current_geometry_revision": deck_current_revision,
+            "stale_deck": stale_deck,
+            "mesh_geometry_revision": stale_mesh[0] if stale_mesh else None,
+            "stale_mesh": stale_mesh is not None,
+            "next_free_run_id": free_run_id,
         }
 
         recommendations = _recommended_next_calls(
@@ -2095,8 +2183,11 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 "has_input_deck": has_input_deck,
                 "ccx_available": ccx_available,
                 "nset_binding_valid": nset_binding_valid,
+                "stale_mesh": stale_mesh,
+                "stale_deck": stale_deck,
             },
             ready_to_run,
+            free_run_id=free_run_id,
         )
         if not topology_refs_ok:
             resolves_codes = [_blocked_reason_codes.STALE_TOPOLOGY_REFERENCE]
