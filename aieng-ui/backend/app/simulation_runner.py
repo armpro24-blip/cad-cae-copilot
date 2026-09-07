@@ -764,6 +764,11 @@ def _write_members_to_package(package_path: Path, files: dict[str, bytes]) -> No
 _ELEMENTS_THROUGH_THICKNESS_BANDS = {1: (6.0, 3.0), 2: (1.5, 1.0)}
 
 
+#: PIRA: ceiling — this detects that the box CANNOT be trusted as a wall, and
+#: then declines to name a band. It does not measure the wall. A true thickness
+#: field (medial axis / ray casting) would let a hollow body keep a real
+#: verdict; `cae.mesh_convergence` is the upgrade path in the meantime.
+#:
 #: A bounding box overstates the thin direction of a HOLLOW body by however
 #: hollow it is. `2 * volume / area` is the wall thickness of a thin shell, so
 #: when it falls far below the box's smallest side the two proxies contradict
@@ -793,6 +798,30 @@ def _wall_from_volume(entity: dict[str, Any]) -> float | None:
     if volume <= 0 or area <= 0:
         return None
     return 2.0 * float(volume) / float(area)
+
+
+def _package_geometry_revision(package_path: Path) -> int:
+    """The geometry revision this mesh is being built for.
+
+    Returns 0 when the package records none, matching
+    `deck_generator._current_geometry_revision`. That agreement is the whole
+    point: a baseline mesh is built BEFORE any edit, so recording `None` there
+    would leave the comparison "unknown vs 1" and the staleness check could
+    never fire on the exact sequence it exists for — baseline, edit, re-solve.
+    Which is what happened on the first attempt at this fix.
+
+    A mesh written before this field existed has no `geometry_revision` key at
+    all, and the reader treats that absence as unknown; this function is only
+    ever asked about a mesh being written now.
+    """
+    try:
+        raw = _read_member(package_path, "state/revalidation_status.json")
+        if not raw:
+            return 0
+        revision = json.loads(raw).get("current_geometry_revision")
+    except Exception:  # noqa: BLE001 - a missing/unreadable status file is not fatal
+        return 0
+    return int(revision) if isinstance(revision, int) else 0
 
 
 def thinnest_body_extent(topology: dict[str, Any] | None) -> tuple[float, str] | None:
@@ -1071,6 +1100,16 @@ def generate_mesh_for_package(
 
     metadata = {
         "schema_version": "0.1",
+        # What geometry this mesh was built for. The deck already records its own
+        # revision and `stale_deck` refuses a deck built for another one — but a
+        # deck generated AFTER an edit is new, so that guard cannot fire while
+        # the MESH underneath it is still the old one. Measured on the reference
+        # beam: edit 10 -> 20 mm, generate a fresh deck for run_002, skip the
+        # re-mesh, solve. Result: 2.480533 -> 2.480533 mm and 175.746 ->
+        # 175.746 MPa — 0.0% change on a doubled thickness, `geometry_changed:
+        # true`, `warnings: []`, nothing refused. The same wrong answer #532
+        # fixed, reached one layer down.
+        "geometry_revision": _package_geometry_revision(package_path),
         "generator": "gmsh",
         "element_type": element_type,
         "element_order": order,
@@ -1492,10 +1531,74 @@ def normalize_cae_bindings(package_path: Path) -> dict[str, Any]:
         if hit.get("status") != "ok":
             return None
         recovered = [str(f) for f in (hit.get("face_ids") or []) if str(f) in face_ids]
-        if len(recovered) != 1:
-            # Several faces (or none) is not a recovery — refuse rather than pick.
+        if len(recovered) == 1:
+            return recovered[0]
+        # A MULTI-face selector — `fix: "bolt holes"` is the canonical one, and
+        # `cae.setup_static` splits it into one entry per hole, every entry
+        # carrying the same phrase. Recovering them one at a time is impossible
+        # by construction: each asks "which single face is 'bolt holes'?" and
+        # gets four. Measured in the part-family sweep, that refused the whole
+        # promised task on a bolted mount plate — the most ordinary mechanical
+        # fixture there is.
+        #
+        # PIRA: ceiling — only an interchangeable group recovers. A group whose
+        # entries differ physically (one hole restraining fewer DOFs) still
+        # refuses, because honouring it needs a per-entry face identity that
+        # unstable ids cannot provide. Upgrade path: persist a per-entry
+        # geometric signature at authoring time, the way `face_signatures`
+        # records character for the re-verification check.
+        #
+        # The group is recoverable when it is INTERCHANGEABLE: same kind, same
+        # DOFs, same value, so the physics is the union of the node sets and it
+        # does not matter which entry takes which face. Face ids are not stable,
+        # so no per-entry identity could be honoured anyway; a homogeneous group
+        # is exactly the case where none is needed.
+        return _recover_group(item, recovered)
+
+    def _recover_group(item: dict[str, Any], recovered: list[str]) -> str | None:
+        """One face from a multi-face selector, if the group can take them all."""
+        selector = item.get("target_selector")
+        siblings = [
+            sibling
+            for sibling in _selector_group(selector)
+            if _binding_shape(sibling) == _binding_shape(item)
+        ]
+        if len(siblings) != len(_selector_group(selector)):
+            # Entries sharing the phrase but not the physics: a per-entry
+            # identity would be needed and cannot be had. Refuse.
             return None
-        return recovered[0]
+        if len(recovered) != len(siblings):
+            # Four holes became three: the restraint genuinely changed, which is
+            # not something to paper over with a rebind.
+            return None
+        order = sorted(siblings, key=lambda s: str(s.get("id") or ""))
+        try:
+            index = order.index(item)
+        except ValueError:
+            return None
+        return sorted(recovered)[index]
+
+    def _binding_shape(item: dict[str, Any]) -> tuple:
+        """What makes two entries interchangeable — everything but the face."""
+        direction = item.get("direction")
+        return (
+            str(item.get("type") or ""),
+            item.get("dof_start"),
+            item.get("dof_end"),
+            item.get("value"),
+            item.get("value_n"),
+            tuple(direction) if isinstance(direction, list) else None,
+        )
+
+    def _selector_group(selector: Any) -> list[dict[str, Any]]:
+        """Every BC/load entry that was resolved from the same phrase."""
+        if not isinstance(selector, str) or not selector.strip():
+            return []
+        return [
+            entry
+            for entry in list(bcs or []) + list(loads or [])
+            if isinstance(entry, dict) and entry.get("target_selector") == selector
+        ]
 
     def _bind(item: dict[str, Any], kind: str) -> bool:
         """Rewrite item.target @face -> NSET name, adding a mapping if needed."""

@@ -184,6 +184,7 @@ def generate_solver_input_package(
                 else None
             )
             geometry_revision = _current_geometry_revision(zf)
+            mesh_revision = _mesh_geometry_revision(zf)
             members = _read_existing_members(
                 zf, out_path_in_zip, DECK_PROVENANCE_PATH_TEMPLATE.format(run_id=run_id)
             )
@@ -201,6 +202,35 @@ def generate_solver_input_package(
         warnings.append(
             "No source solver deck found. Import a complete CalculiX `.inp" "` containing mesh "
             "via `aieng import-cae-deck` before generating a solver input."
+        )
+
+    # A deck generated AFTER an edit is new, so `stale_deck` cannot fire — while
+    # the MESH underneath it may still be the pre-edit one. Measured on the
+    # reference beam: edit 10 -> 20 mm, fresh deck for run_002, skip the
+    # re-mesh, solve. 2.480533 -> 2.480533 mm and 175.746 -> 175.746 MPa, i.e.
+    # 0.0% change on a doubled thickness, with `geometry_changed: true`,
+    # `binding_count_changed: false` and `warnings: []`. Every existing guard
+    # passed and the answer was the old one. Same failure as #532, one layer
+    # down, and found by reading the docs rather than the code: they guard the
+    # deck and say nothing about the mesh.
+    #
+    # A mesh with no recorded revision cannot be checked, so it keeps the old
+    # behaviour with a warning rather than refusing every existing package —
+    # the `face_signatures` discipline.
+    if mesh_revision is None:
+        if source_deck_text is not None:
+            warnings.append(
+                "The mesh records no geometry revision, so whether it was built "
+                "for the current geometry cannot be checked. Re-run "
+                "cae.generate_mesh if the geometry has changed since it was made."
+            )
+    elif mesh_revision != geometry_revision:
+        missing.append("current_mesh")
+        warnings.append(
+            f"The mesh was built for geometry revision {mesh_revision} but the "
+            f"package is at revision {geometry_revision}. Solving this deck "
+            "would report the OLD geometry's numbers as the new ones. Re-run "
+            "cae.generate_mesh, then generate the deck again."
         )
 
     materials = _resolve_materials(setup, parsed_materials)
@@ -1075,6 +1105,19 @@ def _next_run_id(names: set[str]) -> str:
     while f"run_{index:03d}" in used:
         index += 1
     return f"run_{index:03d}"
+
+
+MESH_METADATA_PATH = "simulation/mesh/mesh_metadata.json"
+
+
+def _mesh_geometry_revision(zf: zipfile.ZipFile) -> int | None:
+    """What geometry the package's mesh was built for, or None if unrecorded."""
+    try:
+        raw = zf.read(MESH_METADATA_PATH)
+        revision = json.loads(raw.decode("utf-8")).get("geometry_revision")
+    except Exception:  # noqa: BLE001 - no mesh metadata is not an error here
+        return None
+    return int(revision) if isinstance(revision, int) else None
 
 
 def _setup_bindings(cae_mapping: Any) -> dict[str, list[str]]:

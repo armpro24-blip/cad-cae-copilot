@@ -236,7 +236,11 @@ result as a layout and load-path check, not as a qualified analysis.
 
 ## What it is not
 
-Linear static analysis only, no fatigue / buckling / contact / bolt preload.
+Linear static, modal, linear buckling, steady-state thermal and one-way
+thermal-stress. No fatigue, no contact, no bolt preload, no transient, no
+temperature-dependent properties. (This line used to say "no buckling", which
+contradicted the CAE guide's analysis-type table — a cold-start agent trial
+reported it could not tell which document stated the real boundary.)
 Heuristic manufacturability rules, not certification. Every output is review
 material for a qualified engineer — the workbench is explicit about this in its
 own responses, and so should you be when passing results on.
