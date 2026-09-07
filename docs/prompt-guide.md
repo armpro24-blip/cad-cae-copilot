@@ -230,9 +230,16 @@ result as a layout and load-path check, not as a qualified analysis.
   say "not found" or "no solver was executed" instead.
 - **Tell you the evidence level** of any number it reports, so a mesh proxy or
   an unverified estimate is never presented as a solved result.
-- **Measure mesh accuracy instead of hoping** — every mesh carries a measured
+- **Measure mesh accuracy instead of hoping** — a mesh carries a measured
   accuracy verdict, and a solve on an unreliable mesh is downgraded
-  (`unreliable_mesh`), not reported as a result.
+  (`unreliable_mesh`), not reported as a result. **With one exception you should
+  know about:** on a hollow part — an enclosure, a housing — the verdict is
+  honestly withheld (`band: null`, `measured_on: "not_determined"`) because a
+  bounding box measures the shell's outer envelope, not its wall. On those parts
+  ask for a mesh-convergence study; it is the real answer either way, and here it
+  is the only one. (This bullet used to promise "every mesh", which stopped being
+  true when the hollow-body case was fixed — a cold-start agent trial reported
+  the guarantee as silently absent on exactly the part it was asked to size.)
 
 ## What it is not
 

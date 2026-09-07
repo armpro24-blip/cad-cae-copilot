@@ -195,6 +195,15 @@ def generate_solver_input_package(
     missing: list[str] = []
     warnings: list[str] = []
 
+    unsupported = unsupported_analysis_type(solver_settings, setup)
+    if unsupported is not None:
+        raise DeckGenerationError(
+            f"analysis_type {unsupported!r} is not something this generator can "
+            f"emit. Supported: {', '.join(supported_analysis_types())}. It used "
+            "to fall through to a *STATIC step, so the package recorded the "
+            "requested type while the deck solved a different problem."
+        )
+
     analysis_type = normalize_analysis_type(solver_settings, setup)
 
     if source_deck_text is None:
@@ -913,10 +922,18 @@ def _resolve_step_name(solver_settings: dict[str, Any] | None) -> str:
 # Supported CalculiX analysis types. Modal/buckling are linear eigenvalue
 # analyses CalculiX solves natively (`*FREQUENCY` / `*BUCKLE`); static is the
 # default. Aliases map common spellings to the canonical key.
+#: The enumeration IS the contract, now that an unlisted value is refused rather
+#: than aliased to `static`. That trade is deliberate: an unlisted spelling of
+#: something supported costs one clear error naming the supported set, while an
+#: unsupported PHYSICS used to cost a silently wrong answer wearing the
+#: requested label. Failing closed also finds the gaps cheaply — turning the
+#: refusal on immediately surfaced `static_structural`, used 10 times in this
+#: repo and as common here as `linear_static`, which was already listed.
 _ANALYSIS_TYPE_ALIASES: dict[str, str] = {
     "": "static",
     "static": "static",
     "linear_static": "static",
+    "static_structural": "static",
     "modal": "modal",
     "frequency": "modal",
     "eigenfrequency": "modal",
@@ -940,20 +957,61 @@ _ANALYSIS_TYPE_ALIASES: dict[str, str] = {
 }
 
 
-def normalize_analysis_type(
-    solver_settings: dict[str, Any] | None, setup: dict[str, Any] | None = None
-) -> str:
-    """Return the canonical analysis type — ``static`` / ``modal`` / ``buckling``.
-
-    Reads ``analysis_type`` (or ``step_type``) from ``solver_settings`` first, then
-    ``setup``; unknown / absent values fall back to ``static``.
-    """
+def _raw_analysis_type(
+    solver_settings: dict[str, Any] | None, setup: dict[str, Any] | None
+) -> str | None:
+    """The `analysis_type` as authored, before aliasing. `None` when absent."""
     raw: Any = None
     if isinstance(solver_settings, dict):
         raw = solver_settings.get("analysis_type") or solver_settings.get("step_type")
     if not raw and isinstance(setup, dict):
         raw = setup.get("analysis_type")
-    key = str(raw or "static").strip().lower().replace("-", "_").replace(" ", "_")
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    return text or None
+
+
+def unsupported_analysis_type(
+    solver_settings: dict[str, Any] | None, setup: dict[str, Any] | None = None
+) -> str | None:
+    """The authored `analysis_type` if this generator cannot emit it, else None.
+
+    ABSENT and UNRECOGNIZED are different facts and used to share an answer.
+    `analysis_type` is a free-text string on `cae.setup_static` and is written
+    verbatim by `cae.apply_setup_patch`, so `analysis_type: "fatigue"` was
+    accepted, aliased to `static` by the `.get(key, "static")` fallback, emitted
+    as a `*STATIC` step, solved, and returned stamped `executed_solver_result`
+    — while `solver_settings.json` still said `fatigue`. A request for physics
+    this tool does not have became a static answer wearing the requested label.
+
+    Absent still means `static`: that is the documented default for a setup that
+    never named one. A present-but-unrecognized value is a refusal.
+    """
+    raw = _raw_analysis_type(solver_settings, setup)
+    if raw is None:
+        return None
+    key = raw.lower().replace("-", "_").replace(" ", "_")
+    return None if key in _ANALYSIS_TYPE_ALIASES else raw
+
+
+def supported_analysis_types() -> list[str]:
+    """The canonical analysis types this generator can emit."""
+    return sorted({v for v in _ANALYSIS_TYPE_ALIASES.values()})
+
+
+def normalize_analysis_type(
+    solver_settings: dict[str, Any] | None, setup: dict[str, Any] | None = None
+) -> str:
+    """Return the canonical analysis type — ``static`` / ``modal`` / ``buckling`` / ...
+
+    Reads ``analysis_type`` (or ``step_type``) from ``solver_settings`` first,
+    then ``setup``; an ABSENT value is ``static``. An unrecognized value also
+    maps here for backward compatibility, but callers that generate a deck must
+    call :func:`unsupported_analysis_type` first and refuse — see its docstring.
+    """
+    raw = _raw_analysis_type(solver_settings, setup)
+    key = (raw or "static").lower().replace("-", "_").replace(" ", "_")
     return _ANALYSIS_TYPE_ALIASES.get(key, "static")
 
 
