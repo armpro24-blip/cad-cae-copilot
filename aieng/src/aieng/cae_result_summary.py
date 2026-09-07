@@ -141,7 +141,7 @@ def generate_cae_result_summary(package_path: str | Path) -> dict[str, Any]:
         solver_runs = _read_solver_runs(zf)
         # Same reader the result map uses, so the two credibility stamps cannot
         # drift apart again.
-        mesh_accuracy_band = read_solver_evidence(zf)["mesh_accuracy_band"]
+        solver_evidence = read_solver_evidence(zf)
         design_targets = _read_design_targets(zf)
 
     # Artifact presence used by the Phase 35 PR 2 design-target evaluator to
@@ -162,7 +162,9 @@ def generate_cae_result_summary(package_path: str | Path) -> dict[str, Any]:
         computed_values=computed_values,
         solver_runs=solver_runs,
         legacy_rest_summary=legacy_rest_summary,
-        mesh_accuracy_band=mesh_accuracy_band,
+        mesh_accuracy_band=solver_evidence["mesh_accuracy_band"],
+        mesh_accuracy_judged=solver_evidence["mesh_accuracy_judged"],
+        geometry_stale=solver_evidence["geometry_stale"],
     )
     targets = _compare_design_targets(design_targets, computed_values)
     design_target_comparisons = _build_design_target_comparisons(
@@ -1271,6 +1273,17 @@ class SolverEvidence(TypedDict):
     #: and a consumer that collapses them cannot say which it saw.
     solver_executed: bool | None
     mesh_accuracy_band: str | None
+    #: True when the mesh metadata carries an accuracy band, False when it
+    #: records that accuracy could NOT be judged, and None when the package
+    #: records no mesh accuracy at all. The band alone cannot tell the last two
+    #: apart — both read as `None` — and they are different facts: "meshed
+    #: before this was measured" vs "measured, and no verdict was possible".
+    #: `classify_credibility` qualifies the second and ignores the first.
+    mesh_accuracy_judged: bool | None
+    #: True when the run behind the package's metrics was solved on a deck built
+    #: for a geometry revision other than the one the package is at now, False
+    #: when they agree, None when no revision is recorded to compare.
+    geometry_stale: bool | None
     solver_run_count: int
     completed_run_count: int
 
@@ -1289,9 +1302,12 @@ def read_solver_evidence(zf: zipfile.ZipFile) -> SolverEvidence:
     """
     runs = _read_solver_runs(zf)
     completed = [run for run in runs if _solver_run_completed(run)]
+    band, judged = _read_mesh_accuracy(zf)
     return {
         "solver_executed": bool(completed) if runs else None,
-        "mesh_accuracy_band": _read_mesh_accuracy_band(zf),
+        "mesh_accuracy_band": band,
+        "mesh_accuracy_judged": judged,
+        "geometry_stale": _geometry_staleness(zf, completed),
         "solver_run_count": len(runs),
         "completed_run_count": len(completed),
     }
@@ -1317,20 +1333,111 @@ def _solver_run_completed(run: dict[str, Any]) -> bool:
     return status == "completed" and run.get("solved") is True
 
 
-def _read_mesh_accuracy_band(zf: zipfile.ZipFile) -> str | None:
-    """Read ``accuracy.band`` from the package's mesh metadata, if present.
+MESH_METADATA_PATH = "simulation/mesh/mesh_metadata.json"
+REVALIDATION_STATUS_PATH = "state/revalidation_status.json"
 
-    Best-effort: a package meshed before the accuracy block existed simply has
-    no band, and the caller then leaves the claim tier untouched.
+
+def _read_mesh_accuracy(zf: zipfile.ZipFile) -> tuple[str | None, bool | None]:
+    """The mesh's accuracy band, and whether accuracy was judged at all.
+
+    Two different absences used to share one answer. A package meshed before the
+    accuracy block existed records **nothing** — there is no verdict to read and
+    none was attempted. A hollow or highly non-convex body records an accuracy
+    block that explicitly declines to judge (``band: null``,
+    ``measured_on: "not_determined"``): its bounding box is the outer envelope,
+    not a wall, so the elements-through-thickness heuristic has no thickness to
+    count. ``assess_mesh_accuracy`` also declines on an empty or degenerate mesh.
+
+    Both are "no band", so the caller cannot distinguish them from the band. The
+    second fact — *this* mesh was looked at and could not be judged — is worth
+    stating beside a rank-4 solver claim; the first is not. So this returns both.
     """
     try:
-        raw = zf.read("simulation/mesh/mesh_metadata.json")
-        meta = json.loads(raw.decode("utf-8"))
-    except Exception:  # noqa: BLE001 - missing/unreadable metadata is not fatal
-        return None
+        meta = _read_json_from_zip(zf, MESH_METADATA_PATH)
+    except Exception:  # noqa: BLE001 - unreadable metadata is not fatal
+        # Kept from the reader this replaced: a member that will not decode at
+        # all is one more way of recording nothing, not a reason to fail a
+        # result summary.
+        return None, None
     accuracy = meta.get("accuracy") if isinstance(meta, dict) else None
-    band = accuracy.get("band") if isinstance(accuracy, dict) else None
-    return str(band) if band else None
+    if not isinstance(accuracy, dict):
+        return None, None
+    band = accuracy.get("band")
+    if band:
+        return str(band), True
+    return None, False
+
+
+def _package_geometry_revision(zf: zipfile.ZipFile) -> int:
+    """The geometry revision the package is currently at; 0 when none recorded.
+
+    0, not None — deliberately the same convention as
+    ``deck_generator._current_geometry_revision`` and
+    ``simulation_runner._package_geometry_revision``. A baseline deck is
+    generated BEFORE any edit, so treating "no recorded edit" as unknown leaves
+    the comparison "unknown vs 1" and the staleness check can never fire on the
+    one sequence it exists for: baseline solve, edit, re-solve. Three readers of
+    this number now agree on what its absence means.
+    """
+    status = _read_json_from_zip(zf, REVALIDATION_STATUS_PATH)
+    revision = status.get("current_geometry_revision") if isinstance(status, dict) else None
+    return revision if isinstance(revision, int) else 0
+
+
+def _run_id_of(run: dict[str, Any]) -> str:
+    return str(run.get("run_id") or Path(str(run.get("source_artifact"))).parent.name)
+
+
+def _geometry_staleness(
+    zf: zipfile.ZipFile, completed: list[dict[str, Any]]
+) -> bool | None:
+    """Do the package's current metrics describe the CURRENT geometry?
+
+    Deliberately NOT read from ``edit_impact.stale``. That flag is set by
+    ``cad.edit_parameter`` and cleared only by a CAD write, so the correct
+    sequence — edit, re-mesh, new deck, solve run_002 — leaves it standing, and
+    a rule keyed on it would downgrade every correct re-solve. That is the
+    `by-construction` pattern from the review lens: a rule that fires on a
+    correct input teaches its reader to ignore it.
+
+    The answerable question is per-run: was the deck this number came from built
+    for the revision the package is at now? ``deck_provenance.json`` records
+    exactly that, which is what the ``stale_deck`` refusal compares at run time.
+    A run with no recorded revision returns None — an old package cannot answer,
+    and "unknown" is not "stale".
+
+    Which run: the one `results/computed_metrics.json` names as its source, else
+    the only completed run there is. With several completed runs and no source
+    recorded, the standing metrics cannot be attributed to one of them, so the
+    answer is None. Deliberately NOT "the newest run id": `run_id` is
+    caller-supplied, so ordering them as strings picks `run_2` over `run_10` and
+    `baseline` over `after_edit` — a silent guess about which result is on the
+    table, reported as if it were read.
+    """
+    if not completed:
+        return None
+
+    run_id = _metrics_run_id(zf)
+    if run_id is None:
+        if len(completed) != 1:
+            return None
+        run_id = _run_id_of(completed[0])
+
+    provenance = _read_json_from_zip(
+        zf, f"simulation/runs/{run_id}/deck_provenance.json"
+    )
+    revision = provenance.get("geometry_revision") if isinstance(provenance, dict) else None
+    if not isinstance(revision, int):
+        return None
+    return revision != _package_geometry_revision(zf)
+
+
+def _metrics_run_id(zf: zipfile.ZipFile) -> str | None:
+    """Which run the standing metrics were extracted from, if it says."""
+    raw = _read_json_from_zip(zf, "results/computed_metrics.json")
+    source = raw.get("metrics_source") if isinstance(raw, dict) else None
+    run_id = source.get("run_id") if isinstance(source, dict) else None
+    return str(run_id) if run_id else None
 
 
 def _build_result_contract(
@@ -1340,6 +1447,8 @@ def _build_result_contract(
     solver_runs: list[dict[str, Any]],
     legacy_rest_summary: dict[str, Any] | None,
     mesh_accuracy_band: str | None = None,
+    mesh_accuracy_judged: bool | None = None,
+    geometry_stale: bool | None = None,
 ) -> dict[str, Any]:
     """Build the normalized solver-result contract block.
 
@@ -1357,7 +1466,18 @@ def _build_result_contract(
     source_artifacts.extend(run["source_artifact"] for run in solver_runs if run.get("source_artifact"))
 
     metrics_source = computed_values.get("source")
-    if completed_runs and str(mesh_accuracy_band or "").lower() == "unreliable":
+    if completed_runs and geometry_stale is True:
+        # The run completed, on a deck built for geometry the package has since
+        # moved past. Same claim `classify_credibility` downgrades — stated here
+        # too, because this tier is what a report renders.
+        claim_tier = "stale_geometry"
+        reason = (
+            "A solver run completed, but its deck was built for a different "
+            "geometry revision than the package is at now — these numbers "
+            "describe the model before the edit. Re-mesh, generate a new run's "
+            "deck and solve again."
+        )
+    elif completed_runs and str(mesh_accuracy_band or "").lower() == "unreliable":
         # The solver ran, but on a mesh that cannot resolve what it was asked
         # for. Measured: linear tets with ~1.7 elements through the thickness
         # returned 48% of the analytical root stress and this tier still read
@@ -1384,6 +1504,21 @@ def _build_result_contract(
         claim_tier = "missing_or_unknown"
         reason = "No completed solver-run evidence or normalized metrics were found."
 
+    # An unjudged mesh does NOT move the tier. Rewriting `claim_tier` for it
+    # would tell every reader that checks `== "executed_solver_result"` that no
+    # solver ran, which under-claims a real solve exactly as hard as the
+    # unreliable-band defect over-claimed a bad one. Unknown is not known-bad;
+    # it is recorded beside the tier instead. Same split as
+    # `classify_credibility`'s `qualifications`, so the two surfaces agree.
+    qualifications: list[str] = []
+    if completed_runs and mesh_accuracy_judged is False:
+        qualifications.append(
+            "The mesh accuracy band is UNKNOWN, not good: this package records "
+            "that it could not judge the mesh (a hollow or highly non-convex "
+            "body has no wall its bounding box describes). Run "
+            "cae.mesh_convergence before relying on the number."
+        )
+
     return {
         "schema_version": "0.1",
         "canonical_summary_path": RESULT_SUMMARY_PATH,
@@ -1399,6 +1534,7 @@ def _build_result_contract(
         "metrics_source": metrics_source,
         "source_artifacts": sorted(set(source_artifacts)),
         "reason": reason,
+        "qualifications": qualifications,
     }
 
 

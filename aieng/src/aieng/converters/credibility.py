@@ -94,6 +94,8 @@ def classify_credibility(
     uncertainty_std: float | None = None,
     production_ready: bool | None = None,
     mesh_accuracy_band: str | None = None,
+    mesh_accuracy_judged: bool | None = None,
+    geometry_stale: bool | None = None,
     notes: str | None = None,
 ) -> dict[str, Any]:
     """Map an evidence kind + its honesty flags to ONE credibility tier.
@@ -113,10 +115,27 @@ def classify_credibility(
     unenforced this is exactly how a measured 48%-of-theory result came to be
     stamped ``executed_solver_result``.
 
+    ``geometry_stale`` downgrades the same way, and for the same reason: a
+    completed run whose deck was built for a geometry revision the package has
+    since moved past reports the OLD model's numbers. That is a *positive*
+    finding — the revision counter says the model changed.
+
+    ``mesh_accuracy_judged=False`` deliberately does **not** downgrade. It says
+    the package recorded that it could not judge this mesh at all (a hollow or
+    highly non-convex body, where the bounding box is the outer envelope and not
+    a wall — ``simulation_runner`` writes ``band: null`` with
+    ``measured_on: "not_determined"``). Unknown is not the same fact as known-bad:
+    ``unverified`` is rank 0, the same rank as "no solver ran", so downgrading an
+    unjudged mesh would under-claim a real solve as hard as the original defect
+    over-claimed a bad one. It is recorded as a **qualification** instead — the
+    rank stands, and the stamp says what was not checked. Collapsing "nothing
+    recorded" into "recorded, and it is bad" is precisely what the tri-state
+    discipline elsewhere in this codebase exists to prevent.
+
     Returns a self-describing stamp::
 
         {tier, rank, label, evidence_basis, production_ready, tier_order,
-         signals, [downgrade_reason], [notes]}
+         signals, [downgrade_reason], [qualifications], [notes]}
 
     Pure. ``production_ready`` is forced ``False`` unless explicitly ``True`` —
     the workbench never certifies production-readiness by default.
@@ -129,6 +148,18 @@ def classify_credibility(
         base = None
         downgrade_reason = (
             "evidence_kind claims a solver result but solver_executed is not true"
+        )
+    elif base == "executed_solver_result" and geometry_stale is True:
+        # The run completed, on a deck built for geometry the package has since
+        # moved past. Its numbers describe the OLD model — the same wrong answer
+        # the `stale_deck` refusal guards at run time, reached here for a result
+        # that was already solved before the edit.
+        base = None
+        downgrade_reason = (
+            "a solver ran, but its deck was built for a different geometry "
+            "revision than the package is at now — these numbers describe the "
+            "model before the edit; re-mesh, generate a new run's deck and "
+            "solve again"
         )
     elif base == "executed_solver_result" and str(mesh_accuracy_band or "").lower() == "unreliable":
         # A solver DID run — but on a mesh that cannot resolve the result it was
@@ -157,6 +188,18 @@ def classify_credibility(
         meta = _TIER_META[base]
         tier = base
 
+    # Qualifications state what the tier does NOT rest on. They never move the
+    # rank — see the docstring on `mesh_accuracy_judged`.
+    qualifications: list[str] = []
+    if tier == "executed_solver_result" and mesh_accuracy_judged is False:
+        qualifications.append(
+            "the mesh accuracy band is UNKNOWN, not good: the package records "
+            "that it could not judge this mesh (a hollow or highly non-convex "
+            "body has no wall its bounding box describes). The solver result "
+            "stands, but nothing here says the mesh could resolve it — run "
+            "cae.mesh_convergence before relying on the number"
+        )
+
     signals = {
         "evidence_kind": kind or None,
         "solver_executed": solver_executed,
@@ -165,6 +208,8 @@ def classify_credibility(
         "bolt_preload_modeled": bolt_preload_modeled,
         "uncertainty_std": uncertainty_std,
         "mesh_accuracy_band": mesh_accuracy_band,
+        "mesh_accuracy_judged": mesh_accuracy_judged,
+        "geometry_stale": geometry_stale,
     }
     signals = {k: v for k, v in signals.items() if v is not None}
 
@@ -179,6 +224,8 @@ def classify_credibility(
     }
     if downgrade_reason:
         out["downgrade_reason"] = downgrade_reason
+    if qualifications:
+        out["qualifications"] = qualifications
     if notes:
         out["notes"] = notes
     return out

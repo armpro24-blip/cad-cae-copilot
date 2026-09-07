@@ -338,6 +338,36 @@ class TestTheExportedPackageCanExplainItself:
             "the re-solve validated the current geometry, so these must agree"
         )
 
+    def test_the_completed_re_solve_is_not_reported_stale(self, acceptance) -> None:
+        """The correct sequence must not trip the staleness downgrade.
+
+        `geometry_stale` demotes a rank-4 stamp when the run behind the standing
+        metrics was solved for a geometry the package has moved past. Here the
+        edit was followed by a re-mesh, a NEW run's deck and a fresh solve — the
+        documented happy path, and the deliverable of the one task this
+        workbench promises. `edit_impact.stale` is still set on this package
+        (only a CAD write clears it), so a rule keyed on that flag rather than
+        on each deck's recorded revision would downgrade this very result.
+        """
+        from aieng.cae_result_summary import read_solver_evidence
+        from aieng.converters.credibility import classify_credibility
+
+        with zipfile.ZipFile(acceptance["exported"]) as zf:
+            evidence = read_solver_evidence(zf)
+
+        assert evidence["solver_executed"] is True
+        assert evidence["geometry_stale"] is False, evidence
+
+        stamp = classify_credibility(
+            "solver",
+            solver_executed=evidence["solver_executed"],
+            mesh_accuracy_band=evidence["mesh_accuracy_band"],
+            mesh_accuracy_judged=evidence["mesh_accuracy_judged"],
+            geometry_stale=evidence["geometry_stale"],
+        )
+        assert stamp["tier"] == "executed_solver_result", stamp
+        assert "downgrade_reason" not in stamp, stamp
+
 
 def test_a_run_id_that_contradicts_the_deck_is_refused(acceptance) -> None:
     """Two ways to name the run, and the results go under only one of them."""
