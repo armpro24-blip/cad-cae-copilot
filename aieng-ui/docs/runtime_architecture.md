@@ -88,8 +88,7 @@ aieng local runtime          ← backend/app/runtime.py  (already exists)
         ├── cae.prepare_solver_run
         ├── cae.generate_solver_input
         ├── cae.run_solver         (approval-gated)
-        ├── cae.write_mesh_handoff
-        └── mcp.check / mcp.parse_patch / mcp.prepare_execution
+        └── cae.write_mesh_handoff
 ```
 
 Each tool in `_REGISTRY` maps directly to one MCP tool definition. The MCP

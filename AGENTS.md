@@ -1565,14 +1565,6 @@ and freeform/NURBS fitting remains future work.
 | `aieng.write_evidence_scaffold` | Initialize `results/evidence_index.json` scaffold |
 | `aieng.delete_project` | **[APPROVAL]** Permanently delete a project — its directory + chat sessions/messages. Irreversible. A file it cannot remove (something still holds it open) is reported as `code: "partial_delete"` with the leftovers named, and the project stays listed so the delete can be retried — never as a success |
 
-### MCP introspection
-
-| Tool | Purpose |
-|------|---------|
-| `mcp.check` | Guardrails, capability gaps, operation policy for this project |
-| `mcp.parse_patch` | Validate a patch proposal without applying it |
-| `mcp.prepare_execution` | Dry-run a patch proposal and return preflight side effects |
-
 ---
 
 ## Recommended workflows

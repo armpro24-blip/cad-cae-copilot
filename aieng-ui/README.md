@@ -73,9 +73,6 @@ conflated. Key tools listed below; full registry available via `GET /api/runtime
 | `cad.edit_parameter` | Working — fast build123d parametric edit: replaces a named UPPER_SNAKE_CASE constant in `geometry/source.py` and re-executes (no LLM). Validated against the parameter's declared `min`/`max`; on build failure the prior geometry is preserved. Approval-gated. |
 | `postprocess.generate_computed_metrics` | Working — normalizes external metrics into `computed_metrics.json` and writes it back into the `.aieng` package |
 | `postprocess.refresh_cae_summary` | Working — regenerates CAE result summary, evidence index, and markdown |
-| `mcp.check` | Working — checks MCP guardrails, capability gaps, operation policy |
-| `mcp.parse_patch` | Working — parses an `.aieng` patch proposal without executing |
-| `mcp.prepare_execution` | Working — dry-run `.aieng` patch proposal; returns preflight side effects |
 | `cae.apply_setup_patch` | Working — controlled patches to CAE setup artifacts |
 | `cae.extract_solver_results` | Working — parses CalculiX FRD and writes `computed_metrics.json` |
 | `cae.prepare_solver_run` | Working — preflight inspection, no solver execution |
