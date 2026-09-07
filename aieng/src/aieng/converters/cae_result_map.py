@@ -95,14 +95,17 @@ def map_cae_results(
     object_registry: dict[str, Any] | None,
     solver_executed: bool | None = None,
     mesh_accuracy_band: str | None = None,
+    mesh_accuracy_judged: bool | None = None,
+    geometry_stale: bool | None = None,
 ) -> dict[str, Any]:
     """Correlate NEUTRAL CAE results with Shape IR nodes. Pure; neutral dicts in.
 
     ``computed_metrics`` is a neutral computed_metrics doc (load_cases[].results[]);
     ``field_regions`` is a neutral field_regions doc (regions[]).
 
-    ``solver_executed`` and ``mesh_accuracy_band`` are the package's solver
-    evidence, and they decide the credibility stamp. They are parameters rather than
+    ``solver_executed``, ``mesh_accuracy_band``, ``mesh_accuracy_judged`` and
+    ``geometry_stale`` are the package's solver evidence, and they decide the
+    credibility stamp. They are parameters rather than
     something this pure function guesses: the neutral artifacts say what the
     numbers ARE, not whether a solver produced them. Omitted, the stamp
     downgrades to ``unverified`` — the honest answer when no evidence was
@@ -269,6 +272,8 @@ def map_cae_results(
                 # cannot be read back.
                 "solver_executed": solver_executed,
                 "mesh_accuracy_band": mesh_accuracy_band,
+                "mesh_accuracy_judged": mesh_accuracy_judged,
+                "geometry_stale": geometry_stale,
                 "read_from_package": solver_executed is not None,
                 "results_present": has_results,
             },
@@ -282,6 +287,8 @@ def map_cae_results(
             # otherwise stamp an empty map as an executed-solver result.
             solver_executed=(solver_executed is True and has_results),
             mesh_accuracy_band=mesh_accuracy_band,
+            mesh_accuracy_judged=mesh_accuracy_judged,
+            geometry_stale=geometry_stale,
         ),
     }
 
@@ -312,6 +319,8 @@ def build_cae_result_map_for_package(package_path: str | Path) -> dict[str, Any]
         object_registry=object_registry,
         solver_executed=evidence["solver_executed"],
         mesh_accuracy_band=evidence["mesh_accuracy_band"],
+        mesh_accuracy_judged=evidence["mesh_accuracy_judged"],
+        geometry_stale=evidence["geometry_stale"],
     )
     result["provenance"]["artifact_source"] = neutral["source"]
     return result

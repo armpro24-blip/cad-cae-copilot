@@ -1238,6 +1238,35 @@ returned **48% of the analytical root stress** — non-conservative — and were
 stamped `executed_solver_result` with no warning. A `reliable` or `marginal`
 band, or a package with no mesh metadata at all, leaves the tier untouched.
 
+**A result solved before the edit is downgraded too (`geometry_stale`).** The
+`stale_deck` guard refuses to *solve* a deck built for another geometry
+revision, but a run that completed **before** an edit keeps its rank-4 stamp
+afterwards while describing the old model. So each run's
+`deck_provenance.json` revision is compared against the package's current one:
+a mismatch downgrades to `unverified`, and the result summary's `claim_tier`
+becomes `stale_geometry`. Read from that provenance and **not** from
+`edit_impact.stale` — `cad.edit_parameter` sets that flag and only a CAD write
+clears it, so the correct sequence (edit → re-mesh → new run's deck → solve)
+leaves it standing, and a rule keyed on it would fire on every correct
+re-solve. Which run is judged is the one `results/computed_metrics.json` names
+as its source, else the only completed run; several completed runs with no
+recorded source is **unattributable**, reported as unknown rather than guessed
+by run-id order.
+
+**An unjudged mesh QUALIFIES the claim; it does not downgrade it
+(`mesh_accuracy_judged`).** `cae.generate_mesh` writes `band: null` with
+`measured_on: "not_determined"` when it cannot judge accuracy at all — a hollow
+or highly non-convex body, whose bounding box is the outer envelope and not a
+wall, so there is no thickness to count elements through. That used to read
+identically to "this package was meshed before accuracy existed", because both
+are simply no band. It is now a separate signal, and it is deliberately **not**
+a downgrade: `unverified` is rank 0, the same rank as "no solver ran", so
+demoting an unjudged mesh would under-claim a real solve as hard as the original
+defect over-claimed a bad one. Unknown is not known-bad. Instead the stamp
+carries a `qualifications` list (and the result summary the same, beside an
+unchanged `claim_tier`) saying the band is unknown rather than good, and to run
+`cae.mesh_convergence` before relying on the number.
+
 **A producer must READ its evidence, not assert it.** The classifier can only
 downgrade a claim its caller has not already decided. `analysis/cae_result_map.json`
 passed `solver_executed=True` as a literal, so on that path the invariant was
@@ -1245,9 +1274,14 @@ unreachable: measured on the #368 cantilever, a package with its solver-run
 evidence removed still stamped `executed_solver_result` while the result summary
 — same package, same classifier — said `imported_computed_metrics`. Every
 artifact carrying a `credibility` stamp derives its flags from
-`cae_result_summary.read_solver_evidence(zf)` (completed `simulation/runs/*/solver_run.json`
-plus the mesh band). If you add another, use that reader; a stamp with no
-evidence behind it downgrades to `unverified`, which is the honest answer.
+`cae_result_summary.read_solver_evidence(zf)` (completed `simulation/runs/*/solver_run.json`,
+the mesh band and whether it was judged at all, and the geometry-revision
+comparison). If you add another, use that reader; a stamp with no evidence behind
+it downgrades to `unverified`, which is the honest answer. The field-descriptor
+endpoint was the last stamp that did not: `GET /api/projects/{id}/fields/{name}`
+stamped an FRD-backed field rank 4 with no mesh or geometry evidence, so the
+same package could report `unreliable_mesh` in its summary and
+"Executed-solver result" for the field it serves.
 
 ### The result states are separate questions — read the right one
 

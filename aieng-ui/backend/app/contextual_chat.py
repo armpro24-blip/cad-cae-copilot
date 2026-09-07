@@ -101,7 +101,14 @@ def _append_canonical_result_summary(parts: list[str], summary: dict[str, Any]) 
 
     if computed.get("extrema_computed"):
         tier = str(contract.get("claim_tier") or "imported_computed_metrics")
-        if contract.get("solver_execution_evidence") is True:
+        if tier == "unreliable_mesh":
+            label = "SOLVER RESULT — UNRELIABLE MESH"
+        elif tier == "stale_geometry":
+            # A run completed, for geometry the package has since moved past.
+            # `solver_execution_evidence` is still true, so keying the headline
+            # on that alone printed these numbers as the design's result.
+            label = "SOLVER RESULT — STALE GEOMETRY"
+        elif contract.get("solver_execution_evidence") is True:
             label = "SOLVER RESULT"
         elif tier == "legacy_rest_result":
             label = "LEGACY REST RESULT"

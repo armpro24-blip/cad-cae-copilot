@@ -103,6 +103,10 @@ def test_the_evidence_behind_the_stamp_is_recorded() -> None:
     assert provenance["solver_evidence"] == {
         "solver_executed": True,
         "mesh_accuracy_band": "marginal",
+        # Recorded as given, `None` included: "the caller supplied no answer" is
+        # itself auditable, and is not the same as False.
+        "mesh_accuracy_judged": None,
+        "geometry_stale": None,
         "read_from_package": True,
         "results_present": True,
     }

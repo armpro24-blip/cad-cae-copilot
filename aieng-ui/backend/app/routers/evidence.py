@@ -52,12 +52,45 @@ _FIELD_SYNTHETIC_DEFAULTS: dict[str, dict[str, Any]] = {
 }
 
 
-def _field_credibility(source: str, aieng_root: Path) -> dict[str, Any]:
+def _package_solver_evidence(package_path: Path | None) -> dict[str, Any]:
+    """The package's own solver evidence, or `{}` when it cannot be read.
+
+    `{}` (rather than fabricated flags) keeps every signal at `None`, which the
+    classifier treats as "nothing recorded" — the honest answer when there is no
+    package to ask.
+    """
+    if package_path is None or not package_path.exists():
+        return {}
+    try:
+        from aieng.cae_result_summary import read_solver_evidence  # type: ignore[import]
+
+        with zipfile.ZipFile(package_path, "r") as zf:
+            return dict(read_solver_evidence(zf))
+    except Exception:  # noqa: BLE001 - an unreadable package is not a field error
+        log_exception(
+            LOGGER,
+            "Could not read solver evidence for a field credibility stamp.",
+            subsystem="evidence.field_credibility",
+            context={"package": str(package_path)},
+        )
+        return {}
+
+
+def _field_credibility(
+    source: str, aieng_root: Path, *, package_path: Path | None = None
+) -> dict[str, Any]:
     """Return the V&V-40 credibility stamp for a field descriptor response.
 
     FRD-backed fields are stamped as ``executed_solver_result``; imported VTU
     fields are external result evidence but not proof that this workbench ran the
     solver; synthetic fallbacks are downgraded to ``unverified``.
+
+    The FRD branch reads the package's mesh and geometry evidence so the same
+    invariants that guard the result summary guard this stamp. Without it a field
+    served off an ``unreliable`` mesh, or off a run superseded by a geometry
+    edit, came back rank 4 while the summary for that very package said
+    ``unreliable_mesh`` — two surfaces of one classifier disagreeing about
+    honesty is a defect in the one that claims more.
     """
     aieng_src = aieng_root / "src"
     injected = False
@@ -68,10 +101,18 @@ def _field_credibility(source: str, aieng_root: Path) -> dict[str, Any]:
         from aieng.converters.credibility import classify_credibility  # type: ignore[import]
 
         if source == "frd":
+            evidence = _package_solver_evidence(package_path)
             return classify_credibility(
                 "solver",
+                # `True` rests on the parsed FRD this branch was reached with —
+                # solver output read out of this package, not an assertion. The
+                # mesh and geometry questions it cannot answer come from the
+                # package's own evidence reader.
                 solver_executed=True,
                 is_solver_evidence=True,
+                mesh_accuracy_band=evidence.get("mesh_accuracy_band"),
+                mesh_accuracy_judged=evidence.get("mesh_accuracy_judged"),
+                geometry_stale=evidence.get("geometry_stale"),
                 notes="Per-node FRD data extracted from an executed solver run.",
             )
         if source == "vtu":
@@ -395,7 +436,9 @@ def register_evidence_routes(app: FastAPI, *, active_settings: Any) -> None:
                 "node_coords": frd_data["node_coords"],
                 "vectors": frd_data.get("vectors"),
                 "warnings": frd_data["warnings"],
-                "credibility": _field_credibility("frd", active_settings.aieng_root),
+                "credibility": _field_credibility(
+                    "frd", active_settings.aieng_root, package_path=pkg
+                ),
             }
 
         # No FRD — try an external VTU result (Code_Aster / ParaView / Elmer export).
