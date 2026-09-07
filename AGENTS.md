@@ -1032,6 +1032,29 @@ reports stale face references, the first recommendation will be to rebind via
 `ai_preprocessing.run_ai_preprocessing` (or `cae.apply_setup_patch`) before the
 solver is offered.
 
+**It checks the same two revisions the guards downstream of it check.** It used
+to check neither, so after a parameter edit — called the documented way, with no
+`run_id` — it defaulted to `run_001`, found that *baseline* deck present, and
+measured:
+
+```
+ready_to_run  : True
+missing_items : []
+recommended   : cae.run_solver  input_deck_path=simulation/runs/run_001/solver_input.inp
+```
+
+That is the pre-edit deck. `stale_deck` refuses it, so no wrong number escaped —
+but the answer was "ready", the recommendation was the one action guaranteed to
+be refused, and the way forward went unnamed. The preflight now reports
+`stale_mesh` and `stale_deck` in `missing_items` (with both revisions), exposes
+them in the `preflight` block beside the revisions they were read from, and
+recommends `cae.generate_mesh` first (a deck generated on the old mesh is
+refused) and then `cae.generate_solver_input` under the **next free run id** —
+from the same helper the deck generator's refusal quotes, so the two cannot name
+different ids. A `None` revision on either side stays "cannot tell", never
+"stale". The recommendation also no longer carries `overwrite: true`, which
+AGENTS.md itself calls the option that destroys the earlier result.
+
 **It also reads the setup back in engineering language (`setup_description`).**
 The same response states what is actually bound — material, which face is held,
 where the load acts with its magnitude and direction, and whether a mesh

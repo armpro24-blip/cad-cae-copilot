@@ -166,7 +166,7 @@ def generate_solver_input_package(
                 # run you are comparing against.
                 raise FileExistsError(
                     f"{out_path_in_zip} already exists. Pass a new run_id "
-                    f"(e.g. run_id='{_next_run_id(names)}') to solve the current "
+                    f"(e.g. run_id='{next_run_id(names)}') to solve the current "
                     "geometry while keeping this run, or overwrite=True to "
                     "replace it and lose the earlier result."
                 )
@@ -1152,8 +1152,15 @@ def _step_block(
 # ---------------------------------------------------------------------------
 
 
-def _next_run_id(names: set[str]) -> str:
-    """The first `run_NNN` not already in the package."""
+def next_run_id(names: set[str]) -> str:
+    """The first `run_NNN` not already in the package.
+
+    Public because two surfaces must name the SAME free id: the refusal below
+    ("pass a new run_id, e.g. ...") and `cae.prepare_solver_run`, whose whole
+    job is to say what to call next. Two independent guesses would eventually
+    disagree, and the one that guessed `run_001` would be recommending the
+    baseline the caller is comparing against.
+    """
     used = set()
     for name in names:
         parts = name.split("/")
