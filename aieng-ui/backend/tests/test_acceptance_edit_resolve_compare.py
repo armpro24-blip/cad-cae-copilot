@@ -311,6 +311,27 @@ class TestTheExportedPackageCanExplainItself:
         assert first["geometry_revision"] == 0, first
         assert second["geometry_revision"] == 1, second
 
+    def test_each_deck_records_which_faces_it_actually_bound(self, acceptance) -> None:
+        """The revision says the model changed; it cannot say what was loaded.
+
+        Recorded per run so the comparison can check that both runs restrained
+        and loaded the same NUMBER of faces — losing two of four bolt holes is
+        a different problem, and no resize produces it.
+        """
+        for run in ("run_001", "run_002"):
+            provenance = _member(
+                acceptance["exported"], f"simulation/runs/{run}/deck_provenance.json"
+            )
+            bindings = provenance.get("setup_bindings")
+            assert isinstance(bindings, dict) and bindings, f"{run}: {provenance}"
+            assert all(
+                isinstance(faces, list) and faces for faces in bindings.values()
+            ), bindings
+
+    def test_the_comparison_confirms_both_runs_bound_the_same_count(self, acceptance) -> None:
+        comparison = acceptance["comparison"]
+        assert comparison["binding_count_changed"] is False, comparison["warnings"]
+
     def test_the_package_says_which_geometry_revision_was_validated(self, acceptance) -> None:
         status = _member(acceptance["exported"], "state/revalidation_status.json")
         assert status["current_geometry_revision"] == status["last_validated_geometry_revision"], (

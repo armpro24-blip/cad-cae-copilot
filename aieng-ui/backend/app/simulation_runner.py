@@ -764,6 +764,37 @@ def _write_members_to_package(package_path: Path, files: dict[str, bytes]) -> No
 _ELEMENTS_THROUGH_THICKNESS_BANDS = {1: (6.0, 3.0), 2: (1.5, 1.0)}
 
 
+#: A bounding box overstates the thin direction of a HOLLOW body by however
+#: hollow it is. `2 * volume / area` is the wall thickness of a thin shell, so
+#: when it falls far below the box's smallest side the two proxies contradict
+#: each other and the box cannot be trusted. Deliberately a contradiction test
+#: rather than a shape classifier: a tapered gusset (2V/A = 3.75 mm vs a 6 mm
+#: box side, ratio 0.63) and a slender beam (6.32 vs 10, ratio 0.63) keep their
+#: box verdict, while a 3 mm-walled housing (2.92 vs 40, ratio 0.07) does not.
+_BBOX_CONTRADICTED_BELOW = 0.5
+
+
+class _BboxContradicted(Exception):
+    """A body's own volume contradicts its bounding box as a thickness."""
+
+    def __init__(self, body: str, bbox_mm: float, wall_mm: float) -> None:
+        super().__init__(body)
+        self.body = body
+        self.bbox_mm = bbox_mm
+        self.wall_mm = wall_mm
+
+
+def _wall_from_volume(entity: dict[str, Any]) -> float | None:
+    """`2 * V / A` — the wall thickness of a thin shell, or None if unknowable."""
+    volume = entity.get("volume")
+    area = entity.get("area") or entity.get("surface_area")
+    if not isinstance(volume, (int, float)) or not isinstance(area, (int, float)):
+        return None
+    if volume <= 0 or area <= 0:
+        return None
+    return 2.0 * float(volume) / float(area)
+
+
 def thinnest_body_extent(topology: dict[str, Any] | None) -> tuple[float, str] | None:
     """Smallest wall thickness among the model's solids → (mm, body name).
 
@@ -798,6 +829,22 @@ def thinnest_body_extent(topology: dict[str, Any] | None) -> tuple[float, str] |
             continue
         smallest = min(positive)
         name = str(entity.get("name") or entity.get("id") or "solid")
+        wall = _wall_from_volume(entity)
+        if wall is not None and wall < _BBOX_CONTRADICTED_BELOW * smallest:
+            # The box says this body is `smallest` mm thick and its own volume
+            # says otherwise. Measured on a 3 mm-walled housing: the box read
+            # 40 mm (the OUTER envelope of a hollow shell), so ~1 element
+            # through the real wall was stamped `reliable` and the credibility
+            # downgrade this band exists to trigger became unreachable for
+            # every thin-walled part — which is what `housing()` builds.
+            #
+            # `2V/A` is not used as the answer either: it conflates taper with
+            # hollowness, so it would mis-rule a gusset. Neither proxy is
+            # trustworthy here, and the honest report is that the band is
+            # undetermined. Returning `None` would NOT say that — `None` means
+            # "no usable solid data" and falls back to the mesh bounding box,
+            # which for a hollow body is the same wrong 40 mm.
+            raise _BboxContradicted(name, smallest, wall)
         if best is None or smallest < best[0]:
             best = (smallest, name)
     return best
@@ -983,13 +1030,44 @@ def generate_mesh_for_package(
     # Judge the mesh against the part that actually bends (the thinnest solid),
     # not the whole-model bounding box — see thinnest_body_extent.
     thinnest_override: tuple[float, str] | None = None
+    contradicted: _BboxContradicted | None = None
     try:
         topo_raw = _read_member(package_path, _TOPOLOGY_PATH)
         if topo_raw:
             thinnest_override = thinnest_body_extent(json.loads(topo_raw))
+    except _BboxContradicted as exc:
+        contradicted = exc
     except Exception as exc:  # noqa: BLE001 - fall back to the bbox rule
         LOGGER.info("could not read topology for mesh accuracy: %s", exc)
-    accuracy = assess_mesh_accuracy(nodes, element_type, size, thinnest_override)
+
+    if contradicted is not None:
+        through = contradicted.wall_mm / float(size) if size > 0 else 0.0
+        accuracy = {
+            "element_order": 2 if str(element_type or "").upper() in
+            {"C3D10", "C3D20", "C3D15"} else 1,
+            "element_type": element_type,
+            "band": None,
+            "reliable_for_bending": None,
+            "measured_on": "not_determined",
+            "governing_body": contradicted.body,
+            "thinnest_extent_mm": None,
+            "elements_through_thinnest": None,
+            "min_elements_required": None,
+            "wall_from_volume_mm": round(contradicted.wall_mm, 3),
+            "bbox_thinnest_mm": round(contradicted.bbox_mm, 3),
+            "reason": (
+                f"Cannot judge bending accuracy for {contradicted.body}: its "
+                f"bounding box is {contradicted.bbox_mm:.3g} mm across the thin "
+                f"direction, but its volume implies a wall of about "
+                f"{contradicted.wall_mm:.3g} mm — the box is the OUTER envelope "
+                "of a hollow or highly non-convex body, not a wall. At this mesh "
+                f"size that wall would carry roughly {through:.1f} element(s). "
+                "Treat the stress as unverified and run cae.mesh_convergence."
+            ),
+            "recommended_action": "cae.mesh_convergence",
+        }
+    else:
+        accuracy = assess_mesh_accuracy(nodes, element_type, size, thinnest_override)
 
     metadata = {
         "schema_version": "0.1",

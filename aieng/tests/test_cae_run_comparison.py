@@ -60,6 +60,7 @@ def _run_members(
     stress: float,
     geometry_revision: int | None,
     completed: bool = True,
+    bindings: dict[str, list[str]] | None = None,
 ) -> None:
     if displacement is not None:
         frd = _make_frd(
@@ -81,10 +82,25 @@ def _run_members(
         ),
     )
     if geometry_revision is not None:
+        provenance = {"run_id": run_id, "geometry_revision": geometry_revision}
+        if bindings is not None:
+            provenance["setup_bindings"] = bindings
         zf.writestr(
-            f"simulation/runs/{run_id}/deck_provenance.json",
-            json.dumps({"run_id": run_id, "geometry_revision": geometry_revision}),
+            f"simulation/runs/{run_id}/deck_provenance.json", json.dumps(provenance)
         )
+
+
+def _bindings_package(
+    path: Path, *, before: dict | None, after: dict | None
+) -> Path:
+    """Two solved runs whose decks recorded the given setup bindings."""
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("manifest.json", json.dumps({"model_id": "beam"}))
+        _run_members(zf, "run_001", displacement=2.4, stress=140.0,
+                     geometry_revision=0, bindings=before)
+        _run_members(zf, "run_002", displacement=0.3, stress=34.0,
+                     geometry_revision=1, bindings=after)
+    return path
 
 
 def _package(
@@ -287,3 +303,88 @@ def test_a_missing_package_is_named(tmp_path: Path) -> None:
     result = compare_runs(tmp_path / "nope.aieng")
 
     assert result["code"] == "package_not_found"
+
+
+# ── did the two runs bind the same number of faces? ─────────────────────────
+
+
+def test_a_rebound_face_id_is_not_treated_as_a_different_setup(tmp_path: Path) -> None:
+    """The regression guard for a wrong diagnosis I made and had to walk back.
+
+    An edit that MOVES a bound face retires its id, so the deterministic
+    re-resolution correctly assigns a new one. Comparing ids therefore fires on
+    every legitimate rebind — the very shapes the rebind exists to support.
+    Measured on a thin-wall housing: the load went from `face_011` (3996 mm² =
+    74x54) to `face_013` (3264 mm² = 68x48), which is the SAME inner floor
+    face resized exactly as a wall going 3 mm to 6 mm dictates. An id test
+    called that a different setup and would have declared a correct comparison
+    invalid, on the canonical bracket too.
+    """
+    pkg = _bindings_package(
+        tmp_path / "rebound.aieng",
+        before={"load_001": ["face_011"], "bc_001": ["face_005"]},
+        after={"load_001": ["face_013"], "bc_001": ["face_005"]},
+    )
+
+    result = compare_runs(pkg)
+
+    assert result["status"] == "ok"
+    assert result["binding_count_changed"] is False
+    assert result["warnings"] == [], result["warnings"]
+
+
+def test_losing_bolt_holes_between_runs_is_flagged(tmp_path: Path) -> None:
+    """No resize turns four faces into two. A different restraint is a different problem."""
+    pkg = _bindings_package(
+        tmp_path / "holes.aieng",
+        before={"bc_001": ["face_007", "face_008", "face_009", "face_010"]},
+        after={"bc_001": ["face_011", "face_012"]},
+    )
+
+    result = compare_runs(pkg)
+
+    assert result["binding_count_changed"] is True
+    blob = " ".join(result["warnings"])
+    assert "4 face(s) in run_001 but 2 in run_002" in blob, blob
+    assert "may compare different restraints" in blob
+
+
+def test_a_binding_present_in_only_one_run_is_flagged(tmp_path: Path) -> None:
+    pkg = _bindings_package(
+        tmp_path / "dropped.aieng",
+        before={"load_001": ["face_011"], "bc_001": ["face_005"]},
+        after={"load_001": ["face_013"]},
+    )
+
+    result = compare_runs(pkg)
+
+    assert result["binding_count_changed"] is True
+    assert any("bc_001 is bound in run_001 only" in w for w in result["warnings"])
+
+
+def test_a_deck_that_recorded_no_bindings_is_unknown_not_false(tmp_path: Path) -> None:
+    """`None` = the package cannot say. A deck written before this field existed."""
+    pkg = _bindings_package(
+        tmp_path / "legacy.aieng",
+        before=None,
+        after={"load_001": ["face_013"]},
+    )
+
+    result = compare_runs(pkg)
+
+    assert result["binding_count_changed"] is None
+    assert any("cannot be established" in w for w in result["warnings"])
+
+
+def test_each_side_reports_the_faces_its_run_bound(tmp_path: Path) -> None:
+    """Traceability: the deliverable should say what each run actually held."""
+    pkg = _bindings_package(
+        tmp_path / "traceable.aieng",
+        before={"load_001": ["face_011"]},
+        after={"load_001": ["face_013"]},
+    )
+
+    result = compare_runs(pkg)
+
+    assert result["baseline"]["setup_bindings"] == {"load_001": ["face_011"]}
+    assert result["current"]["setup_bindings"] == {"load_001": ["face_013"]}

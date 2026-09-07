@@ -42,6 +42,7 @@ the way the directory it describes did.
 | [review-handoff-workflow.md](review-handoff-workflow.md) | Local-first review handoff |
 | [workbench_ui_comfort_benchmark.md](workbench_ui_comfort_benchmark.md) | The product UX benchmark the UI is held to |
 | [roadmap.md](roadmap.md) | The live workspace-level roadmap |
+| [naive-baseline-comparison-2026-09-07.md](naive-baseline-comparison-2026-09-07.md) | Measured: the workbench vs. plain build123d + gmsh + ccx on the same task — same numbers, 3.3x slower, and the injected stale-deck failure caught only by the workbench |
 
 ## Historical — kept for context, do not build from
 
