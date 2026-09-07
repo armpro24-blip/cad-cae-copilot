@@ -905,6 +905,25 @@ it as a result. This is still a bounding-box heuristic per body — a thin featu
 that is not axis-aligned is not captured — and **not** a convergence study:
 `cae.mesh_convergence` remains the real answer, and the `reason` says so.
 
+**A hollow body gets no band at all (`band: null`, `measured_on:
+"not_determined"`).** A bounding box overstates the thin direction of a hollow
+body by however hollow it is, so the per-body fix above does not reach one.
+Measured on a 3 mm-walled `housing()` at a 6 mm mesh: `thinnest_extent_mm: 40`
+— the OUTER envelope of the shell — and therefore `band: "reliable"`,
+`reliable_for_bending: true`, while roughly **0.5** elements crossed the real
+wall. The downgrade the band exists to trigger was unreachable for every
+thin-walled part, which is the shape `housing()` is for.
+
+The check is a **contradiction between two proxies**, not a shape classifier:
+`2 x volume / area` is the wall thickness of a thin shell, and when it falls
+below half the box's smallest side the box cannot be a wall. The housing lands
+at 2.92 mm against 40 mm (ratio 0.07) and is refused; a slender beam (6.32 vs
+10) and a tapered gusset (3.75 vs 6) both land at 0.63 and keep their box
+verdict, because `2V/A` conflates taper with hollowness and would mis-rule
+them. Neither proxy is trusted for the refused case — the response reports both
+numbers and points at `cae.mesh_convergence`. A body with no recorded volume
+keeps the old behaviour: absent evidence is not evidence of hollowness.
+
 **Installing CalculiX.** `cae.run_solver` needs the `ccx` executable available at runtime.
 
 - **Windows + conda (recommended):** create a dedicated environment so installing
@@ -1654,6 +1673,22 @@ visible rather than reading as an answer:
   warning that this compares two solves of the same geometry. That is exactly
   what the stale-deck defect looked like (0.0% change on a doubled thickness);
 - a deck with **no** recorded revision → `geometry_changed: null`, never `0`.
+
+**Each deck also records WHICH faces it bound** (`deck_provenance.json`'s
+`setup_bindings`, keyed by BC/load id rather than the generated NSET name), and
+`cae.compare_runs` reports `binding_count_changed` beside `geometry_changed`.
+Losing two of four bolt holes between runs means the second run solved a
+different restraint, and no resize produces that.
+
+It compares the **count**, deliberately not the face ids. An id test looked
+right and was wrong: an edit that moves a bound face retires its id, so
+deterministic re-resolution correctly assigns a new one, and comparing ids
+therefore fires on the very shapes the rebind exists to support. Measured on a
+thin-wall housing, the load went from `face_011` (3996 mm² = 74x54) to
+`face_013` (3264 mm² = 68x48) — the **same** inner floor face, resized exactly
+as a wall going 3 mm to 6 mm dictates. Flagging that would have called a
+correct comparison invalid, on the canonical bracket too. `null` means one deck
+recorded no bindings, which is not the same as "it bound nothing".
 
 The same comparison is a section of `report.generate`'s HTML ("Design Change
 (Before / After)"), which is the form a user is actually handed. A project with

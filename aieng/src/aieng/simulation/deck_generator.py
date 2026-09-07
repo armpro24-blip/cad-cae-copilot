@@ -58,6 +58,7 @@ from typing import Any
 import yaml
 
 from aieng import FORMAT_VERSION
+from aieng.simulation.cae_mapping_writer import mapping_target_id
 
 SOLVER_INPUT_PATH_TEMPLATE = "simulation/runs/{run_id}/solver_input.inp"
 
@@ -261,6 +262,15 @@ def generate_solver_input_package(
         "schema_version": "0.1",
         "run_id": run_id,
         "geometry_revision": geometry_revision,
+        # WHICH faces this deck held and loaded, keyed by the setup entity it
+        # serves. The geometry revision alone cannot tell two runs apart when
+        # the SETUP moved: measured on a thin-wall housing, an edit retired the
+        # load face, deck-time re-resolution honestly moved the load from
+        # face_011 (3996 mm²) to face_013 (3264 mm²), and the before/after then
+        # reported +100% displacement for two DIFFERENT load applications with
+        # no indication. A delta across different setups is not a comparison of
+        # a design change, so each deck records what it actually solved.
+        "setup_bindings": _setup_bindings(cae_mapping),
         "generated_at_utc": datetime.now(timezone.utc)
         .replace(microsecond=0)
         .isoformat()
@@ -1065,6 +1075,26 @@ def _next_run_id(names: set[str]) -> str:
     while f"run_{index:03d}" in used:
         index += 1
     return f"run_{index:03d}"
+
+
+def _setup_bindings(cae_mapping: Any) -> dict[str, list[str]]:
+    """`{setup entity id: sorted face ids}` for everything this deck binds.
+
+    Keyed by the BC/load id rather than the NSET name, because the NSET name is
+    generated and can change without the physics changing, while the entity id
+    is what the setup itself calls the thing.
+    """
+    if not isinstance(cae_mapping, dict):
+        return {}
+    out: dict[str, list[str]] = {}
+    for mapping in cae_mapping.get("mappings") or []:
+        target = mapping_target_id(mapping)
+        if not target:
+            continue
+        faces = sorted(str(f) for f in (mapping.get("face_ids") or []))
+        if faces:
+            out[target] = faces
+    return out
 
 
 def _current_geometry_revision(zf: zipfile.ZipFile) -> int:

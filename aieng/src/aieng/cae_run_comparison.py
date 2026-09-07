@@ -100,6 +100,7 @@ def list_runs(package_path: str | Path) -> list[dict[str, Any]]:
                     "finished_at": None,
                     "solver_run_member": None,
                     "deck_provenance_member": None,
+                    "setup_bindings": None,
                 },
             )
             if member.endswith(_FRD_SUFFIX) and f"/{run_id}/outputs/" in member:
@@ -126,6 +127,14 @@ def list_runs(package_path: str | Path) -> list[dict[str, Any]]:
                     record["geometry_revision"] = (
                         int(revision) if isinstance(revision, int) else None
                     )
+                    bindings = data.get("setup_bindings")
+                    # `None` = the deck did not record what it bound, which is
+                    # not the same as "it bound nothing".
+                    if isinstance(bindings, dict):
+                        record["setup_bindings"] = {
+                            str(k): sorted(str(f) for f in (v or []))
+                            for k, v in bindings.items()
+                        }
     return [runs[key] for key in sorted(runs, key=_sort_key)]
 
 
@@ -245,6 +254,56 @@ def _pick(
             ),
         }
     return match, None
+
+
+def _compare_setups(
+    baseline: dict[str, Any], current: dict[str, Any]
+) -> tuple[bool | None, list[str]]:
+    """Did the two runs bind the same NUMBER of faces per setup entity?
+
+    Deliberately not "the same face ids". Comparing ids looked right and was
+    wrong: an edit that moves a bound face retires its id, so the deterministic
+    re-resolution correctly gives it a new one, and an id test therefore fires
+    on the very shapes the rebind exists to support. Measured while building
+    this: on a thin-wall housing the load went from `face_011` (3996 mm² =
+    74x54) to `face_013` (3264 mm² = 68x48) — the SAME inner floor face,
+    resized exactly as a wall going 3 mm to 6 mm dictates. Flagging that as
+    "the two runs did not solve the same setup" would have called a correct
+    comparison invalid, on the canonical bracket too.
+
+    A change in the face COUNT is different: no resize produces it. Losing two
+    of four bolt holes means the run solved a different restraint, and that is
+    worth stopping on.
+    """
+    before = baseline.get("setup_bindings")
+    after = current.get("setup_bindings")
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return None, [
+            "At least one deck records which faces it bound, the other does not, "
+            "so whether both runs restrained and loaded the same number of faces "
+            "cannot be established from the package."
+        ]
+
+    warnings: list[str] = []
+    for target in sorted(set(before) | set(after)):
+        was, now = before.get(target), after.get(target)
+        if was is None:
+            warnings.append(f"{target} is bound in {current['run_id']} only.")
+        elif now is None:
+            warnings.append(f"{target} is bound in {baseline['run_id']} only.")
+        elif len(was) != len(now):
+            warnings.append(
+                f"{target} acted on {len(was)} face(s) in {baseline['run_id']} "
+                f"but {len(now)} in {current['run_id']} ({was} vs {now})."
+            )
+    if warnings:
+        warnings.insert(
+            0,
+            "THE TWO RUNS DID NOT BIND THE SAME NUMBER OF FACES, so the deltas "
+            "below may compare different restraints rather than a design change:",
+        )
+        return True, warnings
+    return False, []
 
 
 def compare_runs(
@@ -376,6 +435,9 @@ def compare_runs(
                 )
             )
 
+    setup_changed, setup_warnings = _compare_setups(baseline, current)
+    warnings.extend(setup_warnings)
+
     before_rev = baseline["geometry_revision"]
     after_rev = current["geometry_revision"]
     if before_rev is None or after_rev is None:
@@ -400,6 +462,11 @@ def compare_runs(
         "baseline": _side(baseline, explicit=bool(baseline_run)),
         "current": _side(current, explicit=bool(current_run)),
         "geometry_changed": geometry_changed,
+        # A different question from `geometry_changed`: did both runs restrain
+        # and load the same number of faces? `true` means the deltas may be
+        # comparing different restraints. Face IDS are deliberately not
+        # compared — see `_compare_setups`.
+        "binding_count_changed": setup_changed,
         "comparison": comparison,
         "warnings": warnings,
     }
@@ -415,6 +482,7 @@ def _side(run: dict[str, Any], *, explicit: bool) -> dict[str, Any]:
         "solver": run["solver"],
         "finished_at": run["finished_at"],
         "result_file": run["frd_member"],
+        "setup_bindings": run["setup_bindings"],
         "solver_run_record": run["solver_run_member"],
         "deck_provenance": run["deck_provenance_member"],
     }
