@@ -162,7 +162,7 @@ def test_parse_inp_elements_c3d4() -> None:
         inp.write_text(_MINIMAL_MESH_INP)
         elements = _parse_inp_elements(inp)
 
-    assert len(elements) == 1
+    assert len(elements) == 2
     assert elements[0]["id"] == 1
     assert elements[0]["type"] == "C3D4"
     assert elements[0]["nodes"] == [1, 2, 3, 4]
@@ -434,10 +434,14 @@ _MINIMAL_MESH_INP = """\
 5, 14.0, 10.0, 5.0
 *Element, type=C3D4, ELSET=EALL
 1, 1, 2, 3, 4
+2, 2, 3, 4, 5
 """
 # Node 4 lands on the top face (face_002 → load NSET); node 5 on the cylinder
 # surface (face_003 → fixed-support NSET) so the full-mock run resolves both
 # the load and the BC and reaches the solver (see fail-fast on empty mappings).
+# Node 5 belongs to element 2: face binding only takes nodes on the mesh's free
+# boundary, and a node no element uses restrains nothing — the fixture used to
+# "bind" its BC to exactly such a dangling node.
 
 
 def test_build_calculix_deck_structure() -> None:

@@ -256,6 +256,16 @@ def _describe_cae_setup(package_path: Path) -> list[str]:
             )
     for load in (loads.get("loads") or []):
         if isinstance(load, dict):
+            if str(load.get("type") or "").lower() == "pressure":
+                pressure = load.get("pressure_mpa")
+                lines.append(
+                    "load: pressure {} MPa normal to the face (+ = into it) on {}".format(
+                        f"{float(pressure):g}" if isinstance(pressure, (int, float))
+                        and not isinstance(pressure, bool) else "(magnitude not recorded)",
+                        _render(load.get("target")),
+                    )
+                )
+                continue
             newtons, direction = _load_magnitude_and_direction(load)
             if newtons is None:
                 lines.append(
@@ -1118,12 +1128,25 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         ]
         loads: list[dict[str, Any]] = []
         if load_hit is not None:
-            share = force_n / len(load_hit["face_ids"])
+            # A force spread over several faces is one uniform traction, so each
+            # face carries its AREA share. An equal share per face put the same
+            # newtons on a 10 mm² face as on a 1000 mm² one.
+            face_area = {
+                str(e.get("id")): float(e.get("area") or 0.0)
+                for e in (topology.get("entities") or [])
+                if isinstance(e, dict) and e.get("type") == "face"
+            }
+            areas = [face_area.get(str(fid), 0.0) for fid in load_hit["face_ids"]]
+            total_area = sum(areas)
+            shares = (
+                [force_n * a / total_area for a in areas] if total_area > 0 and all(areas)
+                else [force_n / len(areas)] * len(areas)
+            )
             loads = [
                 {"id": f"load_{i + 1:03d}", "type": "force", "target": f"@face:{fid}",
                  "target_selector": load_selector,
                  "value_n": share, "direction": direction}
-                for i, fid in enumerate(load_hit["face_ids"])
+                for i, (fid, share) in enumerate(zip(load_hit["face_ids"], shares))
             ]
             patches.append({
                 "action_type": "create_file",
