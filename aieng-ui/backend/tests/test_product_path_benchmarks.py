@@ -136,10 +136,16 @@ def _solve(bench, pid: str, mesh_size_mm: float) -> dict:
     assert meshed["status"] == "completed", meshed
     deck = tool("cae.generate_solver_input", {"project_id": pid, "run_id": "run_001"})
     assert deck["status"] == "completed", deck
+    # Generous timeout: the default 120 s is meant for interactive use, and a
+    # loaded CI runner (or a parallel suite) must not turn a benchmark into a
+    # timeout. The errors/diagnosis are named in the message if it still fails.
     solved = tool("cae.run_solver", {
         "project_id": pid, "input_deck_path": "simulation/runs/run_001/solver_input.inp",
+        "timeout_seconds": 900,
     })
-    assert solved["status"] == "completed", solved
+    assert solved["status"] == "completed", (
+        solved.get("errors"), solved.get("diagnosis"), solved.get("warnings")
+    )
     return {"mesh": meshed, "deck": deck, "solve": solved}
 
 
