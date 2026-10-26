@@ -59,6 +59,10 @@
             "minItems": 3,
             "maxItems": 3
           },
+          "pressure_mpa": {
+            "$comment": "A pressure load (`type: pressure`): MPa normal to the target face, positive pushing INTO it (the CalculiX/Abaqus P convention), so a tensile edge load is negative. Emitted as *DLOAD face pressures over the element faces the target covers; it follows the surface normal, which a single force direction cannot express on a curved face.",
+            "type": "number"
+          },
           "target_selector": {
             "$comment": "The engineering-language phrase that CHOSE this target face, e.g. \"rib_main top\", recorded beside the `@face:` pointer it resolved to. A resolved pointer cannot survive an edit that MOVES the face: the id retires and the binding resolves to nothing. Deck-time binding re-runs the same deterministic resolver over this phrase to recover the face, and refuses ambiguity exactly as the authoring path does. Absent on a document written before this field existed, which keeps the conservative refusal rather than guessing.",
             "type": "string",
@@ -78,9 +82,20 @@
               "value_n",
               "direction"
             ]
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "pressure"
+              }
+            },
+            "required": [
+              "type",
+              "pressure_mpa"
+            ]
           }
         ],
-        "$comment": "Either form is complete: `dof` + `value` is how a solver deck states a load, `value_n` + `direction` is how an engineer does, and the deck generator decomposes the latter into the former."
+        "$comment": "Each form is complete: `dof` + `value` is how a solver deck states a load, `value_n` + `direction` is how an engineer does (the deck generator decomposes it into the former), and `type: pressure` + `pressure_mpa` is a surface pressure emitted as *DLOAD."
       }
     },
     "parser": {

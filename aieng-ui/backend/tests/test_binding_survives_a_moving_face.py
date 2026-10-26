@@ -27,6 +27,8 @@ import json
 import zipfile
 from pathlib import Path
 
+import pytest
+
 from app.simulation_runner import normalize_cae_bindings
 
 
@@ -368,3 +370,38 @@ def test_entries_sharing_a_phrase_but_not_the_physics_are_refused(tmp_path: Path
     result = normalize_cae_bindings(pkg)
 
     assert result["rebound_from_selector"] == []
+
+
+@pytest.mark.parametrize("pressures, recovered", [([2.0, 2.0], True), ([2.0, 5.0], False)])
+def test_a_pressure_group_is_interchangeable_only_at_equal_pressure(
+    tmp_path: Path, pressures: list[float], recovered: bool
+) -> None:
+    """Pressure is part of the physics: unequal pressures must not be shuffled.
+
+    `pressure_mpa` was missing from the interchangeability signature, so after
+    the face ids retired, 2 MPa and 5 MPa on two holes were treated as one
+    homogeneous group and reassigned to the replacement faces by sort order.
+    """
+    loads = [
+        {"id": f"load_{i + 1:03d}", "type": "pressure", "target": f"LOAD_{i + 1:03d}",
+         "target_selector": "bolt holes", "pressure_mpa": p}
+        for i, p in enumerate(pressures)
+    ]
+    mappings = [
+        {"cae_entity": f"LOAD_{i + 1:03d}", "face_ids": [face],
+         "maps_to": {"cae_target_id": f"load_{i + 1:03d}", "role": "load_application"}}
+        for i, face in enumerate(["face_007", "face_008"])
+    ]
+    pkg = tmp_path / "pressure.aieng"
+    with zipfile.ZipFile(pkg, "w") as zf:
+        zf.writestr("manifest.json", json.dumps({"model_id": "plate"}))
+        zf.writestr("geometry/topology_map.json",
+                    json.dumps(_holes_topology(["face_011", "face_012"])))
+        zf.writestr("simulation/cae_imports/parsed_boundary_conditions.json",
+                    json.dumps({"boundary_conditions": []}))
+        zf.writestr("simulation/cae_imports/parsed_loads.json", json.dumps({"loads": loads}))
+        zf.writestr("simulation/cae_mapping.json", json.dumps({"mappings": mappings}))
+
+    result = normalize_cae_bindings(pkg)
+
+    assert bool(result["rebound_from_selector"]) is recovered, result

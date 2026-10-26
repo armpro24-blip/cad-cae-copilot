@@ -1086,6 +1086,10 @@ def _frd_step_index_from_load_case_id(load_case_id: str | None, max_steps: int) 
     return max(0, min(index, max_steps - 1))
 
 
+class FrdFieldNotInStep(LookupError):
+    """The requested load case / FRD step exists but carries no such field."""
+
+
 def _extract_frd_field_data(
     package_path: Path,
     field_name: str,
@@ -1126,16 +1130,24 @@ def _extract_frd_field_data(
             sys.path.insert(0, str(aieng_src))
             injected = True
 
-        from aieng.simulation.frd_result_extractor import parse_frd_steps
+        from aieng.simulation.frd_result_extractor import (
+            _parse_frd_text,
+            _read_frd_text,
+            _step_groups,
+        )
         from aieng.simulation.field_region_extractor import _extract_node_coords_from_frd
         from aieng.simulation.field_derivation import (
             FIELD_CATALOG,
             canonical_field_name,
             derive_displacement_value,
             derive_stress_value,
+            stress_tensor_from_frd,
         )
 
-        fields = parse_frd_steps(temp_frd)
+        # Steps as the FRD declares them (100C headers): a step is not the n-th
+        # block of one field. Counting stress blocks served step 2's stress for
+        # a request for step 1 whenever step 1 wrote displacements only.
+        steps = _step_groups(_parse_frd_text(_read_frd_text(temp_frd)))
         coords = _extract_node_coords_from_frd(temp_frd)
         if not coords:
             return None
@@ -1150,20 +1162,49 @@ def _extract_frd_field_data(
             return None
         unit = meta["unit"]
 
-        # CalculiX names the stress field "STRESS"; some exports use "S".
-        stress_steps = fields.get("S") or fields.get("STRESS") or []
+        def _field_of(step: dict[str, Any]) -> dict[str, Any] | None:
+            fields = step["fields"]
+            if meta["source"] == "stress":
+                # CalculiX names the stress field "STRESS"; some exports use "S".
+                return fields.get("S") or fields.get("STRESS")
+            return fields.get("DISP")
 
-        step_index = _frd_step_index_from_load_case_id(
-            load_case_id,
-            max(len(stress_steps), len(fields.get("DISP", [])), 1),
-        )
+        n_steps = max(len(steps), 1)
+        step_index = _frd_step_index_from_load_case_id(load_case_id, n_steps)
+        # The id is clamped / defaulted so the viewer still gets a field, but the
+        # response echoes the REQUESTED id — so say when the step shown is not
+        # the one asked for, instead of serving another step under its name.
+        if load_case_id:
+            if not re.search(r"(\d+)\s*$", load_case_id):
+                warnings.append(
+                    f"Load case {load_case_id!r} names no step number; showing FRD step 1."
+                )
+            else:
+                requested = _frd_step_index_from_load_case_id(load_case_id, 10**9)
+                if requested != step_index:
+                    warnings.append(
+                        f"Load case {load_case_id!r} asks for FRD step {requested + 1}, "
+                        f"but the result has {n_steps}; showing step {step_index + 1}."
+                    )
+
+        block_name = "STRESS" if meta["source"] == "stress" else "DISP"
+        if load_case_id:
+            selected = _field_of(steps[step_index]) if step_index < len(steps) else None
+            if selected is None:
+                # Asked for this step: serving another step's field under its
+                # name is the asked-a-got-b this endpoint used to do.
+                raise FrdFieldNotInStep(
+                    f"FRD step {step_index + 1} (load case {load_case_id!r}) has no "
+                    f"{block_name} block; '{field_name}' cannot be shown for it."
+                )
+        else:
+            selected = next((f for f in map(_field_of, steps) if f is not None), None)
+            if selected is None:
+                warnings.append(f"{block_name} field not found in FRD.")
+                return None
 
         if meta["source"] == "stress":
-            s_steps = stress_steps
-            if not s_steps:
-                warnings.append("S (stress tensor) field not found in FRD.")
-                return None
-            s_field = s_steps[step_index] if step_index < len(s_steps) else s_steps[-1]
+            s_field = selected
             yield_strength: float | None = None
             if name == "safety_factor":
                 yield_strength = _resolve_material_yield(package_path)
@@ -1172,18 +1213,20 @@ def _extract_frd_field_data(
                         "Material yield strength unknown — safety-factor field unavailable."
                     )
                     return None
+            components = s_field.get("components")
             for nid, vals in s_field["node_data"].items():
                 if nid not in coords:
                     continue
-                v = derive_stress_value(name, tuple(vals[:6]), yield_strength=yield_strength)
+                # By component NAME: ccx writes SXY,SYZ,SZX, and reading the
+                # last two positionally as Sxz,Syz corrupts the principals.
+                tensor = stress_tensor_from_frd(components, vals)
+                if tensor is None:
+                    continue
+                v = derive_stress_value(name, tensor, yield_strength=yield_strength)
                 if v is not None:
                     values[nid] = v
         else:  # displacement
-            disp_steps = fields.get("DISP", [])
-            if not disp_steps:
-                warnings.append("DISP field not found in FRD.")
-                return None
-            disp = disp_steps[step_index] if step_index < len(disp_steps) else disp_steps[-1]
+            disp = selected
             components = disp["components"]
             idx = {c: next((i for i, cc in enumerate(components) if cc == c), None) for c in ("D1", "D2", "D3")}
 
@@ -1231,6 +1274,8 @@ def _extract_frd_field_data(
             ]
             result["vectors"] = vector_list
         return result
+    except FrdFieldNotInStep:
+        raise
     except Exception:
         return None
     finally:

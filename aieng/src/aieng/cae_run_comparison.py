@@ -222,6 +222,53 @@ def _compare_one(
     return row
 
 
+def _is_list_metric(entry: Any) -> bool:
+    return isinstance(entry, dict) and isinstance(entry.get("value"), list)
+
+
+def _compare_list(
+    metric: str, before_entry: Any, after_entry: Any, *, load_case_id: str
+) -> list[dict[str, Any]]:
+    """Per-mode rows for a list-valued metric (natural frequencies, buckling factors).
+
+    A list used to fall through `_numeric` as "no extracted value" although both
+    runs had it, so only the first/lowest scalar was compared and a change in a
+    higher mode went unreported. Mode n of one run is compared with mode n of
+    the other — the solver's own ordering. That is NOT mode tracking: a
+    geometry change can swap two modes' order, and the row cannot tell.
+    """
+    def _values(entry: Any) -> list[Any] | None:
+        return entry.get("value") if _is_list_metric(entry) else None
+
+    def _unit(entry: Any) -> Any:
+        return entry.get("unit") if isinstance(entry, dict) else None
+
+    before, after = _values(before_entry), _values(after_entry)
+    n = max(len(before or []), len(after or []))
+    rows: list[dict[str, Any]] = []
+    for i in range(n):
+        b = before[i] if before is not None and i < len(before) else None
+        a = after[i] if after is not None and i < len(after) else None
+        row = _compare_one(
+            f"{metric}[mode_{i + 1}]",
+            {"value": b, "unit": _unit(before_entry)},
+            {"value": a, "unit": _unit(after_entry)},
+            load_case_id=load_case_id,
+        )
+        if row["status"] == "unknown" and before is not None and after is not None:
+            row["reason"] = (
+                f"mode {i + 1} exists in only one run ({len(before)} vs {len(after)} modes)"
+            )
+        rows.append(row)
+    if before is not None and after is not None and len(before) > 1:
+        for row in rows:
+            row.setdefault(
+                "note",
+                "compared by mode number (solver ordering), not by tracked mode shape",
+            )
+    return rows
+
+
 def _pick(
     runs: list[dict[str, Any]],
     requested: str | None,
@@ -388,6 +435,9 @@ def compare_runs(
                     staged,
                     source_files=[run["frd_member"]],
                     run_id=run["run_id"],
+                    # So buckling mode shapes are compared as buckling factors,
+                    # not as "mm" and "MPa" of a normalised eigenvector.
+                    analysis_type=run.get("analysis_type"),
                 )
                 for warning in metrics.get("warnings") or []:
                     warnings.append(f"{run['run_id']}: {warning}")
@@ -426,13 +476,15 @@ def compare_runs(
             )
             continue
         for metric in sorted(set(before_values) | set(after_values)):
-            comparison.append(
-                _compare_one(
-                    metric,
-                    before_values.get(metric),
-                    after_values.get(metric),
-                    load_case_id=case_id,
+            before_entry = before_values.get(metric)
+            after_entry = after_values.get(metric)
+            if _is_list_metric(before_entry) or _is_list_metric(after_entry):
+                comparison.extend(
+                    _compare_list(metric, before_entry, after_entry, load_case_id=case_id)
                 )
+                continue
+            comparison.append(
+                _compare_one(metric, before_entry, after_entry, load_case_id=case_id)
             )
 
     setup_changed, setup_warnings = _compare_setups(baseline, current)

@@ -210,10 +210,13 @@ def _mesh_with_gmsh(
     mesh_size_mm: float,
     *,
     element_order: int = DEFAULT_ELEMENT_ORDER,
+    quality_out: dict[str, Any] | None = None,
 ) -> Path:
     """Mesh the STEP file with Gmsh and export a CalculiX-format .inp mesh.
 
     ``element_order=2`` emits quadratic tets (C3D10); ``1`` keeps linear C3D4.
+    ``quality_out``, when given, receives gmsh's own Jacobian-based element
+    quality (see :func:`_validate_element_jacobians`).
     """
     import gmsh
 
@@ -272,11 +275,99 @@ def _mesh_with_gmsh(
         if int(element_order) >= 2:
             # Promote to quadratic AFTER generation (gmsh's documented order).
             gmsh.model.mesh.setOrder(2)
+        quality = _validate_element_jacobians(gmsh)
+        if quality_out is not None:
+            quality_out.update(quality)
+        elif quality.get("inverted_element_count"):
+            # A caller that asked for no diagnostics cannot refuse on them, so
+            # the refusal happens here — the sizing / legacy solve paths would
+            # otherwise hand ccx a mesh it aborts on.
+            raise InvertedElementsError(quality)
         gmsh.write(str(out_inp))
     finally:
         gmsh.finalize()
 
     return out_inp
+
+
+class InvertedElementsError(RuntimeError):
+    """The mesh still has non-positive-Jacobian elements after repair."""
+
+    def __init__(self, quality: dict[str, Any]) -> None:
+        self.quality = quality
+        super().__init__(
+            f"{quality.get('inverted_element_count')} element(s) have a non-positive "
+            "Jacobian even after straightening their edges; CalculiX would abort with "
+            "'nonpositive jacobian'. Re-mesh with a different mesh size or check the "
+            "geometry for slivers."
+        )
+
+
+#: gmsh element type id of the 10-node (quadratic) tetrahedron.
+_GMSH_TET10 = 11
+#: Corner pairs of gmsh's tet10 mid-side nodes 4..9 (gmsh MTetrahedron10 edge
+#: order; checked against node coordinates on a real mesh).
+_GMSH_TET10_EDGES = ((0, 1), (1, 2), (2, 0), (3, 0), (3, 2), (3, 1))
+
+
+def _validate_element_jacobians(gmsh: Any) -> dict[str, Any]:
+    """gmsh's scaled-Jacobian check, repairing inverted quadratic tets first.
+
+    `setOrder(2)` moves each boundary mid-side node onto the curved CAD surface.
+    Where an element is small next to the curvature it bends, that can fold the
+    element inside out. Measured on an ordinary 100 x 60 x 6 mm plate with four
+    M3 clearance holes and 1 mm corner fillets: 4 inverted tets at a 6 mm mesh,
+    26 at 3 mm. `cae.generate_mesh` reported success (its corner-node heuristic
+    cannot see a curved element) and ccx then aborted with
+    `*ERROR in e_c3d: nonpositive jacobian`.
+
+    The repair puts every mid-side node of an inverted element back on the
+    straight edge between its corners. A tetrahedron with straight edges has a
+    constant Jacobian equal to its (valid, positive) corner Jacobian, so this
+    cannot fail for a valid linear mesh; the price is that those few elements
+    follow the CAD surface by chords, which is what a linear mesh does
+    everywhere. gmsh's own high-order optimizer was the alternative and was
+    rejected: inside `generate` it aborted the whole process with an uncaught
+    C++ exception, which in the MCP server would kill the server.
+
+    Returns ``{min_scaled_jacobian, inverted_element_count, straightened_element_count,
+    element_count}`` — counts AFTER the repair.
+    """
+    straightened: set[int] = set()
+    for _attempt in range(3):
+        types, tags, node_tags = gmsh.model.mesh.getElements(3)
+        bad_found = False
+        for etype, etags, enodes in zip(types, tags, node_tags):
+            if int(etype) != _GMSH_TET10 or len(etags) == 0:
+                continue
+            q = gmsh.model.mesh.getElementQualities(list(etags), "minSJ")
+            for index, value in enumerate(q):
+                if value > 0:
+                    continue
+                bad_found = True
+                straightened.add(int(etags[index]))
+                conn = [int(n) for n in enodes[10 * index: 10 * index + 10]]
+                corners = [gmsh.model.mesh.getNode(n)[0] for n in conn[:4]]
+                # Fixed by gmsh's node ordering, NOT by nearest midpoint: the
+                # misplaced node is exactly the one whose nearest midpoint can
+                # belong to another edge (that guess collapsed two mid-side
+                # nodes onto one point and left the element inverted).
+                for mid, (a, b) in zip(conn[4:], _GMSH_TET10_EDGES):
+                    chord = [(corners[a][k] + corners[b][k]) / 2 for k in range(3)]
+                    gmsh.model.mesh.setNode(mid, chord, [])
+        if not bad_found:
+            break
+
+    types, tags, _node_tags = gmsh.model.mesh.getElements(3)
+    flat = [int(t) for arr in tags for t in arr]
+    q = list(gmsh.model.mesh.getElementQualities(flat, "minSJ")) if flat else []
+    return {
+        "metric": "gmsh minSJ (minimum scaled Jacobian over the element)",
+        "element_count": len(flat),
+        "min_scaled_jacobian": round(float(min(q)), 6) if q else None,
+        "inverted_element_count": sum(1 for v in q if v <= 0),
+        "straightened_element_count": len(straightened),
+    }
 
 
 # ── Node parsing ──────────────────────────────────────────────────────────────
@@ -723,7 +814,9 @@ def get_mesh_quality_diagnostics(package_path: Path) -> dict[str, Any]:
     topo_raw = _read_member(package_path, "geometry/topology_map.json")
     cae_mapping = json.loads(cae_raw) if cae_raw else {"mappings": []}
     topology = json.loads(topo_raw) if topo_raw else {}
-    set_coverage = compute_set_coverage(nodes, topology, cae_mapping)
+    set_coverage = compute_set_coverage(
+        nodes, topology, cae_mapping, inp_bytes.decode(errors="replace")
+    )
     diagnostics["set_coverage"] = set_coverage
     diagnostics["overall_verdict"] = _combine_verdicts(
         diagnostics.get("verdict"), set_coverage.get("verdict")
@@ -776,7 +869,20 @@ _ELEMENTS_THROUGH_THICKNESS_BANDS = {1: (6.0, 3.0), 2: (1.5, 1.0)}
 #: rather than a shape classifier: a tapered gusset (2V/A = 3.75 mm vs a 6 mm
 #: box side, ratio 0.63) and a slender beam (6.32 vs 10, ratio 0.63) keep their
 #: box verdict, while a 3 mm-walled housing (2.92 vs 40, ratio 0.07) does not.
+#:
+#: The comparison is against `2V/A` of the SOLID box, not the box's smallest
+#: side. For a solid box `2V/A = 1 / (1/dx + 1/dy + 1/dz)`, which is only near
+#: the smallest side for a plate: for a square bar it is HALF of it and for a
+#: cube a third. So the side-based test refused every chunky solid — measured,
+#: a 200 x 20 x 20 mm cantilever (2V/A = 9.52 vs 20) reported `band: null`
+#: although its box IS its wall. Against the solid box, every solid box scores
+#: exactly 1, the beam and gusset ~1 and ~0.84, and the housing 0.16.
 _BBOX_CONTRADICTED_BELOW = 0.5
+
+
+def _solid_box_wall(dims: list[float]) -> float:
+    """`2V/A` of a solid box with these side lengths."""
+    return 1.0 / sum(1.0 / d for d in dims)
 
 
 class _BboxContradicted(Exception):
@@ -859,7 +965,11 @@ def thinnest_body_extent(topology: dict[str, Any] | None) -> tuple[float, str] |
         smallest = min(positive)
         name = str(entity.get("name") or entity.get("id") or "solid")
         wall = _wall_from_volume(entity)
-        if wall is not None and wall < _BBOX_CONTRADICTED_BELOW * smallest:
+        if (
+            wall is not None
+            and len(positive) == 3
+            and wall < _BBOX_CONTRADICTED_BELOW * _solid_box_wall(positive)
+        ):
             # The box says this body is `smallest` mm thick and its own volume
             # says otherwise. Measured on a 3 mm-walled housing: the box read
             # 40 mm (the OUTER envelope of a hollow shell), so ~1 element
@@ -1029,8 +1139,11 @@ def generate_mesh_for_package(
                 "message": "No STEP geometry found in package — run CAD generation first.",
             }
 
+        jacobian: dict[str, Any] = {}
         try:
-            mesh_inp = _mesh_with_gmsh(step_path, work, size, element_order=order)
+            mesh_inp = _mesh_with_gmsh(
+                step_path, work, size, element_order=order, quality_out=jacobian
+            )
         except Exception as exc:  # noqa: BLE001 — surface the mesher error honestly
             return {
                 "status": "mesh_failed",
@@ -1043,7 +1156,37 @@ def generate_mesh_for_package(
         nodes = _parse_inp_nodes(mesh_inp)
         elements = _parse_inp_elements(mesh_inp)
 
+    # An inverted element is not a quality concern but an unsolvable mesh: ccx
+    # aborts with "nonpositive jacobian". Refuse here, where the cause and the
+    # remedy are known, instead of letting the solver report it later.
+    if jacobian.get("inverted_element_count"):
+        return {
+            "status": "mesh_failed",
+            "code": "inverted_elements",
+            "message": (
+                f"{jacobian['inverted_element_count']} element(s) have a non-positive "
+                "Jacobian even after straightening their edges; CalculiX would abort "
+                "with 'nonpositive jacobian'. Re-mesh with a different mesh_size_mm "
+                "or check the geometry for slivers."
+            ),
+            "target_size_mm": size,
+            "jacobian": jacobian,
+        }
+
     quality = compute_mesh_quality(nodes, elements)
+    if jacobian:
+        quality["jacobian"] = jacobian
+        if jacobian.get("straightened_element_count"):
+            quality["findings"].append({
+                "severity": "info",
+                "code": "curved_elements_straightened",
+                "count": jacobian["straightened_element_count"],
+                "message": (
+                    "Quadratic elements that curving onto the CAD surface had "
+                    "turned inside out were given straight edges; they follow "
+                    "curved boundaries by chords, as a linear mesh does."
+                ),
+            })
     element_type = elements[0]["type"] if elements else None
     node_count = len(nodes)
     element_count = len(elements)
@@ -1306,6 +1449,10 @@ _CAE_MAPPING_PATH = "simulation/cae_mapping.json"
 _TOPOLOGY_PATH = "geometry/topology_map.json"
 _LOAD_CASES_PREFIX = "simulation/load_cases/"
 _SYNTH_MARKER_PATH = "simulation/cae_imports/.source_deck_synth.json"
+#: Bump when face -> node binding changes, so synthesized decks are rebuilt.
+#: v2: exact mesh-surface binding (`_FaceNodeResolver`) replaced the band.
+#: v3: internal-only / area-ambiguous matches are refused, not banded.
+_NSET_BINDER_VERSION = "nset-binder:v3"
 
 
 def _topology_face_ids(topology: dict[str, Any]) -> set[str]:
@@ -1609,6 +1756,7 @@ def normalize_cae_bindings(package_path: Path) -> dict[str, Any]:
             item.get("dof_end"),
             item.get("value"),
             item.get("value_n"),
+            item.get("pressure_mpa"),
             tuple(direction) if isinstance(direction, list) else None,
         )
 
@@ -1767,8 +1915,14 @@ def normalize_cae_bindings(package_path: Path) -> dict[str, Any]:
 
 
 def _source_deck_input_hash(package_path: Path) -> str:
-    """Hash the inputs that determine the synthesized source deck's NSETs/section."""
+    """Hash the inputs that determine the synthesized source deck's NSETs/section.
+
+    The binding LOGIC is an input too. A deck synthesized by an older binder
+    would otherwise be served as up to date for unchanged setup files — the
+    `stale-artifact` pattern — so the binder version is hashed alongside them.
+    """
     h = hashlib.sha256()
+    h.update(_NSET_BINDER_VERSION.encode())
     for member in (
         "simulation/mesh/mesh.inp",
         "simulation/mesh.inp",
@@ -1816,15 +1970,17 @@ def ensure_source_deck_from_mesh(package_path: Path) -> dict[str, Any]:
             # No synth marker => externally imported deck. Imported wins.
             return {"created": False, "status": "exists", "reason": "imported_deck"}
         try:
-            prior_hash = json.loads(marker_raw).get("input_hash")
+            prior_marker = json.loads(marker_raw)
         except json.JSONDecodeError:
-            prior_hash = None
-        if prior_hash == input_hash:
+            prior_marker = {}
+        if prior_marker.get("input_hash") == input_hash:
             return {
                 "created": False,
                 "status": "exists",
                 "reason": "up_to_date",
                 "input_hash": input_hash,
+                # A repeat call must still show which sets are approximate.
+                "binding_methods": prior_marker.get("binding_methods") or {},
             }
         # else: inputs changed -> fall through and re-synthesize.
 
@@ -1840,15 +1996,21 @@ def ensure_source_deck_from_mesh(package_path: Path) -> dict[str, Any]:
         tmp_mesh_path.write_bytes(mesh_bytes)
         nodes = _parse_inp_nodes(tmp_mesh_path)
 
+    binding_methods: dict[str, str] = {}
     nsets = (
-        _build_nsets(nodes, topology, cae_mapping)
+        _build_nsets(
+            nodes, topology, cae_mapping, mesh_bytes.decode(errors="replace"),
+            methods=binding_methods,
+        )
         if cae_mapping.get("mappings")
         else {}
     )
     deck_text, empty_nsets = build_source_deck_from_mesh(
         mesh_bytes.decode(errors="replace"), setup, nsets
     )
-    marker = json.dumps({"auto": True, "input_hash": input_hash}).encode()
+    marker = json.dumps(
+        {"auto": True, "input_hash": input_hash, "binding_methods": binding_methods}
+    ).encode()
     _write_members_to_package(
         package_path,
         {SOURCE_SOLVER_DECK_PATH: deck_text.encode(), _SYNTH_MARKER_PATH: marker},
@@ -1871,6 +2033,10 @@ def ensure_source_deck_from_mesh(package_path: Path) -> dict[str, Any]:
         "nset_names": [n for n in nsets if nsets[n]],
         "empty_nsets": empty_nsets,
         "empty_nset_faces": empty_nset_faces,
+        # How each set's nodes were found: `mesh_surface` is exact (the nodes of
+        # the mesh surfaces the face consists of); `geometric_band` is the
+        # tolerance-band fallback and is an approximation.
+        "binding_methods": binding_methods,
         "derived_entities": normalization["derived_entities"],
         "rebound_from_selector": normalization.get("rebound_from_selector") or [],
         "loads_promoted": normalization["loads_promoted"],
@@ -1899,6 +2065,7 @@ def compute_set_coverage(
     nodes: dict[int, tuple[float, float, float]],
     topology: dict[str, Any],
     cae_mapping: dict[str, Any],
+    mesh_text: str | None = None,
 ) -> dict[str, Any]:
     """Validate that each CAE surface set resolves to actual mesh nodes (#279).
 
@@ -1915,6 +2082,7 @@ def compute_set_coverage(
         if isinstance(e, dict) and e.get("type") == "face" and "id" in e
     }
 
+    resolver = _FaceNodeResolver(nodes, mesh_text)
     sets: list[dict[str, Any]] = []
     for mapping in cae_mapping.get("mappings") or []:
         cae_entity = mapping.get("cae_entity") or ""
@@ -1923,10 +2091,13 @@ def compute_set_coverage(
         face_ids = [str(fid) for fid in (mapping.get("face_ids") or [])]
         missing = [fid for fid in face_ids if fid not in face_index]
         node_ids: set[int] = set()
+        methods: set[str] = set()
         for fid in face_ids:
             entity = face_index.get(fid)
             if entity:
-                node_ids.update(_nodes_on_face(nodes, entity))
+                ids, method = resolver.nodes_for_face(entity)
+                node_ids.update(ids)
+                methods.add(method)
         count = len(node_ids)
         if missing:
             status = "unresolved_face"
@@ -1941,6 +2112,9 @@ def compute_set_coverage(
             "face_ids": face_ids,
             "missing_face_ids": missing,
             "resolved_node_count": count,
+            "binding_method": (
+                methods.pop() if len(methods) == 1 else ("mixed" if methods else None)
+            ),
             "status": status,
         })
 
@@ -1967,8 +2141,10 @@ def compute_set_coverage(
         "sets": sets,
         "note": (
             "Surface-set coverage reuses the deck builder's face->node mapping; an "
-            "empty/unresolved set would be silently dropped by the solver. Node "
-            "membership is a bounding-box/plane heuristic, not exact face meshing."
+            "empty/unresolved set would be silently dropped by the solver. A set "
+            "bound by `mesh_surface` holds exactly the nodes of the mesh surfaces "
+            "that make up the face; `geometric_band` is a tolerance-band "
+            "approximation used only when no mesh surface matches."
         ),
     }
 
@@ -2007,7 +2183,18 @@ def _nodes_on_face(
         tol = max(1.0, span * 0.10)
 
     # ── Cylinder ──────────────────────────────────────────────────────────────
+    if surface_type == "cylinder" and _cylinder_axis(face_entity) is not None:
+        radius = float(face_entity.get("radius", 0.0))
+        return [
+            nid for nid, p in nodes.items()
+            if abs(_distance_to_axis(p, face_entity) - radius) < tol
+            and _within_bbox(p, bbox, tol)
+        ]
     if surface_type == "cylinder":
+        # PIRA: legacy assumption for topology written before `axis` was
+        # recorded — the axis is +Z through the bbox centre. Wrong for any
+        # other axis and for a partial (fillet) cylinder; kept only because
+        # such a face carries nothing better to go on.
         radius = float(face_entity.get("radius", 0.0))
         cx = (bbox[0] + bbox[3]) / 2.0
         cy = (bbox[1] + bbox[4]) / 2.0
@@ -2068,17 +2255,295 @@ def _nodes_on_face(
     return result
 
 
+def _cylinder_axis(face: dict[str, Any]) -> tuple[tuple[float, float, float], tuple[float, float, float]] | None:
+    """``(unit axis, point on axis)`` recorded for a cylindrical face, else None."""
+    axis, point = face.get("axis"), face.get("axis_point")
+    if not (isinstance(axis, (list, tuple)) and len(axis) == 3):
+        return None
+    if not (isinstance(point, (list, tuple)) and len(point) == 3):
+        return None
+    ax = tuple(float(c) for c in axis)
+    mag = (ax[0] ** 2 + ax[1] ** 2 + ax[2] ** 2) ** 0.5
+    if mag < 1e-12:
+        return None
+    return (ax[0] / mag, ax[1] / mag, ax[2] / mag), tuple(float(c) for c in point)  # type: ignore[return-value]
+
+
+def _distance_to_axis(p: tuple[float, float, float], face: dict[str, Any]) -> float:
+    axis = _cylinder_axis(face)
+    assert axis is not None
+    (ax, ay, az), (px, py, pz) = axis
+    dx, dy, dz = p[0] - px, p[1] - py, p[2] - pz
+    along = dx * ax + dy * ay + dz * az
+    rx, ry, rz = dx - along * ax, dy - along * ay, dz - along * az
+    return (rx * rx + ry * ry + rz * rz) ** 0.5
+
+
+def _within_bbox(p: tuple[float, float, float], bbox: list[float], tol: float) -> bool:
+    return all(bbox[i] - tol <= p[i] <= bbox[i + 3] + tol for i in range(3))
+
+
+_SOLID_TYPES_FOR_FACETS = ("C3D4", "C3D10")
+
+
+class _FaceNodeResolver:
+    """Which mesh nodes lie on a topology face — from the mesh's own surfaces.
+
+    gmsh meshes every CAD surface separately and ``_mesh_with_gmsh`` writes each
+    one to ``mesh.inp`` as its own 2D element set (``ELSET=Surface<tag>``). A
+    topology face is therefore EXACTLY a union of those surfaces, and its nodes
+    are their nodes — no tolerance band involved. The geometric test is only
+    used to decide which whole surfaces belong to the face, and for planes and
+    cylinders it is tight, because gmsh places every surface node (mid-side
+    nodes included) on the CAD surface itself.
+
+    The band it replaces caught interior nodes. Its tolerance was 2 % of the
+    face's longest side, so a symmetry BC on the 100 x 20 mm face of a 10 mm bar
+    also restrained 412 nodes up to 1.83 mm INSIDE the bar — measured on a
+    uniform-tension patch test whose exact answer is known, that pushed the
+    peak stress 8 % high. A whole-surface test cannot catch a node that is not
+    on the surface, and a surface shared by two bodies (a glued interface after
+    OCC fragment) is skipped because it is inside the material.
+
+    When no surface matches — a mesh with no surface sets, an inclined face
+    whose recorded centre is off its plane, a free-form face whose box is not
+    unique — the old band is used, restricted to nodes on the model's free
+    boundary, and the method says so (``geometric_band``).
+    """
+
+    def __init__(self, nodes: dict[int, tuple[float, float, float]], mesh_text: str | None) -> None:
+        from aieng.simulation import surface_loads as _sl
+
+        self.nodes = nodes
+        self.surfaces: list[dict[str, Any]] = []
+        self.boundary: set[int] | None = None
+        if not mesh_text:
+            return
+        _mesh_nodes, solids, _nsets = _sl.parse_mesh(mesh_text)
+        free = _sl.free_facets(solids)
+        if not free:
+            return
+        free_keys = {frozenset(f.corners) for f in free}
+        self.boundary = set()
+        for f in free:
+            self.boundary.update(f.corners)
+            self.boundary.update(f.midsides)
+        for name, triangles in _surface_element_sets(mesh_text).items():
+            members = {n for tri in triangles for n in tri if n in nodes}
+            if not members:
+                continue
+            internal = sum(1 for tri in triangles if frozenset(tri[:3]) not in free_keys)
+            area = 0.0
+            for tri in triangles:
+                if all(c in nodes for c in tri[:3]):
+                    p0, p1, p2 = (nodes[c] for c in tri[:3])
+                    u = [p1[k] - p0[k] for k in range(3)]
+                    v = [p2[k] - p0[k] for k in range(3)]
+                    cx = u[1] * v[2] - u[2] * v[1]
+                    cy = u[2] * v[0] - u[0] * v[2]
+                    cz = u[0] * v[1] - u[1] * v[0]
+                    area += 0.5 * (cx * cx + cy * cy + cz * cz) ** 0.5
+            self.surfaces.append({
+                # Flat-triangle area: exact on a plane, a chord approximation on
+                # a curved surface (used only for the planar area check).
+                "area": area,
+                "name": name,
+                "nodes": members,
+                # Corner nodes are always ON the CAD surface; a mid-side node
+                # may sit on the chord when its element had to be straightened.
+                "corners": {n for tri in triangles for n in tri[:3] if n in nodes},
+                "internal": internal * 2 > len(triangles),
+            })
+
+    def nodes_for_face(self, face: dict[str, Any]) -> tuple[list[int], str]:
+        """``(node ids, method)`` for a topology face.
+
+        ``mesh_surface``: exactly the nodes of the mesh surfaces the face is.
+        ``internal_surface`` / ``ambiguous_surface``: a match exists but must
+        not be used — the face lies inside the material (a glued interface), or
+        more than one combination of coplanar surfaces fits it — so NO nodes
+        are returned and the empty set is refused downstream. Falling back to
+        the band there would bind the interface's perimeter, or the foreign
+        surface, while still looking bound.
+        ``geometric_band``: no mesh surface matched at all; tolerance band.
+        """
+        matched = self._matching_surfaces(face)
+        if matched == "ambiguous":
+            return [], "ambiguous_surface"
+        if matched:
+            external = [s for s in matched if not s["internal"]]
+            if not external:
+                return [], "internal_surface"
+            return sorted(set().union(*(s["nodes"] for s in external))), "mesh_surface"
+        band = _nodes_on_face(self.nodes, face)
+        if self.boundary is not None:
+            band = [n for n in band if n in self.boundary]
+        return band, "geometric_band"
+
+    def _matching_surfaces(self, face: dict[str, Any]) -> list[dict[str, Any]] | str:
+        """Mesh surfaces (internal included) that make up ``face``; ``"ambiguous"``
+        when the match cannot be pinned down; ``[]`` when nothing matches."""
+        bbox = face.get("bounding_box") or []
+        if len(bbox) < 6 or not self.surfaces:
+            return []
+        span = max(bbox[3] - bbox[0], bbox[4] - bbox[1], bbox[5] - bbox[2], 1e-6)
+        tight = 1e-3 + 1e-4 * span
+        surface_type = face.get("surface_type", "plane")
+
+        if surface_type == "plane" and face.get("normal"):
+            n = [float(c) for c in face["normal"]]
+            mag = (n[0] ** 2 + n[1] ** 2 + n[2] ** 2) ** 0.5
+            if mag < 1e-12:
+                return []
+            n = [c / mag for c in n]
+            centre = face.get("center") or [(bbox[i] + bbox[i + 3]) / 2 for i in range(3)]
+            d_face = sum(n[i] * float(centre[i]) for i in range(3))
+            loose = max(0.5, span * 0.02)
+            groups: dict[float, list[dict[str, Any]]] = {}
+            for s in self.surfaces:
+                pts = [self.nodes[i] for i in s["corners"]]
+                offsets = [n[0] * p[0] + n[1] * p[1] + n[2] * p[2] for p in pts]
+                if max(offsets) - min(offsets) > 2 * tight:
+                    continue  # not parallel to this face
+                d_s = sum(offsets) / len(offsets)
+                if abs(d_s - d_face) > loose:
+                    continue
+                if not all(_within_bbox(p, bbox, tight) for p in pts):
+                    continue
+                key = round(d_s / tight) * tight
+                groups.setdefault(key, []).append(s)
+            if not groups:
+                return []
+            # Parallel surfaces at different offsets inside the box are
+            # different faces; the one nearest the recorded plane is this one.
+            group = groups[min(groups, key=lambda k: abs(k - d_face))]
+            return _area_consistent(group, face.get("area"))
+
+        if surface_type == "cylinder" and _cylinder_axis(face) is not None:
+            radius = float(face.get("radius", 0.0))
+            return [
+                s for s in self.surfaces
+                if all(
+                    abs(_distance_to_axis(p, face) - radius) <= tight and _within_bbox(p, bbox, tight)
+                    for p in (self.nodes[i] for i in s["corners"])
+                )
+            ]
+
+        if face.get("freeform") or surface_type not in ("plane", "cylinder"):
+            # No analytic surface to test against: accept a mesh surface only
+            # when its extent IS the face's box, and only if exactly one does.
+            # The tolerance allows for chordal sag (a curved face's extreme may
+            # fall between nodes). Several surfaces can sit inside it — the
+            # bottom face of a thin plate is within 2 % of an edge face's box —
+            # so the closest one is taken only when it is clearly closest.
+            box_tol = max(0.1, 0.02 * span)
+            scored = []
+            for s in self.surfaces:
+                pts = [self.nodes[i] for i in s["corners"]]
+                lo = [min(p[i] for p in pts) for i in range(3)]
+                hi = [max(p[i] for p in pts) for i in range(3)]
+                deviation = max(
+                    max(abs(lo[i] - bbox[i]), abs(hi[i] - bbox[i + 3])) for i in range(3)
+                )
+                if deviation <= box_tol:
+                    scored.append((deviation, s))
+            scored.sort(key=lambda item: item[0])
+            if not scored:
+                return []
+            if len(scored) > 1 and scored[1][0] <= 2 * scored[0][0] + 1e-6 * span:
+                return "ambiguous"  # two surfaces fit about equally well
+            return [scored[0][1]]
+        return []
+
+
+#: Relative tolerance for "these coplanar mesh surfaces add up to the face".
+#: Planar mesh-surface areas are exact (flat triangles on a plane), so this only
+#: has to absorb the 4-decimal rounding of the recorded topology area.
+_AREA_MATCH_RTOL = 0.005
+
+
+def _area_consistent(group: list[dict[str, Any]], face_area: Any) -> list[dict[str, Any]] | str:
+    """The coplanar surfaces that ARE the face, judged by area.
+
+    The plane test cannot tell a ring-shaped face from another solid's flush cap
+    sitting in its hole: both lie on the plane inside the ring's box. A face is
+    a union of mesh surfaces, so their areas must add up to the face's own
+    area. When the whole group is too large, the unique sub-combination that
+    matches is the face; none or several is ambiguous and refused.
+    """
+    try:
+        target = float(face_area)
+    except (TypeError, ValueError):
+        return group
+    if target <= 0:
+        return group
+    total = sum(s["area"] for s in group)
+    if total <= target * (1 + _AREA_MATCH_RTOL):
+        return group  # whole face, or the free part of a face split by a glue
+    if len(group) > 12:
+        return "ambiguous"
+    import itertools
+
+    fits = [
+        list(combo)
+        for size in range(1, len(group))
+        for combo in itertools.combinations(group, size)
+        if abs(sum(s["area"] for s in combo) - target) <= target * _AREA_MATCH_RTOL
+    ]
+    return fits[0] if len(fits) == 1 else "ambiguous"
+
+
+def _surface_element_sets(mesh_text: str) -> dict[str, list[tuple[int, ...]]]:
+    """gmsh's per-CAD-surface 2D element blocks: ``{ELSET name: [node tuples]}``."""
+    out: dict[str, list[tuple[int, ...]]] = {}
+    current: str | None = None
+    for raw in mesh_text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("**"):
+            continue
+        if line.startswith("*"):
+            current = None
+            upper = line.upper().replace(" ", "")
+            if upper.startswith("*ELEMENT"):
+                params = {
+                    p.split("=", 1)[0]: p.split("=", 1)[1]
+                    for p in line.replace(" ", "").split(",")[1:] if "=" in p
+                }
+                upper_params = {k.upper(): v for k, v in params.items()}
+                etype = upper_params.get("TYPE", "").upper()
+                if etype and not etype.startswith("C3D") and upper_params.get("ELSET"):
+                    current = upper_params["ELSET"]
+                    out.setdefault(current, [])
+            continue
+        if current is not None:
+            try:
+                ids = [int(t) for t in line.split(",") if t.strip()]
+            except ValueError:
+                continue
+            if len(ids) >= 4:
+                out[current].append(tuple(ids[1:]))
+    return out
+
+
 def _build_nsets(
     nodes: dict[int, tuple[float, float, float]],
     topology: dict[str, Any],
     cae_mapping: dict[str, Any],
+    mesh_text: str | None = None,
+    methods: dict[str, str] | None = None,
 ) -> dict[str, list[int]]:
-    """Map cae_mapping face IDs to mesh node IDs via topology bounding boxes."""
+    """Map cae_mapping face IDs to mesh node IDs.
+
+    With ``mesh_text`` (the gmsh ``mesh.inp``) a face's nodes are those of the
+    mesh surfaces it consists of — see :class:`_FaceNodeResolver`. ``methods``,
+    when given, receives ``{nset: "mesh_surface" | "geometric_band" | "mixed"}``.
+    """
     face_index: dict[str, dict[str, Any]] = {
         e["id"]: e
         for e in (topology.get("entities") or topology.get("faces") or [])
         if isinstance(e, dict) and e.get("type") == "face" and "id" in e
     }
+    resolver = _FaceNodeResolver(nodes, mesh_text)
 
     nsets: dict[str, list[int]] = {}
     for mapping in cae_mapping.get("mappings") or []:
@@ -2086,11 +2551,16 @@ def _build_nsets(
         if not nset_name:
             continue
         node_ids: set[int] = set()
+        used: set[str] = set()
         for fid in mapping.get("face_ids") or []:
             entity = face_index.get(fid)
             if entity:
-                node_ids.update(_nodes_on_face(nodes, entity))
+                ids, method = resolver.nodes_for_face(entity)
+                node_ids.update(ids)
+                used.add(method)
         nsets[nset_name] = sorted(node_ids)
+        if methods is not None and used:
+            methods[nset_name] = used.pop() if len(used) == 1 else "mixed"
 
     return nsets
 
@@ -2210,32 +2680,60 @@ def _build_calculix_deck(
         nset_name = feat_to_nset.get(target, "")
         safe = _sanitize_name(nset_name)
         if safe and nsets.get(nset_name):
-            bc_type = bc.get("type", "fixed")
-            if bc_type == "fixed":
-                lines.append("*BOUNDARY")
-                # Solid elements only have translational DOFs. Keep this legacy
-                # runner aligned with the canonical deck generator instead of
-                # emitting rotational DOFs that can make CalculiX input invalid.
-                lines.append(f"{safe}, 1, 3")
-                bc_written += 1
+            # Solid elements only have translational DOFs, so an unstated range
+            # is 1-3. A stated range (a roller / symmetry plane) is honoured:
+            # this used to write only `type == "fixed"`, so a symmetry BC was
+            # DROPPED from the deck — a solve with a missing restraint.
+            dof_start = int(bc.get("dof_start", 1) or 1)
+            dof_end = int(bc.get("dof_end", 3) or 3)
+            value = bc.get("value", 0)
+            lines.append("*BOUNDARY")
+            if value:
+                lines.append(f"{safe}, {dof_start}, {dof_end}, {value}")
+            else:
+                lines.append(f"{safe}, {dof_start}, {dof_end}")
+            bc_written += 1
 
     # ── Loads ────────────────────────────────────────────────────────────────
+    # Same distribution as the canonical deck generator: a total force becomes
+    # the traction-consistent nodal split over the element faces its set
+    # covers, a pressure becomes *DLOAD face pressures (aieng.simulation.
+    # surface_loads). Equal-per-node is kept only for a set covering no face.
+    from aieng.simulation import surface_loads as _sl
+
+    mesh_nodes, solids, _ = _sl.parse_mesh(mesh_inp_text)
+    free = _sl.free_facets(solids)
     load_written = 0
     for ld in setup.get("loads") or []:
         target = ld.get("target_feature", "")
         nset_name = feat_to_nset.get(target, "")
         safe = _sanitize_name(nset_name)
         node_ids = nsets.get(nset_name) or []
-        if safe and node_ids:
-            value_n = float(ld.get("value_n") or 0.0)
-            direction = ld.get("direction") or [0.0, 0.0, -1.0]
-            n_nodes = len(node_ids)
-            force_per_node = value_n / n_nodes if n_nodes else 0.0
-            for dof, comp in enumerate(direction[:3], start=1):
-                if abs(comp) > 1e-9:
-                    lines.append("*CLOAD")
-                    lines.append(f"{safe}, {dof}, {force_per_node * comp:.6f}")
+        if not (safe and node_ids):
+            continue
+        facets = _sl.facets_within(free, node_ids)
+        if str(ld.get("type") or "").lower() == "pressure":
+            if not facets:
+                continue  # counted as unwritten; the caller refuses on it
+            pressure = float(ld.get("pressure_mpa") or 0.0)
+            lines.append("*DLOAD")
+            for facet in sorted(facets, key=lambda f: (f.element_id, f.face_number)):
+                lines.append(f"{facet.element_id}, P{facet.face_number}, {pressure:.8g}")
             load_written += 1
+            continue
+        value_n = float(ld.get("value_n") or 0.0)
+        direction = ld.get("direction") or [0.0, 0.0, -1.0]
+        shares = _sl.consistent_weights(facets, mesh_nodes)
+        for dof, comp in enumerate(direction[:3], start=1):
+            if abs(comp) <= 1e-9:
+                continue
+            lines.append("*CLOAD")
+            if shares:
+                for node in sorted(shares):
+                    lines.append(f"{node}, {dof}, {value_n * comp * shares[node]:.8g}")
+            else:
+                lines.append(f"{safe}, {dof}, {value_n * comp / len(node_ids):.6f}")
+        load_written += 1
 
     # ── Output requests ──────────────────────────────────────────────────────
     lines += [
@@ -2641,10 +3139,15 @@ def _solve_package_static_normalized(
             mesh_inp = _mesh_with_gmsh(step_path, work, size)
             nodes = _parse_inp_nodes(mesh_inp)
             elements = _parse_inp_elements(mesh_inp)
+            # The REALIZED mesh size, which a convergence study needs: Gmsh
+            # does not deliver the requested size on thin or curved features.
+            element_count = len(elements)
             mesh_accuracy = judge_mesh_accuracy(
                 nodes, elements[0]["type"] if elements else None, size, topology
             )
-            nsets = _build_nsets(nodes, topology, cae_mapping)
+            nsets = _build_nsets(
+                nodes, topology, cae_mapping, mesh_inp.read_text(errors="replace")
+            )
             unresolved = _unresolved_bc_load_faces(setup, cae_mapping, nsets)
             if unresolved:
                 return {
@@ -2666,6 +3169,11 @@ def _solve_package_static_normalized(
             returncode, solver_log, frd_path, solver_retry = _run_calculix_with_crash_retry(
                 deck_inp, work, timeout=timeout
             )
+        except InvertedElementsError as exc:
+            return {
+                "solver_executed": False, "status": "inverted_elements", "metrics": {},
+                "warnings": [], "error": str(exc),
+            }
         except Exception as exc:  # noqa: BLE001
             return {
                 "solver_executed": False, "status": "solve_error", "metrics": {}, "warnings": [],
@@ -2701,6 +3209,8 @@ def _solve_package_static_normalized(
         "mesh_accuracy": mesh_accuracy,
         "solver_retry": solver_retry,
         "warnings": deck_warnings + (extracted.get("warnings") or []),
+        "node_count": len(nodes),
+        "element_count": element_count,
     }
 
 
@@ -2848,14 +3358,20 @@ def _run_simulation_core(
 
         # ── Step 3: mesh ──────────────────────────────────────────────────────
         yield {"step": "meshing", "message": f"Generating mesh with Gmsh (target size {mesh_size_mm} mm)…"}
-        mesh_inp = _mesh_with_gmsh(step_path, work_dir, mesh_size_mm)
+        try:
+            mesh_inp = _mesh_with_gmsh(step_path, work_dir, mesh_size_mm)
+        except InvertedElementsError as exc:
+            detail = {"code": "inverted_elements", "message": str(exc), "jacobian": exc.quality}
+            raise _SimAbort(422, detail, {"step": "error", **detail}) from exc
         nodes = _parse_inp_nodes(mesh_inp)
         node_count = len(nodes)
 
         # ── Step 4: build NSETs from topology + cae_mapping ───────────────────
         face_count = len(cae_mapping.get("mappings") or [])
         yield {"step": "building_nsets", "message": f"Mapping {face_count} face(s) to mesh nodes ({node_count:,} nodes)…"}
-        nsets = _build_nsets(nodes, topology, cae_mapping)
+        nsets = _build_nsets(
+            nodes, topology, cae_mapping, mesh_inp.read_text(errors="replace")
+        )
         empty_nsets = [k for k, v in nsets.items() if not v]
 
         # Fail fast: a load/BC whose face matched zero mesh nodes would be
