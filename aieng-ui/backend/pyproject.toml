@@ -64,9 +64,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# build123d / bd_warehouse are capped at the minor that is tested and that
+# AGENTS.md documents (0.10). Uncapped, a fresh resolve took build123d 0.13 with
+# the cadquery-ocp 7.8 that cadquery 2.7 pins, and `import build123d` failed
+# (`No module named 'OCP.OCP.collections'`). Raise together with a tested env.
 cad = [
-  "build123d>=0.10.0",
-  "bd_warehouse>=0.2.0",
+  "build123d>=0.10.0,<0.11",
+  "bd_warehouse>=0.2.0,<0.3",
   "cadquery>=2.7.0",
 ]
 llm = [
@@ -74,8 +78,8 @@ llm = [
   "openai>=2.0.0",
 ]
 full = [
-  "build123d>=0.10.0",
-  "bd_warehouse>=0.2.0",
+  "build123d>=0.10.0,<0.11",
+  "bd_warehouse>=0.2.0,<0.3",
   "cadquery>=2.7.0",
   "anthropic>=0.72.0",
   "openai>=2.0.0",
