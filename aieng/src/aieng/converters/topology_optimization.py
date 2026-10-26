@@ -4,7 +4,7 @@ Topology optimization is a CAE-driven *generative* step that sits after analysis
 given a design space, load/support boundary conditions, and a volume budget, it
 finds where material should be. Like solvers, the optimizer is a **pluggable
 backend** behind a neutral contract — the built-in reference is a self-contained
-2D SIMP (compliance minimization, pure numpy, no external solver/dependency).
+2D SIMP (compliance minimization, sparse numpy/scipy, no external solver).
 Other optimizers (3D SIMP, ToPy, nTop, remote) can register and emit the same
 neutral result.
 
@@ -29,13 +29,18 @@ production optimizer.
 """
 from __future__ import annotations
 
+import itertools
 import json
+import math
+import warnings
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 import numpy as np
+from scipy.sparse import coo_matrix, csr_matrix
+from scipy.sparse.linalg import MatrixRankWarning, spsolve
 
 from aieng import FORMAT_VERSION
 from aieng.cae_setup_view import load_cae_setup
@@ -154,19 +159,58 @@ def _explicit_bcs(nelx: int, nely: int, supports: list, loads: list) -> tuple[np
     return np.array(sorted(fixed), dtype=int), F
 
 
+class TopologyProblemRefused(ValueError):
+    """The supplied problem cannot be solved as posed (a derivation's refusal, or
+    explicit supports/loads that cannot carry a load) — refused, never substituted."""
+
+
+def _require_usable_bcs(fixed: np.ndarray, F: np.ndarray, ndof: int, what: str) -> None:
+    """Explicit supports/loads must restrain something AND load an unrestrained dof.
+
+    These used to fall back silently to the textbook cantilever preset, so a caller
+    who passed ``bcs: {supports: [...], loads: []}`` got a cantilever optimized and
+    reported as their part (``bcs_source: preset`` was the only trace). A preset is
+    something a caller asks for by name, not a stand-in for a broken request."""
+    if fixed.size == 0:
+        raise TopologyProblemRefused(
+            f"explicit {what} bcs carry no support cells, so the structure is unrestrained. "
+            "Add supports, or request a textbook case explicitly with bcs.preset and no "
+            "supports/loads; the preset is not substituted for a broken request.")
+    free = np.setdiff1d(np.arange(ndof), fixed)
+    if not np.any(F[free]):
+        raise TopologyProblemRefused(
+            f"explicit {what} bcs carry no load acting on an unrestrained node (no load cells, "
+            "zero force, or every loaded node is also a support), so compliance is zero and "
+            "there is nothing to optimize. Add a non-zero load away from the supports, or "
+            "request a textbook case explicitly with bcs.preset; the preset is not "
+            "substituted for a broken request.")
+
+
 def _resolve_bcs(nelx: int, nely: int, bcs: dict[str, Any]) -> tuple[np.ndarray, np.ndarray, str | None]:
     """Explicit supports/loads if present, else a named preset. Returns
-    (fixed_dofs, force_vector, preset_name) — preset_name is None when explicit."""
+    (fixed_dofs, force_vector, preset_name) — preset_name is None when explicit.
+
+    Degenerate explicit BCs raise :class:`TopologyProblemRefused`."""
     supports = bcs.get("supports")
     loads = bcs.get("loads")
     if supports or loads:
         fixed, F = _explicit_bcs(nelx, nely, supports or [], loads or [])
-        if fixed.size and np.abs(F).sum() > 0:
-            return fixed, F, None
-        # degenerate explicit BCs (no support or no load) -> fall back to a preset
+        _require_usable_bcs(fixed, F, F.size, "2d")
+        return fixed, F, None
     preset = str(bcs.get("preset") or "cantilever")
     fixed, F = _boundary_conditions(nelx, nely, preset)
     return fixed, F, preset
+
+
+def _preset_warnings(bcs: dict[str, Any], preset: str | None) -> list[str]:
+    """Make a preset visible when nobody asked for one, and an ignored preset too."""
+    if preset is not None and not bcs.get("preset"):
+        return [f"no supports/loads were supplied, so the textbook '{preset}' preset was solved; "
+                "this is not a load case derived from your part"]
+    if preset is None and bcs.get("preset"):
+        return [f"bcs.preset '{bcs.get('preset')}' was ignored because explicit supports/loads "
+                "were supplied"]
+    return []
 
 
 def _grid_guidance_2d(problem: dict[str, Any], nely: int, nelx: int):
@@ -216,118 +260,288 @@ def _grid_guidance_3d(problem: dict[str, Any], nx: int, ny: int, nz: int):
     return preserve, weight, pmin
 
 
-def simp_2d(problem: dict[str, Any]) -> dict[str, Any]:
-    """Classic 2D SIMP compliance minimization (OC update + sensitivity filter).
+# ── shared vectorized SIMP core (2D and 3D) ─────────────────────────────────
+# Sparse, vectorized SIMP in the style of Andreassen, Clausen, Schevenels, Lazarov
+# & Sigmund (2011), "Efficient topology optimization in MATLAB using 88 lines of
+# code", Struct. Multidisc. Optim. 43:1-16 ("top88"): modified SIMP stiffness
+# E = Emin + x^p (E0 - Emin), sparse assembly from precomputed index vectors, a
+# precomputed sparse filter matrix H / Hs, and the OC update with bisection on the
+# volume multiplier. The same core runs the 3D H8 voxel solver (cf. Liu & Tovar
+# 2014, "An efficient 3D topology optimization code written in Matlab", SMO
+# 50:1175-1196). With ``emin=0, xmin=1e-3`` it is exactly the classic SIMP of the
+# 99-line code (Sigmund 2001) that this module used to run densely.
 
-    problem.grid = {nelx, nely}; volfrac, penalty (default 3), rmin (default 1.5),
-    max_iters (default 40), bcs.preset ('cantilever'|'mbb_beam'). Pure numpy
-    (dense FE solve) — suitable for small/coarse design domains.
+DEFAULT_MAX_ITERS_2D = 200
+DEFAULT_MAX_ITERS_3D = 200
+DEFAULT_CONVERGENCE_TOL = 0.01
+DEFAULT_EMIN = 1e-9
+_OC_MOVE = 0.2
+_FILTERS = {1: "sensitivity", 2: "density", "sensitivity": "sensitivity", "density": "density"}
+
+
+def _filter_matrix(dims: tuple[int, ...], rmin: float) -> tuple[csr_matrix, np.ndarray]:
+    """Sparse linear-hat filter ``H[e,f] = max(0, rmin - dist(e,f))`` on a regular grid.
+
+    ``dims`` lists the grid sizes fastest-varying first, matching the element
+    numbering (2D: ``(nely, nelx)``, e = ely + nely*elx; 3D: ``(nx, ny, nz)``,
+    e = i + nx*j + nx*ny*k). Built per neighbour offset, not per element."""
+    n = int(np.prod(dims))
+    coords = np.unravel_index(np.arange(n), dims, order="F")
+    strides = np.cumprod((1,) + tuple(dims[:-1]))
+    r = int(np.ceil(rmin))
+    rows: list[np.ndarray] = []
+    cols: list[np.ndarray] = []
+    vals: list[np.ndarray] = []
+    for off in itertools.product(range(-r, r + 1), repeat=len(dims)):
+        fac = rmin - math.sqrt(sum(o * o for o in off))
+        if fac <= 0:
+            continue
+        mask = np.ones(n, dtype=bool)
+        for c, o, d in zip(coords, off, dims):
+            mask &= (c + o >= 0) & (c + o < d)
+        idx = np.flatnonzero(mask)
+        rows.append(idx)
+        cols.append(idx + int(np.dot(off, strides)))
+        vals.append(np.full(idx.size, fac))
+    H = coo_matrix((np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))),
+                   shape=(n, n)).tocsr()
+    Hs = np.asarray(H.sum(axis=1)).ravel()
+    return H, Hs
+
+
+def _solve_reduced(K: Any, f: np.ndarray) -> np.ndarray:
+    """Direct sparse solve of the reduced (free-dof) system; refuse a singular one.
+
+    A mechanism (supports that do not remove every rigid-body mode) gives a
+    singular K. SuperLU then either raises, warns and returns NaN, or returns a
+    finite but meaningless vector — so the residual is checked, not just trusted."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", MatrixRankWarning)
+        try:
+            u = spsolve(K, f, permc_spec="MMD_AT_PLUS_A")
+        except (RuntimeError, MatrixRankWarning) as exc:
+            raise ValueError(f"singular stiffness matrix (under-constrained supports?): {exc}") from exc
+    if not np.all(np.isfinite(u)):
+        raise ValueError("singular stiffness matrix (under-constrained supports?): non-finite displacements")
+    res = np.linalg.norm(K @ u - f)
+    if res > 1e-6 * max(np.linalg.norm(f), 1e-300):
+        raise ValueError(
+            f"stiffness solve did not converge (relative residual {res / np.linalg.norm(f):.2e}); "
+            "the supports probably leave a rigid-body mechanism")
+    return u
+
+
+def _read_solver_options(problem: dict[str, Any], default_max_iters: int) -> dict[str, Any]:
+    """Validated scalar options shared by simp_2d / simp_3d. Bad values are refused,
+    never coerced (``float('nan')`` passes a float() call)."""
+    def num(key: str, default: float, *, lo: float | None = None, hi: float | None = None,
+            lo_open: bool = False) -> float:
+        raw = problem.get(key, default)
+        val = float(default if raw is None else raw)
+        if not math.isfinite(val):
+            raise ValueError(f"{key} must be a finite number, got {raw!r}")
+        if lo is not None and (val <= lo if lo_open else val < lo):
+            raise ValueError(f"{key} must be {'>' if lo_open else '>='} {lo}, got {val}")
+        if hi is not None and val > hi:
+            raise ValueError(f"{key} must be <= {hi}, got {val}")
+        return val
+
+    ft_raw = problem.get("filter", problem.get("ft", "sensitivity"))
+    ft = _FILTERS.get(ft_raw.lower() if isinstance(ft_raw, str) else ft_raw)
+    if ft is None:
+        raise ValueError(f"filter must be 'sensitivity' or 'density' (ft=1|2), got {ft_raw!r}")
+    max_iters = int(num("max_iters", default_max_iters, lo=1))
+    opts = {
+        "penal": num("penalty", 3.0, lo=1.0),
+        "rmin": num("rmin", 1.5, lo=0.0, lo_open=True),
+        "max_iters": max_iters,
+        "tol": num("convergence_tol", DEFAULT_CONVERGENCE_TOL, lo=0.0, lo_open=True),
+        "emin": num("emin", DEFAULT_EMIN, lo=0.0, hi=0.1),
+        "xmin": num("xmin", 0.0, lo=0.0, hi=0.5),
+        "move": num("move", _OC_MOVE, lo=0.0, hi=1.0, lo_open=True),
+        "filter": ft,
+    }
+    if opts["emin"] == 0.0 and opts["xmin"] == 0.0:
+        raise ValueError("emin and xmin cannot both be 0: void elements would make the stiffness singular")
+    return opts
+
+
+def _simp_solve(*, KE: np.ndarray, edof: np.ndarray, ndof: int, fixed: np.ndarray, F: np.ndarray,
+                dims: tuple[int, ...], volfrac: float, opts: dict[str, Any],
+                preserve: np.ndarray | None, weight: np.ndarray | None, preserve_min: float) -> dict[str, Any]:
+    """Run the SIMP / OC loop. Arrays are flat in element order (see ``_filter_matrix``)."""
+    nele, nk = edof.shape
+    penal, emin, xmin, move, tol = opts["penal"], opts["emin"], opts["xmin"], opts["move"], opts["tol"]
+    density_filter = opts["filter"] == "density"
+
+    free = np.setdiff1d(np.arange(ndof), fixed)
+    # Reduced assembly: index vectors once, dropping entries that touch a fixed dof.
+    reduced = np.full(ndof, -1, dtype=np.int64)
+    reduced[free] = np.arange(free.size)
+    ri = reduced[np.repeat(edof, nk, axis=1).ravel()]
+    rj = reduced[np.tile(edof, (1, nk)).ravel()]
+    keep = (ri >= 0) & (rj >= 0)
+    ri, rj = ri[keep], rj[keep]
+    ke_flat = KE.ravel()
+    f_free = F[free]
+
+    H, Hs = _filter_matrix(dims, opts["rmin"])
+    dv = (H @ (1.0 / Hs)) if density_filter else np.ones(nele)
+    lower = np.full(nele, xmin) if preserve is None else np.where(preserve, preserve_min, xmin)
+
+    x = np.full(nele, volfrac)
+    xphys = x.copy()
+    U = np.zeros(ndof)
+    history: list[float] = []
+    change = 1.0
+    converged = False
+    it = 0
+    while it < opts["max_iters"]:
+        it += 1
+        stiff = emin + xphys ** penal * (1.0 - emin)
+        sK = (stiff[:, None] * ke_flat[None, :]).ravel()[keep]
+        K = coo_matrix((sK, (ri, rj)), shape=(free.size, free.size)).tocsc()
+        U[free] = _solve_reduced(K, f_free)
+        Ue = U[edof]
+        ce = np.einsum("ij,jk,ik->i", Ue, KE, Ue)
+        history.append(float(stiff @ ce))
+        dc = -penal * (1.0 - emin) * xphys ** (penal - 1) * ce
+        if density_filter:
+            dc = H @ (dc / Hs)
+        else:
+            dc = (H @ (x * dc)) / Hs / np.maximum(1e-3, x)
+        if weight is not None:
+            dc = dc * weight
+        # optimality-criteria update, bisection on the volume multiplier
+        l1, l2 = 0.0, 1e9
+        target = volfrac * nele
+        step = np.sqrt(np.maximum(-dc, 0.0) / dv)
+        lo_b = np.maximum(x - move, lower)
+        hi_b = np.minimum(x + move, 1.0)
+        while (l2 - l1) / (l1 + l2) > 1e-3:
+            lmid = 0.5 * (l2 + l1)
+            xnew = np.clip(x * step / math.sqrt(lmid), lo_b, hi_b)
+            xphys_new = (H @ xnew) / Hs if density_filter else xnew
+            if xphys_new.sum() > target:
+                l1 = lmid
+            else:
+                l2 = lmid
+        change = float(np.abs(xnew - x).max())
+        x, xphys = xnew, xphys_new
+        if change <= tol:
+            converged = True
+            break
+
+    # Sigmund (2007), SMO 33:401-424, eq. (41): M_nd = sum 4 x (1-x) / n x 100 %.
+    m_nd = float(400.0 * np.mean(xphys * (1.0 - xphys)))
+    warnings_out: list[str] = []
+    if not converged:
+        warnings_out.append(
+            f"NOT converged: stopped at max_iters={opts['max_iters']} with max density change "
+            f"{change:.4g} > tolerance {tol:g}; the layout may still change — raise max_iters "
+            "before relying on it")
+    return {
+        "xphys": xphys,
+        "history": history,
+        "iterations": it,
+        "converged": converged,
+        "final_change": change,
+        "m_nd": m_nd,
+        "warnings": warnings_out,
+    }
+
+
+def _convergence_fields(core: dict[str, Any], opts: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "converged": core["converged"],
+        "final_change": round(core["final_change"], 6),
+        "max_iters": opts["max_iters"],
+        "max_iters_reached": not core["converged"],
+        "convergence_tolerance": opts["tol"],
+        "non_discreteness_percent": round(core["m_nd"], 3),
+        "filter": opts["filter"],
+        "interpolation": {"scheme": "modified_simp" if opts["emin"] > 0 else "classic_simp",
+                          "emin": opts["emin"], "xmin": opts["xmin"], "penalty": opts["penal"]},
+        "linear_solver": "scipy.sparse.linalg.spsolve (SuperLU)",
+    }
+
+
+def _sig(v: float) -> float:
+    """Compliance to 10 significant digits (the old fixed 6 decimals erased small values)."""
+    return float(f"{v:.10g}")
+
+
+def _volfrac(problem: dict[str, Any], *keys_and_default: Any) -> float:
+    *keys, default = keys_and_default
+    raw = next((problem[k] for k in keys if problem.get(k) is not None), default)
+    val = float(raw)
+    if not math.isfinite(val) or not 0.0 < val <= 1.0:
+        raise ValueError(f"volume fraction must be in (0, 1], got {raw!r}")
+    return val
+
+
+def _grid_dims(grid: dict[str, Any], keys: tuple[str, ...], defaults: tuple[int, ...]) -> tuple[int, ...]:
+    dims = tuple(int(grid.get(k, d)) for k, d in zip(keys, defaults))
+    if any(d < 1 for d in dims):
+        raise ValueError(f"grid sizes must be >= 1, got {dict(zip(keys, dims))}")
+    return dims
+
+
+def _edof_2d(nelx: int, nely: int) -> np.ndarray:
+    """Element -> dof map, element e = elx*nely + ely (column-major over [nely][nelx])."""
+    ely, elx = np.unravel_index(np.arange(nelx * nely), (nely, nelx), order="F")
+    n1 = (nely + 1) * elx + ely
+    n2 = n1 + nely + 1
+    return np.stack([2 * n1, 2 * n1 + 1, 2 * n2, 2 * n2 + 1,
+                     2 * n2 + 2, 2 * n2 + 3, 2 * n1 + 2, 2 * n1 + 3], axis=1)
+
+
+def simp_2d(problem: dict[str, Any]) -> dict[str, Any]:
+    """2D SIMP compliance minimization (OC update; sensitivity or density filter).
+
+    problem.grid = {nelx, nely}; volfrac, penalty (3), rmin (1.5), max_iters (200),
+    convergence_tol (0.01 on the max density change), filter ('sensitivity' default
+    | 'density'), emin (1e-9, modified SIMP) and xmin (0), bcs.preset
+    ('cantilever'|'mbb_beam') or explicit cell-based bcs.supports/bcs.loads.
+    Sparse and vectorized (see the core above); the result says whether the run
+    converged, and how grey (non-discrete) the final design is.
     """
-    grid = problem.get("grid") or {}
-    nelx = int(grid.get("nelx", 30))
-    nely = int(grid.get("nely", 10))
-    volfrac = float(problem.get("volfrac", 0.5))
-    penal = float(problem.get("penalty", 3.0))
-    rmin = float(problem.get("rmin", 1.5))
-    max_iters = int(problem.get("max_iters", 40))
+    nelx, nely = _grid_dims(problem.get("grid") or {}, ("nelx", "nely"), (30, 10))
+    volfrac = _volfrac(problem, "volfrac", 0.5)
+    opts = _read_solver_options(problem, DEFAULT_MAX_ITERS_2D)
     bcs = problem.get("bcs") or {}
 
     KE = _element_stiffness()
     ndof = 2 * (nelx + 1) * (nely + 1)
     fixed, F, preset = _resolve_bcs(nelx, nely, bcs)
     bcs_source = "preset" if preset is not None else "explicit"
-    free = np.setdiff1d(np.arange(ndof), fixed)
 
     # Optional result-guidance: preserve_mask floors protected cells; stiffness_weight_field
     # locally scales the sensitivity. Off / absent -> identical to the classic behavior.
     preserve_mask, weight_field, preserve_min = _grid_guidance_2d(problem, nely, nelx)
     guidance_consumed = preserve_mask is not None or weight_field is not None
 
-    # element -> global dof map
-    edof = np.zeros((nelx * nely, 8), dtype=int)
-    for elx in range(nelx):
-        for ely in range(nely):
-            n1 = (nely + 1) * elx + ely
-            n2 = (nely + 1) * (elx + 1) + ely
-            e = elx * nely + ely
-            edof[e] = [2 * n1, 2 * n1 + 1, 2 * n2, 2 * n2 + 1, 2 * n2 + 2, 2 * n2 + 3, 2 * n1 + 2, 2 * n1 + 3]
-
-    # sensitivity filter weights (precomputed)
-    x = np.full((nely, nelx), volfrac)
-    ceil_r = int(np.ceil(rmin))
-    history: list[float] = []
-    change = 1.0
-    it = 0
-    while change > 0.01 and it < max_iters:
-        it += 1
-        # FE analysis (dense solve on free dofs)
-        K = np.zeros((ndof, ndof))
-        xpen = x ** penal
-        for elx in range(nelx):
-            for ely in range(nely):
-                e = elx * nely + ely
-                ed = edof[e]
-                K[np.ix_(ed, ed)] += xpen[ely, elx] * KE
-        U = np.zeros(ndof)
-        U[free] = np.linalg.solve(K[np.ix_(free, free)], F[free])
-
-        # compliance + sensitivities
-        c = 0.0
-        dc = np.zeros((nely, nelx))
-        for elx in range(nelx):
-            for ely in range(nely):
-                e = elx * nely + ely
-                ue = U[edof[e]]
-                ke_energy = float(ue @ KE @ ue)
-                c += xpen[ely, elx] * ke_energy
-                dc[ely, elx] = -penal * (x[ely, elx] ** (penal - 1)) * ke_energy
-        history.append(round(c, 6))
-
-        # sensitivity filtering
-        dcf = np.zeros((nely, nelx))
-        for i in range(nelx):
-            for j in range(nely):
-                s = 0.0
-                acc = 0.0
-                for k in range(max(i - ceil_r, 0), min(i + ceil_r + 1, nelx)):
-                    for l in range(max(j - ceil_r, 0), min(j + ceil_r + 1, nely)):
-                        fac = rmin - np.hypot(i - k, j - l)
-                        if fac > 0:
-                            s += fac
-                            acc += fac * x[l, k] * dc[l, k]
-                dcf[j, i] = acc / (x[j, i] * s) if s > 0 else dc[j, i]
-
-        # guidance: bias sensitivity toward stiffness-sensitive cells; floor preserved cells.
-        dc_eff = dcf if weight_field is None else dcf * weight_field
-        lower = 0.001 if preserve_mask is None else np.where(preserve_mask, preserve_min, 0.001)
-
-        # optimality-criteria update with bisection on the volume multiplier
-        l1, l2, move = 1e-9, 1e9, 0.2
-        xnew = x.copy()
-        while (l2 - l1) / (l1 + l2) > 1e-3:
-            lmid = 0.5 * (l1 + l2)
-            xnew = np.clip(
-                x * np.sqrt(np.maximum(-dc_eff, 0) / lmid),
-                np.maximum(x - move, lower),
-                np.minimum(x + move, 1.0),
-            )
-            if xnew.mean() - volfrac > 0:
-                l1 = lmid
-            else:
-                l2 = lmid
-        change = float(np.abs(xnew - x).max())
-        x = xnew
-
+    core = _simp_solve(
+        KE=KE, edof=_edof_2d(nelx, nely), ndof=ndof, fixed=fixed, F=F, dims=(nely, nelx),
+        volfrac=volfrac, opts=opts,
+        preserve=None if preserve_mask is None else preserve_mask.ravel(order="F"),
+        weight=None if weight_field is None else weight_field.ravel(order="F"),
+        preserve_min=preserve_min,
+    )
+    x = core["xphys"].reshape((nely, nelx), order="F")
+    history = [_sig(c) for c in core["history"]]
     return {
         "density": [[round(float(v), 4) for v in row] for row in x.tolist()],
         "nelx": nelx, "nely": nely,
-        "iterations": it,
+        "iterations": core["iterations"],
         "compliance_history": history,
         "final_compliance": history[-1] if history else None,
         "achieved_volume_fraction": round(float(x.mean()), 4),
         "target_volume_fraction": volfrac,
+        **_convergence_fields(core, opts),
         "bcs_preset": preset,
         "bcs_source": bcs_source,
+        "warnings": _preset_warnings(bcs, preset) + core["warnings"],
         "guidance_consumed": guidance_consumed,
         "guidance_cells_preserved": int(preserve_mask.sum()) if preserve_mask is not None else 0,
         "guidance_cells_weighted": int((weight_field != 1.0).sum()) if weight_field is not None else 0,
@@ -356,8 +570,8 @@ def precomputed_optimizer(problem: dict[str, Any]) -> dict[str, Any]:
 
 
 # ── 3D SIMP (experimental structured-voxel reference optimizer) ──────────────
-# Self-contained 8-node hex (H8) SIMP on a structured voxel grid: pure numpy,
-# dense FE solve, classic OC update + sensitivity filter. Experimental reference
+# Self-contained 8-node hex (H8) SIMP on a structured voxel grid, run by the shared
+# sparse SIMP core above (direct sparse solve, OC update). Experimental reference
 # only — small grids, single linear-elastic isotropic material. NOT production.
 
 def _hex8_stiffness(nu: float, E: float = 1.0) -> np.ndarray:
@@ -452,15 +666,16 @@ def _explicit_bcs_3d(nx: int, ny: int, nz: int, supports: list, loads: list) -> 
 
 def _resolve_bcs_3d(nx: int, ny: int, nz: int, bcs: dict[str, Any]) -> tuple[np.ndarray, np.ndarray, str | None]:
     """Explicit 3D supports/loads if present, else the cantilever_3d preset
-    (x=0 face fully clamped, -Y tip load at the far-end mid voxel)."""
+    (x=0 face fully clamped, -Y tip load at the far-end mid voxel). Degenerate
+    explicit BCs raise :class:`TopologyProblemRefused`."""
     supports = bcs.get("supports")
     loads = bcs.get("loads")
-    if supports or loads:
-        fixed, F = _explicit_bcs_3d(nx, ny, nz, supports or [], loads or [])
-        if fixed.size and np.abs(F).sum() > 0:
-            return fixed, F, None
     nnx, nny, nnz = nx + 1, ny + 1, nz + 1
     ndof = 3 * nnx * nny * nnz
+    if supports or loads:
+        fixed, F = _explicit_bcs_3d(nx, ny, nz, supports or [], loads or [])
+        _require_usable_bcs(fixed, F, ndof, "3d")
+        return fixed, F, None
     F = np.zeros(ndof)
     fixed: set[int] = set()
     for iy in range(nny):
@@ -472,134 +687,69 @@ def _resolve_bcs_3d(nx: int, ny: int, nz: int, bcs: dict[str, Any]) -> tuple[np.
     return np.array(sorted(fixed), dtype=int), F, "cantilever_3d"
 
 
-def _sensitivity_filter_3d(nx: int, ny: int, nz: int, rmin: float, x: np.ndarray, dc: np.ndarray) -> np.ndarray:
-    """Classic mesh-independence sensitivity filter over a 3D voxel neighbourhood."""
-    out = np.zeros_like(dc)
-    r = int(np.ceil(rmin))
-
-    def eid(i: int, j: int, k: int) -> int:
-        return i + nx * j + nx * ny * k
-
-    for k in range(nz):
-        for j in range(ny):
-            for i in range(nx):
-                s = 0.0
-                acc = 0.0
-                for kk in range(max(k - r, 0), min(k + r + 1, nz)):
-                    for jj in range(max(j - r, 0), min(j + r + 1, ny)):
-                        for ii in range(max(i - r, 0), min(i + r + 1, nx)):
-                            fac = rmin - float(np.sqrt((i - ii) ** 2 + (j - jj) ** 2 + (k - kk) ** 2))
-                            if fac > 0:
-                                e = eid(ii, jj, kk)
-                                s += fac
-                                acc += fac * x[e] * dc[e]
-                e0 = eid(i, j, k)
-                out[e0] = acc / (x[e0] * s) if s > 0 else dc[e0]
-    return out
+def _edof_3d(nx: int, ny: int, nz: int) -> np.ndarray:
+    """Element -> dof map in the H8 local order of _hex8_stiffness; e = i + nx*j + nx*ny*k."""
+    nnx, nny = nx + 1, ny + 1
+    i, j, k = np.unravel_index(np.arange(nx * ny * nz), (nx, ny, nz), order="F")
+    corners = ((0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0), (0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1))
+    nodes = np.stack([(i + dx) + nnx * (j + dy) + nnx * nny * (k + dz) for dx, dy, dz in corners], axis=1)
+    return (3 * nodes[:, :, None] + np.arange(3)[None, None, :]).reshape(nodes.shape[0], 24)
 
 
 def simp_3d(problem: dict[str, Any]) -> dict[str, Any]:
-    """Experimental 3D SIMP (H8 hex, dense numpy FE, OC update + sensitivity filter).
+    """Experimental 3D SIMP (H8 hex voxels, sparse vectorized FE, OC update).
 
     problem.grid = {nx, ny, nz}; volume_fraction (or volfrac), penalty (3), rmin (1.5),
-    max_iters (30). bcs: explicit {supports, loads} (3D cells) or the cantilever_3d
-    preset. Small grids only. Returns density_3d as nested [nz][ny][nx]."""
-    grid = problem.get("grid") or {}
-    nx = int(grid.get("nx", 16))
-    ny = int(grid.get("ny", 10))
-    nz = int(grid.get("nz", 6))
-    volfrac = float(problem.get("volume_fraction", problem.get("volfrac", 0.3)))
-    penal = float(problem.get("penalty", 3.0))
-    rmin = float(problem.get("rmin", 1.5))
-    max_iters = int(problem.get("max_iters", 30))
+    max_iters (200), convergence_tol (0.01), filter ('sensitivity' | 'density'),
+    emin (1e-9), xmin (0). bcs: explicit {supports, loads} (3D cells) or the
+    cantilever_3d preset. Returns density_3d as nested [nz][ny][nx]."""
+    nx, ny, nz = _grid_dims(problem.get("grid") or {}, ("nx", "ny", "nz"), (16, 10, 6))
+    volfrac = _volfrac(problem, "volume_fraction", "volfrac", 0.3)
+    opts = _read_solver_options(problem, DEFAULT_MAX_ITERS_3D)
     nu = float(problem.get("poisson_ratio", 0.3))
+    if not (math.isfinite(nu) and -1.0 < nu < 0.5):
+        raise ValueError(f"poisson_ratio must be in (-1, 0.5), got {nu}")
+    bcs = problem.get("bcs") or {}
 
     KE = _hex8_stiffness(nu, 1.0)
-    nnx, nny, nnz = nx + 1, ny + 1, nz + 1
-    ndof = 3 * nnx * nny * nnz
+    KE = 0.5 * (KE + KE.T)   # exact symmetry for the sparse assembly (Gauss sum is symmetric to round-off)
+    ndof = 3 * (nx + 1) * (ny + 1) * (nz + 1)
     nele = nx * ny * nz
-
-    def eid(i: int, j: int, k: int) -> int:
-        return i + nx * j + nx * ny * k
-
-    edof = np.zeros((nele, 24), dtype=int)
-    for k in range(nz):
-        for j in range(ny):
-            for i in range(nx):
-                dofs: list[int] = []
-                for n in _hex_corner_nodes(i, j, k, nnx, nny):
-                    dofs += [3 * n, 3 * n + 1, 3 * n + 2]
-                edof[eid(i, j, k)] = dofs
-
-    fixed, F, preset = _resolve_bcs_3d(nx, ny, nz, problem.get("bcs") or {})
-    free = np.setdiff1d(np.arange(ndof), fixed)
+    fixed, F, preset = _resolve_bcs_3d(nx, ny, nz, bcs)
 
     # Optional result-guidance (flat, eid-indexed). Off/absent -> classic behavior.
     preserve_mask, weight_field, preserve_min = _grid_guidance_3d(problem, nx, ny, nz)
     guidance_consumed = preserve_mask is not None or weight_field is not None
 
-    warnings: list[str] = []
-    x = np.full(nele, volfrac)
-    history: list[float] = []
-    change = 1.0
-    it = 0
-    while change > 0.01 and it < max_iters:
-        it += 1
-        xpen = x ** penal
-        K = np.zeros((ndof, ndof))
-        for e in range(nele):
-            ed = edof[e]
-            K[np.ix_(ed, ed)] += xpen[e] * KE
-        U = np.zeros(ndof)
-        try:
-            U[free] = np.linalg.solve(K[np.ix_(free, free)], F[free])
-        except np.linalg.LinAlgError:
-            warnings.append("singular stiffness (under-constrained BCs); stopping early")
-            break
-        c = 0.0
-        dc = np.zeros(nele)
-        for e in range(nele):
-            ue = U[edof[e]]
-            ce = float(ue @ KE @ ue)
-            c += xpen[e] * ce
-            dc[e] = -penal * (x[e] ** (penal - 1)) * ce
-        history.append(round(c, 6))
-        dc = _sensitivity_filter_3d(nx, ny, nz, rmin, x, dc)
-        dc_eff = dc if weight_field is None else dc * weight_field
-        lower = 0.001 if preserve_mask is None else np.where(preserve_mask, preserve_min, 0.001)
-        l1, l2, move = 1e-9, 1e9, 0.2
-        xnew = x.copy()
-        while (l2 - l1) / (l1 + l2) > 1e-3:
-            lmid = 0.5 * (l1 + l2)
-            xnew = np.clip(
-                x * np.sqrt(np.maximum(-dc_eff, 0) / lmid),
-                np.maximum(x - move, lower), np.minimum(x + move, 1.0))
-            if xnew.mean() - volfrac > 0:
-                l1 = lmid
-            else:
-                l2 = lmid
-        change = float(np.abs(xnew - x).max())
-        x = xnew
+    core = _simp_solve(
+        KE=KE, edof=_edof_3d(nx, ny, nz), ndof=ndof, fixed=fixed, F=F, dims=(nx, ny, nz),
+        volfrac=volfrac, opts=opts, preserve=preserve_mask, weight=weight_field,
+        preserve_min=preserve_min,
+    )
+    x = core["xphys"]
+    history = [_sig(c) for c in core["history"]]
 
-    if it < 3:
-        warnings.append("very few iterations completed — result may be unconverged")
+    warnings_out = _preset_warnings(bcs, preset) + core["warnings"]
+    if core["iterations"] < 3:
+        warnings_out.append("very few iterations completed — result may be unconverged")
     if nele < 200:
-        warnings.append("coarse grid (<200 voxels) — result is indicative, not quantitative")
+        warnings_out.append("coarse grid (<200 voxels) — result is indicative, not quantitative")
     if len(history) >= 2 and history[-1] >= history[0]:
-        warnings.append("compliance did not decrease — check boundary conditions / grid")
+        warnings_out.append("compliance did not decrease — check boundary conditions / grid")
 
-    dens3 = [[[round(float(x[eid(i, j, k)]), 4) for i in range(nx)] for j in range(ny)] for k in range(nz)]
+    dens3 = np.round(x.reshape((nz, ny, nx)), 4).tolist()
     return {
         "density_3d": dens3,
         "nx": nx, "ny": ny, "nz": nz,
-        "iterations": it,
+        "iterations": core["iterations"],
         "compliance_history": history,
         "final_compliance": history[-1] if history else None,
         "achieved_volume_fraction": round(float(x.mean()), 4),
         "target_volume_fraction": volfrac,
+        **_convergence_fields(core, opts),
         "bcs_preset": preset,
         "bcs_source": "preset" if preset is not None else "explicit",
-        "warnings": warnings,
+        "warnings": warnings_out,
         "guidance_consumed": guidance_consumed,
         "guidance_cells_preserved": int(preserve_mask.sum()) if preserve_mask is not None else 0,
         "guidance_cells_weighted": int((weight_field != 1.0).sum()) if weight_field is not None else 0,
@@ -1300,7 +1450,7 @@ def derive_topopt_problem_from_package(
     package_path: str | Path, *,
     dimension: str = "2d", resolution: int = 48, resolution_3d: int = 16,
     volfrac: float = 0.5, penalty: float = 3.0,
-    rmin: float = 1.5, max_iters: int = 40, objective: str = "compliance_minimization",
+    rmin: float = 1.5, max_iters: int = DEFAULT_MAX_ITERS_2D, objective: str = "compliance_minimization",
     design_space_node: str | None = None,
 ) -> dict[str, Any]:
     """Derive a 2D topology-optimization problem from a project's CAE setup + geometry.
@@ -1578,7 +1728,7 @@ def _face_boundary_voxels(
 def derive_topopt_problem_3d_from_package(
     package_path: str | Path, *,
     resolution: int = 16, volfrac: float = 0.3, penalty: float = 3.0,
-    rmin: float = 1.5, max_iters: int = 30, objective: str = "compliance_minimization",
+    rmin: float = 1.5, max_iters: int = DEFAULT_MAX_ITERS_3D, objective: str = "compliance_minimization",
     design_space_node: str | None = None,
 ) -> dict[str, Any]:
     """Derive a full-3D topology-optimization problem from a project's CAE + geometry.
@@ -1761,10 +1911,6 @@ def derive_topopt_problem_3d_from_package(
     }
 
 
-class TopologyProblemRefused(ValueError):
-    """The supplied problem is a derivation's refusal, not a problem to solve."""
-
-
 def run_topology_optimization(problem: dict[str, Any], *, optimizer: str = "simp_2d") -> dict[str, Any]:
     """Run an optimizer and wrap its output in the neutral result contract.
 
@@ -1843,6 +1989,19 @@ def run_topology_optimization(problem: dict[str, Any], *, optimizer: str = "simp
         "objective_history": opt.get("compliance_history"),
         "achieved_volume_fraction": opt.get("achieved_volume_fraction"),
         "threshold": threshold,
+        # Convergence is reported, not implied: a run cut off at max_iters used to
+        # look exactly like a finished one. `None` = the optimizer did not say
+        # (e.g. `precomputed`), which is unknown, not converged.
+        "converged": opt.get("converged"),
+        "final_change": opt.get("final_change"),
+        "max_iters": opt.get("max_iters"),
+        "max_iters_reached": opt.get("max_iters_reached"),
+        "convergence_tolerance": opt.get("convergence_tolerance"),
+        # Sigmund (2007) measure of non-discreteness, 0 % = fully black/white.
+        "non_discreteness_percent": opt.get("non_discreteness_percent"),
+        "filter": opt.get("filter"),
+        "interpolation": opt.get("interpolation"),
+        "linear_solver": opt.get("linear_solver"),
     }
 
     if is_3d:
