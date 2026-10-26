@@ -243,9 +243,13 @@ def synthesize_setup_from_parsed(zf: zipfile.ZipFile) -> dict[str, Any] | None:
             continue
         feature_id = target_feature(bc)
         if feature_id:
-            boundary_conditions.append(
-                {"target_feature": feature_id, "type": bc.get("type", "fixed")}
-            )
+            entry = {"target_feature": feature_id, "type": bc.get("type", "fixed")}
+            # A roller/symmetry BC is its DOF range; dropping it made every BC
+            # read as an all-DOF clamp (or, in the legacy deck, vanish).
+            for key in ("dof_start", "dof_end", "value"):
+                if key in bc:
+                    entry[key] = bc[key]
+            boundary_conditions.append(entry)
 
     loads: list[dict[str, Any]] = []
     for load in _read_json(zf, PARSED_LOADS_PATH).get("loads") or []:
@@ -253,6 +257,20 @@ def synthesize_setup_from_parsed(zf: zipfile.ZipFile) -> dict[str, Any] | None:
             continue
         feature_id = target_feature(load)
         if not feature_id:
+            continue
+        if str(load.get("type") or "").lower() == "pressure":
+            # A pressure has no force magnitude; reading it through `value_n`
+            # turned it into a 0 N load.
+            loads.append({
+                "target_feature": feature_id,
+                "type": "pressure",
+                "pressure_mpa": _as_float(load.get("pressure_mpa")) or 0.0,
+                # PIRA: readers that know only force loads see NO force here
+                # (0, not absent: an absent magnitude defaults to a 1 N
+                # reference load in the topology-optimization derivation).
+                # Upgrade path: teach those readers the pressure form.
+                "value_n": 0.0,
+            })
             continue
         raw_value = load.get("value_n", load.get("magnitude_n", load.get("value", 0.0)))
         loads.append({

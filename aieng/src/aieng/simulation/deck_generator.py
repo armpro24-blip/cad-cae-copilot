@@ -267,7 +267,9 @@ def generate_solver_input_package(
         total_magnitude = 0.0
         for load in loads:
             try:
-                total_magnitude += abs(float(load.get("value", 0.0) or 0.0))
+                total_magnitude += abs(
+                    float(load.get("pressure", load.get("value", 0.0)) or 0.0)
+                )
             except (TypeError, ValueError):
                 continue
         if total_magnitude <= 0.0:
@@ -275,7 +277,8 @@ def generate_solver_input_package(
                 "Every applied load resolved to a magnitude of 0 N, so this deck "
                 "describes an UNLOADED model: the solve will converge and report "
                 "zero displacement and zero stress. Check that each load declares "
-                "its total force (value_n) and a direction vector."
+                "its total force (value_n) and a direction vector, or a pressure "
+                "(pressure_mpa)."
             )
 
     if missing:
@@ -411,9 +414,11 @@ def _resolve_boundary_conditions(
                     {
                         "id": bc.get("id", "unknown"),
                         "target": nset,
-                        "dof_start": _bc_dof_start(bc.get("type", "fixed")),
-                        "dof_end": 3,
-                        "value": 0.0,
+                        # A stated DOF range (roller / symmetry) wins over the
+                        # type-derived default.
+                        "dof_start": bc.get("dof_start", _bc_dof_start(bc.get("type", "fixed"))),
+                        "dof_end": bc.get("dof_end", 3),
+                        "value": bc.get("value", 0.0),
                     }
                 )
             if mapped_bcs:
@@ -448,6 +453,9 @@ def _resolve_loads(
                         f"Load '{load.get('id', 'unknown')}' target_feature '{target_feature}' "
                         f"has no CAE mapping; falling back to parsed loads."
                     )
+                    continue
+                if _is_pressure(load):
+                    mapped_loads.append({**_pressure_entry(load), "target": nset})
                     continue
                 direction = load.get("direction", [0, -1, 0])
                 value = float(load.get("value_n", 0.0) or 0.0)
@@ -529,6 +537,9 @@ def _normalize_parsed_loads(loads: list[Any]) -> list[dict[str, Any]]:
     for load in loads:
         if not isinstance(load, dict):
             continue
+        if _is_pressure(load):
+            out.append(_pressure_entry(load))
+            continue
         if "dof" in load:
             out.append(load)
             continue
@@ -554,6 +565,24 @@ def _normalize_parsed_loads(loads: list[Any]) -> list[dict[str, Any]]:
                 }
             )
     return out
+
+
+def _is_pressure(load: dict[str, Any]) -> bool:
+    return str(load.get("type") or "").strip().lower() == "pressure"
+
+
+def _pressure_entry(load: dict[str, Any]) -> dict[str, Any]:
+    """A pressure load in the emitter's shape: ``{id, target, pressure}`` (MPa).
+
+    Positive pressure pushes INTO the face (against its outward normal) — the
+    CalculiX/Abaqus ``P`` convention — so a tensile edge load is negative.
+    """
+    raw = load.get("pressure_mpa", load.get("value"))
+    try:
+        pressure = float(raw)
+    except (TypeError, ValueError):
+        pressure = 0.0
+    return {"id": load.get("id", "unknown"), "target": load.get("target"), "pressure": pressure}
 
 
 def _load_components(direction: Any, magnitude: float) -> list[tuple[int, float]]:
@@ -609,6 +638,116 @@ def _count_nset_nodes(source_deck_text: str) -> dict[str, int]:
         if current and stripped and not stripped.startswith("**"):
             counts[current] += sum(1 for p in stripped.split(",") if p.strip())
     return counts
+
+
+class _LoadSurfaces:
+    """How a load on a node set reaches the nodes: by the faces that set covers.
+
+    Built once per deck from the source deck's mesh. ``nodal_shares(target)``
+    returns ``{node: share}`` summing to 1 — the traction-consistent split over
+    the set's free element faces (see :mod:`aieng.simulation.surface_loads`) —
+    or ``None`` when the set covers no element face (a point or line load, or a
+    non-tetrahedral mesh), in which case the caller keeps CalculiX's per-node
+    ``*CLOAD`` semantics and divides the total equally, and says so.
+    """
+
+    def __init__(self, source_deck_text: str) -> None:
+        from aieng.simulation import surface_loads as _sl
+
+        self._sl = _sl
+        self.node_counts = _count_nset_nodes(source_deck_text)
+        try:
+            self.nodes, elements, self.nsets = _sl.parse_mesh(source_deck_text)
+            self.free = _sl.free_facets(elements)
+        except Exception:  # noqa: BLE001 - an unparseable mesh keeps the old split
+            self.nodes, self.nsets, self.free = {}, {}, []
+        self._facets: dict[str, list[Any]] = {}
+
+    def facets(self, target: str) -> list[Any]:
+        if target not in self._facets:
+            members = self.nsets.get(target)
+            self._facets[target] = (
+                self._sl.facets_within(self.free, members) if members else []
+            )
+        return self._facets[target]
+
+    def nodal_shares(self, target: str) -> dict[int, float] | None:
+        shares = self._sl.consistent_weights(self.facets(target), self.nodes)
+        return shares or None
+
+
+def _distributed_lines(
+    loads: list[dict[str, Any]],
+    surfaces: _LoadSurfaces,
+    warnings: list[str],
+    *,
+    dof_of: Any,
+    kind: str,
+) -> list[str]:
+    """Data lines distributing each load's TOTAL value over its target set.
+
+    ``dof_of(load)`` gives the DOF column (1-3 for force, 11 for heat flux).
+    A set that covers element faces gets the traction-consistent nodal split;
+    one that does not (a point/line set) gets ``total / n_nodes`` per node,
+    with a warning when that is more than one node, because the equal split is
+    then a statement about the load the setup did not make.
+    """
+    out: list[str] = []
+    for load in loads:
+        target = str(load.get("target", "unknown"))
+        total = float(load.get("value", 0.0) or 0.0)
+        dof = dof_of(load)
+        shares = surfaces.nodal_shares(target)
+        if shares:
+            for node in sorted(shares):
+                out.append(f"{node}, {dof}, {total * shares[node]:.8g}")
+            continue
+        n_nodes = surfaces.node_counts.get(target, 0)
+        if n_nodes > 0:
+            per_node = total / n_nodes
+            if n_nodes > 1 and total:
+                warnings.append(
+                    f"{kind} on '{target}': the node set covers no tetrahedral "
+                    f"element face, so the total is split equally over its "
+                    f"{n_nodes} nodes (a concentrated/line load), not distributed "
+                    "as a surface traction."
+                )
+        else:
+            per_node = total
+            if total:
+                warnings.append(
+                    f"{kind} on '{target}': node count unknown, applying the value "
+                    f"per node (CalculiX semantics) instead of distributing "
+                    f"a total — verify the resulting magnitude."
+                )
+        out.append(f"{target}, {dof}, {per_node:.6f}")
+    return out
+
+
+def _pressure_lines(
+    loads: list[dict[str, Any]], surfaces: _LoadSurfaces
+) -> list[str]:
+    """``*DLOAD`` face pressures, one line per covered element face.
+
+    A pressure cannot fall back to a nodal split — its direction is the surface
+    normal, which a node set does not carry — so a target that covers no
+    element face is refused rather than dropped.
+    """
+    out: list[str] = []
+    for load in loads:
+        target = str(load.get("target", "unknown"))
+        facets = surfaces.facets(target)
+        if not facets:
+            raise DeckGenerationError(
+                f"Pressure load '{load.get('id', 'unknown')}' on '{target}': the "
+                "node set covers no tetrahedral element face, so there is no "
+                "surface to apply a pressure to. Re-bind it to a face of the "
+                "current mesh."
+            )
+        value = _fmt_card_number(float(load.get("pressure", 0.0)))
+        for facet in sorted(facets, key=lambda f: (f.element_id, f.face_number)):
+            out.append(f"{facet.element_id}, P{facet.face_number}, {value}")
+    return out
 
 
 def _extract_solid_section_materials(source_deck_text: str) -> set[str]:
@@ -781,8 +920,8 @@ def _assemble_deck(
     # ---- Step (analysis-type-specific; CalculiX *CLOAD is step-dependent, so
     #      loads are emitted inside the step here, not before it) ----
     lines.append(f"** --- Step ({analysis_type}) ---")
-    nset_counts = _count_nset_nodes(source_deck_text or "")
-    lines += _step_block(analysis_type, solver_settings, loads, warnings, nset_counts)
+    surfaces = _LoadSurfaces(source_deck_text or "")
+    lines += _step_block(analysis_type, solver_settings, loads, warnings, surfaces)
 
     return "\n".join(lines) + "\n"
 
@@ -1020,7 +1159,7 @@ def _step_block(
     solver_settings: dict[str, Any] | None,
     loads: list[dict[str, Any]],
     warnings: list[str],
-    nset_counts: dict[str, int] | None = None,
+    surfaces: _LoadSurfaces | None = None,
 ) -> list[str]:
     """Build the analysis-type-specific *STEP block.
 
@@ -1030,33 +1169,41 @@ def _step_block(
     - modal:  `*FREQUENCY` + N eigenvalues + mode-shape (U) output; loads ignored.
     - buckling: `*BUCKLE` + N factors + the reference load + U output.
 
-    A load's ``value`` is the intended TOTAL force on its target node set. Because
-    a ``*CLOAD`` on an NSET is applied by CalculiX to every node in the set, the
-    emitted per-node value is ``total / n_nodes`` (``nset_counts``). When the node
-    count is unknown the total is emitted unchanged and a warning is recorded, so
-    the load is never silently dropped.
+    A force (or heat-flux) load's ``value`` is the intended TOTAL on its target
+    node set, distributed by :func:`_distributed_lines` — traction-consistent
+    over the element faces the set covers. A pressure load (``pressure``)
+    becomes ``*DLOAD`` face pressures. Neither is ever silently dropped.
     """
     ss = solver_settings if isinstance(solver_settings, dict) else {}
     step_name = _resolve_step_name(solver_settings)
-    counts = nset_counts or {}
+    surfaces = surfaces or _LoadSurfaces("")
+    force_loads = [ld for ld in loads if "pressure" not in ld]
+    pressure_loads = [ld for ld in loads if "pressure" in ld]
 
     def _cload_lines() -> list[str]:
-        out = ["*CLOAD"]
-        for load in loads:
-            target = load.get("target", "unknown")
-            total = float(load.get("value", 0.0) or 0.0)
-            n_nodes = counts.get(target, 0)
-            if n_nodes > 0:
-                per_node = total / n_nodes
-            else:
-                per_node = total
-                warnings.append(
-                    f"Load on '{target}': node count unknown, applying the value "
-                    f"per node (CalculiX *CLOAD semantics) instead of distributing "
-                    f"a total force — verify the resulting magnitude."
-                )
-            out.append(f"{target}, {load.get('dof', 2)}, {per_node:.6f}")
+        out: list[str] = []
+        if force_loads:
+            out.append("*CLOAD")
+            out += _distributed_lines(
+                force_loads, surfaces, warnings,
+                dof_of=lambda load: load.get("dof", 2), kind="Load",
+            )
+        if pressure_loads:
+            out.append("*DLOAD")
+            out += _pressure_lines(pressure_loads, surfaces)
         return out
+
+    def _cflux_lines() -> list[str]:
+        if pressure_loads:
+            raise DeckGenerationError(
+                "A pressure load was given for a heat-transfer analysis; a "
+                "thermal step takes heat flux (a total on a face), not pressure."
+            )
+        if not force_loads:
+            return []
+        return ["*CFLUX"] + _distributed_lines(
+            force_loads, surfaces, warnings, dof_of=lambda _load: 11, kind="Heat flux",
+        )
 
     def _int_setting(*keys: str, default: int, lo: int, hi: int) -> int:
         for k in keys:
@@ -1094,26 +1241,11 @@ def _step_block(
     if analysis_type == "thermal":
         # Steady-state heat conduction. Temperature boundary conditions
         # (`*BOUNDARY` on DOF 11) live in the model definition before the step and
-        # drive the field; a concentrated heat flux (`*CFLUX` on DOF 11) is an
-        # optional in-step driver. NT = nodal temperature output.
+        # drive the field; a heat flux (`*CFLUX` on DOF 11, a TOTAL over the face
+        # distributed like a force) is an optional in-step driver. NT = nodal
+        # temperature output.
         block = [f"*STEP, NAME={step_name}", "*HEAT TRANSFER, STEADY STATE"]
-        if loads:
-            block.append("*CFLUX")
-            for load in loads:
-                target = load.get("target", "unknown")
-                total = float(load.get("value", 0.0) or 0.0)
-                n_nodes = counts.get(target, 0)
-                if n_nodes > 0:
-                    per_node = total / n_nodes
-                else:
-                    per_node = total
-                    if total:
-                        warnings.append(
-                            f"Heat flux on '{target}': node count unknown, applying "
-                            f"the value per node (*CFLUX semantics) instead of "
-                            f"distributing a total — verify the magnitude."
-                        )
-                block.append(f"{target}, 11, {per_node:.6f}")
+        block += _cflux_lines()
         block += ["*NODE FILE", "NT", "*END STEP"]
         return block
 
@@ -1128,14 +1260,7 @@ def _step_block(
             f"*STEP, NAME={step_name}",
             "*UNCOUPLED TEMPERATURE-DISPLACEMENT, STEADY STATE",
         ]
-        if loads:
-            block.append("*CFLUX")
-            for load in loads:
-                target = load.get("target", "unknown")
-                total = float(load.get("value", 0.0) or 0.0)
-                n_nodes = counts.get(target, 0)
-                per_node = total / n_nodes if n_nodes > 0 else total
-                block.append(f"{target}, 11, {per_node:.6f}")
+        block += _cflux_lines()
         block += ["*NODE FILE", "NT, U", "*EL FILE", "S", "*END STEP"]
         return block
 
