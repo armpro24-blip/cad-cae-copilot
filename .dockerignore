@@ -21,7 +21,6 @@ logs/
 .runtime-logs/
 aieng-ui/data/
 aieng-ui/frontend/dist/
-aieng-ui/frontend/package-lock.json
 archive/
 legacy/
 refer/

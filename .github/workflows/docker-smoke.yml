@@ -7,7 +7,10 @@ on:
       # The image is built by pip-installing these projects, so a manifest
       # change can break the build without touching any path below.
       - "**/pyproject.toml"
+      # Same for the frontend stage, which installs from the lockfile.
+      - "aieng-ui/frontend/package*.json"
       - "Dockerfile"
+      - ".dockerignore"
       - "docker/**"
       - "docker-compose.yml"
       - "aieng-ui/backend/scripts/docker_smoke.py"
@@ -16,7 +19,9 @@ on:
     branches: [main]
     paths:
       - "**/pyproject.toml"
+      - "aieng-ui/frontend/package*.json"
       - "Dockerfile"
+      - ".dockerignore"
       - "docker/**"
       - "docker-compose.yml"
       - "aieng-ui/backend/scripts/docker_smoke.py"

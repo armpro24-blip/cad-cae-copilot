@@ -3,7 +3,10 @@ FROM node:20-bookworm-slim AS frontend-build
 WORKDIR /src/aieng-ui/frontend
 
 COPY aieng-ui/frontend/package*.json ./
-RUN npm install
+# Install exactly the committed lockfile. `npm install` without it re-resolved
+# every range on each build, so an unchanged commit started failing when the
+# registry moved (nightly red from 2026-09-22 on the same SHA).
+RUN npm ci
 
 COPY aieng-ui/frontend/ ./
 RUN npm run build
