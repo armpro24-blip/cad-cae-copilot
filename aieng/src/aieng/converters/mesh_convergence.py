@@ -25,6 +25,19 @@ from typing import Any
 # (1.5 for only 2 grids / less-careful studies).
 DEFAULT_GCI_SAFETY_FACTOR = 1.25
 DEFAULT_CONVERGED_GCI_PERCENT = 5.0
+# Celik et al. (2008) Step 2: "It is desirable that the grid refinement factor,
+# r = h_coarse/h_fine, be greater than 1.3" (based on experience).
+MIN_RECOMMENDED_REFINEMENT_RATIO = 1.3
+# Differences smaller than this fraction of the metric are treated as zero — a
+# relative tolerance, so the verdict does not depend on whether the metric is in
+# MPa or Pa.
+_FLAT_RELATIVE_TOLERANCE = 1e-9
+
+
+def _positive_count(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if math.isfinite(float(value)) and value > 0 else None
 
 
 def _clean_levels(levels: list[dict[str, Any]]) -> list[dict[str, float]]:
@@ -47,11 +60,36 @@ def _clean_levels(levels: list[dict[str, Any]]) -> list[dict[str, float]]:
             continue
         seen_sizes.add(float(size))
         entry = {"size": float(size), "value": float(value)}
-        if isinstance(lvl.get("node_count"), (int, float)) and not isinstance(lvl.get("node_count"), bool):
-            entry["node_count"] = float(lvl["node_count"])
+        for key in ("node_count", "element_count"):
+            count = _positive_count(lvl.get(key))
+            if count is not None:
+                entry[key] = count
         out.append(entry)
     out.sort(key=lambda e: e["size"])  # ascending size = fine → coarse
     return out
+
+
+def _with_representative_h(clean: list[dict[str, float]], dimension: int) -> str:
+    """Set each level's grid size ``h`` and return its basis.
+
+    Celik et al. (2008) Eq. 1 defines h = [(1/N) sum dV_i]^(1/3) from the cells
+    actually used (Eq. 2, exponent 1/2, for a 2-D mesh). The geometry (total
+    volume) is identical across levels, so h_i is proportional to
+    N_i^(-1/dimension), and only ratios of h enter the GCI. A
+    requested mesh size is not that: measured on three workspace packages,
+    Gmsh turned a nominal 2.0 refinement into realized ratios of 1.45-2.06, and
+    the order and GCI computed from the nominal ratio describe a refinement
+    that never happened. The requested size is used only when a level has no
+    element count, and the report says so.
+    """
+    if clean and all("element_count" in lvl for lvl in clean):
+        for lvl in clean:
+            lvl["h"] = lvl["element_count"] ** (-1.0 / dimension)
+        clean.sort(key=lambda e: e["h"])
+        return "element_count"
+    for lvl in clean:
+        lvl["h"] = lvl["size"]
+    return "requested_size"
 
 
 def analyze_mesh_convergence(
@@ -60,6 +98,7 @@ def analyze_mesh_convergence(
     metric_name: str | None = None,
     safety_factor: float = DEFAULT_GCI_SAFETY_FACTOR,
     converged_gci_percent: float = DEFAULT_CONVERGED_GCI_PERCENT,
+    dimension: int = 3,
 ) -> dict[str, Any]:
     """Estimate convergence of ONE metric across refined meshes (ASME V&V-20 GCI).
 
@@ -71,6 +110,8 @@ def analyze_mesh_convergence(
         safety_factor: GCI factor of safety (default 1.25 for ≥3 grids).
         converged_gci_percent: GCI threshold (%) below which the finest mesh is
             deemed converged (default 5%).
+        dimension: mesh dimension (3 for solid meshes) — the exponent in
+            h = N^(-1/dimension) when levels carry ``element_count``.
 
     Returns:
         A report with ``apparent_order``, ``extrapolated_value``,
@@ -80,10 +121,14 @@ def analyze_mesh_convergence(
         only) rather than guessing.
     """
     clean = _clean_levels(levels)
+    if dimension not in (2, 3):
+        raise ValueError(f"dimension must be 2 or 3, not {dimension!r}")
+    h_basis = _with_representative_h(clean, dimension)
     base: dict[str, Any] = {
         "metric": metric_name,
         "levels": clean,
         "level_count": len(clean),
+        "h_basis": h_basis,
         "safety_factor": safety_factor,
         "converged_gci_percent": converged_gci_percent,
         "honesty": {
@@ -97,6 +142,11 @@ def analyze_mesh_convergence(
         },
     }
 
+    warnings: list[str] = []
+    qualifications: list[str] = []
+    base["warnings"] = warnings
+    base["qualifications"] = qualifications
+
     if len(clean) < 2:
         base.update({
             "converged": None,
@@ -109,7 +159,7 @@ def analyze_mesh_convergence(
     f = clean[0]   # finest
     m = clean[1]   # medium
     phi_f, phi_m = f["value"], m["value"]
-    r_mf = m["size"] / f["size"] if f["size"] > 0 else float("nan")  # refinement ratio ≥ 1
+    r_mf = m["h"] / f["h"] if f["h"] > 0 else float("nan")  # refinement ratio ≥ 1
 
     # Pairwise relative change between the two finest grids (always available).
     denom_f = abs(phi_f) if phi_f != 0 else None
@@ -118,6 +168,13 @@ def analyze_mesh_convergence(
         round(rel_change_fine * 100.0, 4) if rel_change_fine is not None else None
     )
     base["refinement_ratio_finest_pair"] = round(r_mf, 4) if math.isfinite(r_mf) else None
+    if h_basis == "requested_size":
+        qualifications.append(
+            "grid size h is the REQUESTED mesh size, not the realized one (no "
+            "element counts given); Celik et al. (2008) Eq. 1 defines h from the "
+            "cells actually used, and a mesher may not deliver the requested size"
+        )
+    _warn_small_ratio(warnings, "fine/medium", r_mf)
 
     if len(clean) < 3:
         # Two grids: report the relative change; GCI's order estimate needs three.
@@ -137,7 +194,8 @@ def analyze_mesh_convergence(
 
     c = clean[2]  # coarse
     phi_c = c["value"]
-    r_cm = c["size"] / m["size"] if m["size"] > 0 else float("nan")
+    r_cm = c["h"] / m["h"] if m["h"] > 0 else float("nan")
+    _warn_small_ratio(warnings, "medium/coarse", r_cm)
 
     eps_mf = phi_m - phi_f   # medium − fine
     eps_cm = phi_c - phi_m   # coarse − medium
@@ -148,46 +206,63 @@ def analyze_mesh_convergence(
     ]
     base["pairs"] = pairs
 
-    # Oscillatory / converged-flat handling: if either difference is ~0 the order
-    # estimate is undefined. Near-flat finest pair ⇒ effectively converged.
-    if abs(eps_mf) < 1e-12 or abs(eps_cm) < 1e-12:
-        converged = abs(eps_mf) < 1e-9 or (rel_change_fine is not None and rel_change_fine * 100.0 <= converged_gci_percent)
+    # Celik et al. (2008) Step 3: if either eps32 or eps21 is "very close" to
+    # zero the procedure does not work — oscillatory convergence or, rarely, the
+    # exact solution. Only a flat FINEST pair supports "converged"; a flat
+    # coarse pair under a finest pair that still moves says nothing about
+    # convergence (it used to be reported `converged_flat`).
+    scale = max(abs(phi_f), abs(phi_m), abs(phi_c))
+    tol = _FLAT_RELATIVE_TOLERANCE * scale
+    flat_fine = abs(eps_mf) <= tol
+    flat_coarse = abs(eps_cm) <= tol
+    if flat_fine:
+        if not flat_coarse:
+            qualifications.append(
+                "the two finest grids agree but the coarse grid differs, so no "
+                "order of accuracy can be estimated (Celik et al. 2008, Step 3); "
+                "the agreement may be coincidental — add a finer grid to confirm"
+            )
         base.update({
             "apparent_order": None,
             "extrapolated_value": round(phi_f, 6),
-            "gci_fine_percent": 0.0 if abs(eps_mf) < 1e-12 else None,
+            "gci_fine_percent": 0.0,
             "asymptotic_range": None,
-            "converged": bool(converged),
-            "verdict": "converged_flat" if converged else "indeterminate_flat",
-            "message": "metric change between grids is negligible",
+            "converged": True,
+            "verdict": "converged_flat",
+            "message": "metric change between the two finest grids is negligible",
+        })
+        return base
+    if flat_coarse:
+        base.update({
+            "apparent_order": None,
+            "extrapolated_value": None,
+            "gci_fine_percent": None,
+            "asymptotic_range": None,
+            "converged": None,
+            "verdict": "indeterminate",
+            "message": (
+                "the two coarsest grids agree while the finest pair still changes "
+                f"({base['relative_change_finest_pair_percent']}%); no order or GCI "
+                "can be estimated — refine further (Celik et al. 2008, Step 3)"
+            ),
         })
         return base
 
     ratio = eps_cm / eps_mf
     non_monotonic = ratio < 0  # sign change ⇒ oscillatory convergence
 
-    # Apparent order p. For constant refinement ratio r, p = ln|eps_cm/eps_mf| / ln(r).
-    # For unequal ratios, solve the V&V-20 fixed-point including q(p); we keep the
-    # equal-ratio closed form (the common halving case) and note unequal ratios.
+    # Apparent order p (Celik et al. 2008, Eq. 3a-3c).
     p: float | None = None
-    if math.isfinite(r_mf) and r_mf > 1.0:
-        try:
-            if abs(r_cm - r_mf) < 1e-6:
-                p = math.log(abs(ratio)) / math.log(r_mf)
-            else:
-                # Unequal ratios: iterate p = (1/ln r21)|ln|eps32/eps21| + q(p)|.
-                s = 1.0 if ratio > 0 else -1.0
-                p_iter = math.log(abs(ratio)) / math.log(r_mf)
-                for _ in range(50):
-                    q = math.log((r_mf ** p_iter - s) / (r_cm ** p_iter - s))
-                    p_next = abs(math.log(abs(ratio)) + q) / math.log(r_mf)
-                    if abs(p_next - p_iter) < 1e-8:
-                        p_iter = p_next
-                        break
-                    p_iter = p_next
-                p = p_iter
-        except (ValueError, ZeroDivisionError):
-            p = None
+    diverging = False
+    if math.isfinite(r_mf) and r_mf > 1.0 and math.isfinite(r_cm) and r_cm > 1.0:
+        p = _apparent_order(ratio, r_mf, r_cm)
+        if p is None:
+            diverging = True
+            warnings.append(
+                f"|eps32/eps21| = {round(abs(ratio), 6)} is too small for any positive "
+                "order: the change between grids does not shrink under refinement, so "
+                "the grids are not converging (or not in the asymptotic range)"
+            )
 
     extrapolated: float | None = None
     gci_fine: float | None = None
@@ -199,6 +274,11 @@ def analyze_mesh_convergence(
         if abs(rp - 1.0) > 1e-9:
             # Fine-grid Richardson extrapolation (Roache): phi_ext = phi_f + (phi_f − phi_m)/(r^p − 1).
             extrapolated = phi_f + (phi_f - phi_m) / (rp - 1.0)
+            if extrapolated != 0:
+                # Celik et al. (2008) Eq. 6, the extrapolated relative error.
+                base["extrapolated_relative_error_percent"] = round(
+                    abs((extrapolated - phi_f) / extrapolated) * 100.0, 4
+                )
             e_a_fine = abs((phi_f - phi_m) / phi_f) if phi_f != 0 else None
             if e_a_fine is not None:
                 gci_fine = safety_factor * e_a_fine / (rp - 1.0)
@@ -216,7 +296,19 @@ def analyze_mesh_convergence(
         asymptotic_ratio is not None and abs(asymptotic_ratio - 1.0) <= 0.10
     )
 
-    if gci_fine_pct is None:
+    if asymptotic_ratio is not None and not in_asymptotic:
+        # Unknown-not-bad: the GCI still stands, but it is a reliable error band
+        # only inside the asymptotic range, so a "converged" verdict says so.
+        qualifications.append(
+            f"GCI_coarse / (r21^p * GCI_fine) = {round(asymptotic_ratio, 4)}, not ~1: "
+            "the grids may not be in the asymptotic range, where the GCI is a "
+            "reliable error band"
+        )
+
+    if diverging:
+        verdict = "diverging_not_converged"
+        converged = False
+    elif gci_fine_pct is None:
         verdict = "indeterminate"
         converged = None
     elif gci_fine_pct <= converged_gci_percent and not non_monotonic:
@@ -244,6 +336,65 @@ def analyze_mesh_convergence(
     return base
 
 
+def _log_rp_minus_s(log_r: float, p: float, s: float) -> float:
+    """ln(r^p - s) without overflow: p ln r + ln(1 - s r^-p)."""
+    return p * log_r + math.log1p(-s * math.exp(-p * log_r))
+
+
+def _apparent_order(ratio: float, r21: float, r32: float) -> float | None:
+    """Solve Celik et al. (2008) Eq. 3 for the apparent order p, or None.
+
+    Eq. 3a-3c, p = |ln|eps32/eps21| + q(p)| / ln r21 with
+    q(p) = ln((r21^p - s)/(r32^p - s)), is equivalent on its positive branch to
+    M(p) = p ln r21 + ln((r32^p - s)/(r21^p - s)) = ln|eps32/eps21|, and M is
+    strictly increasing in p > 0 for either sign s. So the root is unique,
+    exists exactly when ln|eps32/eps21| > M(0+), and bisection finds it.
+
+    This replaces two failure modes of the earlier solver: the constant-ratio
+    closed form dropped the absolute value, so a series whose differences GROW
+    under refinement got p < 0 and a negative GCI that read as "converged"; and
+    the fixed-point iteration Celik suggests diverges when r21 is small next to
+    r32 (measured: OverflowError at r21 = 1.2, r32 = 2) — it is a solution
+    method, not the definition.
+    """
+    s = 1.0 if ratio > 0 else -1.0
+    target = math.log(abs(ratio))
+    l21, l32 = math.log(r21), math.log(r32)
+
+    def model(p: float) -> float:
+        return p * l21 + _log_rp_minus_s(l32, p, s) - _log_rp_minus_s(l21, p, s)
+
+    # M(0+): ln(ln r32 / ln r21) for monotone grids, 0 for oscillatory ones.
+    floor = math.log(l32 / l21) if s > 0 else 0.0
+    if not target > floor:
+        return None
+    lo, hi = 0.0, 1.0
+    while model(hi) < target:
+        hi *= 2.0
+        if hi > 1e3:  # beyond any physical order; the data are degenerate
+            return None
+    for _ in range(200):
+        mid = 0.5 * (lo + hi)
+        if mid <= 0.0:
+            break
+        if model(mid) < target:
+            lo = mid
+        else:
+            hi = mid
+        if hi - lo <= 1e-13 * max(1.0, hi):
+            break
+    return 0.5 * (lo + hi)
+
+
+def _warn_small_ratio(warnings: list[str], pair: str, r: float) -> None:
+    if math.isfinite(r) and r < MIN_RECOMMENDED_REFINEMENT_RATIO:
+        warnings.append(
+            f"{pair} refinement ratio r = {round(r, 4)} < "
+            f"{MIN_RECOMMENDED_REFINEMENT_RATIO}; Celik et al. (2008) recommend "
+            "r > 1.3 so the discretization error is distinguishable from other noise"
+        )
+
+
 def _verdict_message(verdict: str, gci_fine_pct: float | None, threshold: float) -> str:
     if verdict == "converged":
         return (
@@ -254,6 +405,11 @@ def _verdict_message(verdict: str, gci_fine_pct: float | None, threshold: float)
         return (
             f"finest-grid GCI {gci_fine_pct}% > {threshold}% — refine the mesh "
             "further; the reported value still carries this discretization uncertainty"
+        )
+    if verdict == "diverging_not_converged":
+        return (
+            "the change between grids does not shrink under refinement — no positive "
+            "order of accuracy exists; the metric is not converging on these grids"
         )
     if verdict == "oscillatory_not_converged":
         return "metric changes non-monotonically with refinement — not in the asymptotic range; refine/inspect"

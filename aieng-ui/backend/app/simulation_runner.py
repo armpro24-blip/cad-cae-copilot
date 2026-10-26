@@ -2537,6 +2537,9 @@ def solve_package_static(
         try:
             mesh_inp = _mesh_with_gmsh(step_path, work, size)
             nodes = _parse_inp_nodes(mesh_inp)
+            # The REALIZED mesh size, which a convergence study needs: Gmsh
+            # does not deliver the requested size on thin or curved features.
+            element_count = len(_parse_inp_elements(mesh_inp))
             nsets = _build_nsets(nodes, topology, cae_mapping)
             unresolved = _unresolved_bc_load_faces(setup, cae_mapping, nsets)
             if unresolved:
@@ -2579,6 +2582,8 @@ def solve_package_static(
         # by the design-study candidate solver to write candidate-local results.
         "computed_metrics": extracted,
         "warnings": deck_warnings + (extracted.get("warnings") or []),
+        "node_count": len(nodes),
+        "element_count": element_count,
     }
 
 
