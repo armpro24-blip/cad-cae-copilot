@@ -547,7 +547,7 @@ def get_mesh_preview(package_path: Path) -> dict[str, Any]:
     if not inp_bytes:
         return {"available": False}
 
-    with tempfile.TemporaryDirectory(prefix="aieng_mesh_preview_") as tmp_str:
+    with tempfile.TemporaryDirectory(prefix="aieng_mesh_preview_", ignore_cleanup_errors=True) as tmp_str:
         work = Path(tmp_str)
         inp_path = work / "mesh.inp"
         inp_path.write_bytes(inp_bytes)
@@ -797,7 +797,7 @@ def get_mesh_quality_diagnostics(package_path: Path) -> dict[str, Any]:
     if not inp_bytes:
         return {"available": False}
 
-    with tempfile.TemporaryDirectory(prefix="aieng_mesh_quality_") as tmp_str:
+    with tempfile.TemporaryDirectory(prefix="aieng_mesh_quality_", ignore_cleanup_errors=True) as tmp_str:
         inp_path = Path(tmp_str) / "mesh.inp"
         inp_path.write_bytes(inp_bytes)
         nodes = _parse_inp_nodes(inp_path)
@@ -1130,7 +1130,7 @@ def generate_mesh_for_package(
                 "message": f"mesh_size_mm must be positive, got {size}"}
     order = 2 if int(element_order or DEFAULT_ELEMENT_ORDER) >= 2 else 1
 
-    with tempfile.TemporaryDirectory(prefix="aieng_generate_mesh_") as tmp_str:
+    with tempfile.TemporaryDirectory(prefix="aieng_generate_mesh_", ignore_cleanup_errors=True) as tmp_str:
         work = Path(tmp_str)
         step_path = _extract_step(package_path, work)
         if step_path is None:
@@ -1199,47 +1199,13 @@ def generate_mesh_for_package(
             "target_size_mm": size,
         }
 
-    # Judge the mesh against the part that actually bends (the thinnest solid),
-    # not the whole-model bounding box — see thinnest_body_extent.
-    thinnest_override: tuple[float, str] | None = None
-    contradicted: _BboxContradicted | None = None
+    topology: dict[str, Any] | None = None
     try:
         topo_raw = _read_member(package_path, _TOPOLOGY_PATH)
-        if topo_raw:
-            thinnest_override = thinnest_body_extent(json.loads(topo_raw))
-    except _BboxContradicted as exc:
-        contradicted = exc
+        topology = json.loads(topo_raw) if topo_raw else None
     except Exception as exc:  # noqa: BLE001 - fall back to the bbox rule
         LOGGER.info("could not read topology for mesh accuracy: %s", exc)
-
-    if contradicted is not None:
-        through = contradicted.wall_mm / float(size) if size > 0 else 0.0
-        accuracy = {
-            "element_order": 2 if str(element_type or "").upper() in
-            {"C3D10", "C3D20", "C3D15"} else 1,
-            "element_type": element_type,
-            "band": None,
-            "reliable_for_bending": None,
-            "measured_on": "not_determined",
-            "governing_body": contradicted.body,
-            "thinnest_extent_mm": None,
-            "elements_through_thinnest": None,
-            "min_elements_required": None,
-            "wall_from_volume_mm": round(contradicted.wall_mm, 3),
-            "bbox_thinnest_mm": round(contradicted.bbox_mm, 3),
-            "reason": (
-                f"Cannot judge bending accuracy for {contradicted.body}: its "
-                f"bounding box is {contradicted.bbox_mm:.3g} mm across the thin "
-                f"direction, but its volume implies a wall of about "
-                f"{contradicted.wall_mm:.3g} mm — the box is the OUTER envelope "
-                "of a hollow or highly non-convex body, not a wall. At this mesh "
-                f"size that wall would carry roughly {through:.1f} element(s). "
-                "Treat the stress as unverified and run cae.mesh_convergence."
-            ),
-            "recommended_action": "cae.mesh_convergence",
-        }
-    else:
-        accuracy = assess_mesh_accuracy(nodes, element_type, size, thinnest_override)
+    accuracy = judge_mesh_accuracy(nodes, element_type, size, topology)
 
     metadata = {
         "schema_version": "0.1",
@@ -1290,6 +1256,62 @@ def generate_mesh_for_package(
             MESH_METADATA_PATH,
         ],
     }
+
+
+def judge_mesh_accuracy(
+    nodes: dict[int, tuple[float, float, float]],
+    element_type: str | None,
+    size: float,
+    topology: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """The ``accuracy`` block for a mesh, judged against the thinnest SOLID.
+
+    Shared by ``generate_mesh_for_package`` and ``solve_package_static`` so a
+    batch solve (sizing sweep, DOE) reports the same band ``cae.generate_mesh``
+    would — a sweep at one mesh size gives its THINNEST variant the fewest
+    elements through the thickness, so that is where the band matters most.
+    """
+    # Judge the mesh against the part that actually bends (the thinnest solid),
+    # not the whole-model bounding box — see thinnest_body_extent.
+    thinnest_override: tuple[float, str] | None = None
+    contradicted: _BboxContradicted | None = None
+    try:
+        if topology:
+            thinnest_override = thinnest_body_extent(topology)
+    except _BboxContradicted as exc:
+        contradicted = exc
+    except Exception as exc:  # noqa: BLE001 - fall back to the bbox rule
+        LOGGER.info("could not read topology for mesh accuracy: %s", exc)
+
+    if contradicted is not None:
+        through = contradicted.wall_mm / float(size) if size > 0 else 0.0
+        accuracy = {
+            "element_order": 2 if str(element_type or "").upper() in
+            {"C3D10", "C3D20", "C3D15"} else 1,
+            "element_type": element_type,
+            "band": None,
+            "reliable_for_bending": None,
+            "measured_on": "not_determined",
+            "governing_body": contradicted.body,
+            "thinnest_extent_mm": None,
+            "elements_through_thinnest": None,
+            "min_elements_required": None,
+            "wall_from_volume_mm": round(contradicted.wall_mm, 3),
+            "bbox_thinnest_mm": round(contradicted.bbox_mm, 3),
+            "reason": (
+                f"Cannot judge bending accuracy for {contradicted.body}: its "
+                f"bounding box is {contradicted.bbox_mm:.3g} mm across the thin "
+                f"direction, but its volume implies a wall of about "
+                f"{contradicted.wall_mm:.3g} mm — the box is the OUTER envelope "
+                "of a hollow or highly non-convex body, not a wall. At this mesh "
+                f"size that wall would carry roughly {through:.1f} element(s). "
+                "Treat the stress as unverified and run cae.mesh_convergence."
+            ),
+            "recommended_action": "cae.mesh_convergence",
+        }
+    else:
+        accuracy = assess_mesh_accuracy(nodes, element_type, size, thinnest_override)
+    return accuracy
 
 
 # ── Source solver deck synthesis (close the decoupled MCP solve loop) ─────────
@@ -1969,7 +1991,7 @@ def ensure_source_deck_from_mesh(package_path: Path) -> dict[str, Any]:
     topo_raw = _read_member(package_path, _TOPOLOGY_PATH)
     topology: dict[str, Any] = json.loads(topo_raw) if topo_raw else {}
 
-    with tempfile.TemporaryDirectory(prefix="aieng_source_deck_") as tmp_str:
+    with tempfile.TemporaryDirectory(prefix="aieng_source_deck_", ignore_cleanup_errors=True) as tmp_str:
         tmp_mesh_path = Path(tmp_str) / "mesh.inp"
         tmp_mesh_path.write_bytes(mesh_bytes)
         nodes = _parse_inp_nodes(tmp_mesh_path)
@@ -2801,7 +2823,7 @@ def _build_core_solver_deck_from_mesh(
     source_deck, _empty_nsets = build_source_deck_from_mesh(mesh_inp_text, setup, nsets)
     warnings: list[str] = []
 
-    with tempfile.TemporaryDirectory(prefix="aieng_core_deck_") as tmp_str:
+    with tempfile.TemporaryDirectory(prefix="aieng_core_deck_", ignore_cleanup_errors=True) as tmp_str:
         pkg = Path(tmp_str) / "runtime_deck.aieng"
         out_path = f"simulation/runs/{run_id}/solver_input.inp"
         with zipfile.ZipFile(pkg, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -2852,6 +2874,47 @@ def _run_calculix(
     return result.returncode, log, frd if frd.exists() else None
 
 
+def _run_calculix_with_crash_retry(
+    inp_path: Path,
+    work_dir: Path,
+    timeout: int = 180,
+) -> tuple[int, str, Path | None, dict[str, Any] | None]:
+    """``_run_calculix``, re-run ONCE when CalculiX dies without saying why.
+
+    Measured with ccx 2.23 on Windows: about one run in three of the cantilever
+    V&V crashed with return code 0xFFFFFFFF right after printing its size
+    estimates — no ``*ERROR``, no FRD — and the identical deck solved on the
+    next attempt. A crash with nothing in the log is not evidence about the
+    model or the mesh, so one retry of the same deck is safe: CalculiX is
+    deterministic, and a run that then completes is an ordinary result. A run
+    in which CalculiX REPORTS an error is never retried. The retry is returned
+    (4th element) so the caller can label the result; ``None`` = no retry.
+    """
+    returncode, log, frd = _run_calculix(inp_path, work_dir, timeout=timeout)
+    if (returncode == 0 and frd) or _solver_log_error_line(log):
+        return returncode, log, frd, None
+    first_returncode = returncode
+    stale_frd = work_dir / f"{inp_path.stem}.frd"
+    if stale_frd.exists():
+        stale_frd.unlink()  # a partial FRD from the crash must not pass as a result
+    returncode, log, frd = _run_calculix(inp_path, work_dir, timeout=timeout)
+    return returncode, log, frd, {
+        "attempts": 2,
+        "first_returncode": first_returncode,
+        "reason": "CalculiX exited without a result and without reporting an error; "
+                  "the same deck was run once more",
+        "succeeded": returncode == 0 and frd is not None,
+    }
+
+
+def _solver_log_error_line(log: str) -> str | None:
+    """The first error line CalculiX printed, or None if it reported none."""
+    for line in (log or "").splitlines():
+        if "*ERROR" in line.upper() or "ERROR:" in line.upper():
+            return line.strip()
+    return None
+
+
 # ── Solver failure diagnosis ──────────────────────────────────────────────────
 
 def _diagnose_solver_log(log: str) -> list[str]:
@@ -2885,10 +2948,9 @@ def _diagnose_solver_log(log: str) -> list[str]:
         )
     if not diagnoses:
         # Extract the first *ERROR line from the log as a fallback
-        for line in log.splitlines():
-            if "*ERROR" in line.upper() or "ERROR:" in line.upper():
-                diagnoses.append(f"Solver reported: {line.strip()}")
-                break
+        error_line = _solver_log_error_line(log)
+        if error_line:
+            diagnoses.append(f"Solver reported: {error_line}")
         if not diagnoses:
             diagnoses.append(
                 "Solver exited with a non-zero return code — "
@@ -2937,6 +2999,15 @@ def solve_package_static(
     Degrades honestly (``solver_executed=False`` + a reason) when Gmsh/ccx are
     unavailable, the setup is missing, face references are stale, or the solve
     fails — it never reports an unsolved variant as success.
+
+    The setup is normalized first (``normalize_cae_bindings``, the same step
+    deck generation runs) on a throwaway COPY, so the caller's package is still
+    never written. Without it, a setup authored by ``cae.setup_static`` — whose
+    targets are ``@face:`` pointers with no ``cae_mapping.json`` — reached
+    CalculiX as ``*CLOAD`` on an undefined set ``@FACE:FACE_002``: measured on a
+    100 x 20 mm cantilever, every variant of ``opt.sizing_sweep`` and every
+    point of ``opt.doe_sizing_study`` aborted with code 201, and the sweep then
+    blamed the MESH and suggested a finer one.
     """
     package_path = Path(package_path)
     tools = check_simulation_tools()
@@ -2948,7 +3019,39 @@ def solve_package_static(
             "warnings": [],
             "error": f"required tools unavailable: {', '.join(tools['missing'])}",
         }
+    with tempfile.TemporaryDirectory(prefix="aieng_solve_pkg_", ignore_cleanup_errors=True) as pkg_tmp:
+        work_pkg = Path(pkg_tmp) / "package.aieng"
+        work_baseline: Path | None = None
+        try:
+            shutil.copy2(package_path, work_pkg)
+            normalize_cae_bindings(work_pkg)
+            if baseline_package_path is not None:
+                work_baseline = Path(pkg_tmp) / "baseline.aieng"
+                shutil.copy2(Path(baseline_package_path), work_baseline)
+                normalize_cae_bindings(work_baseline)
+        except Exception as exc:  # noqa: BLE001 - one bad variant must not abort a study
+            return {
+                "solver_executed": False, "status": "solve_error", "metrics": {}, "warnings": [],
+                "error": f"could not prepare the CAE setup: {type(exc).__name__}: {exc}",
+            }
+        return _solve_package_static_normalized(
+            work_pkg,
+            mesh_size_mm=mesh_size_mm,
+            timeout=timeout,
+            rebind_faces=rebind_faces,
+            baseline_package_path=work_baseline,
+        )
 
+
+def _solve_package_static_normalized(
+    package_path: Path,
+    *,
+    mesh_size_mm: float | None,
+    timeout: int,
+    rebind_faces: bool,
+    baseline_package_path: Path | None,
+) -> dict[str, Any]:
+    """``solve_package_static`` on a package whose CAE bindings are normalized."""
     setup_raw = _read_member(package_path, "simulation/setup.yaml")
     setup = yaml.safe_load(setup_raw) if setup_raw else None
     if not setup:
@@ -3024,7 +3127,7 @@ def solve_package_static(
             }
 
     size = float(mesh_size_mm or (setup.get("mesh") or {}).get("target_size_mm") or 2.5)
-    with tempfile.TemporaryDirectory(prefix="aieng_sweep_solve_") as tmp_str:
+    with tempfile.TemporaryDirectory(prefix="aieng_sweep_solve_", ignore_cleanup_errors=True) as tmp_str:
         work = Path(tmp_str)
         step_path = _extract_step(package_path, work)
         if not step_path:
@@ -3035,9 +3138,13 @@ def solve_package_static(
         try:
             mesh_inp = _mesh_with_gmsh(step_path, work, size)
             nodes = _parse_inp_nodes(mesh_inp)
+            elements = _parse_inp_elements(mesh_inp)
             # The REALIZED mesh size, which a convergence study needs: Gmsh
             # does not deliver the requested size on thin or curved features.
-            element_count = len(_parse_inp_elements(mesh_inp))
+            element_count = len(elements)
+            mesh_accuracy = judge_mesh_accuracy(
+                nodes, elements[0]["type"] if elements else None, size, topology
+            )
             nsets = _build_nsets(
                 nodes, topology, cae_mapping, mesh_inp.read_text(errors="replace")
             )
@@ -3059,7 +3166,9 @@ def solve_package_static(
             )
             deck_inp = work / "aieng_run.inp"
             deck_inp.write_text(deck_text)
-            returncode, _solver_log, frd_path = _run_calculix(deck_inp, work, timeout=timeout)
+            returncode, solver_log, frd_path, solver_retry = _run_calculix_with_crash_retry(
+                deck_inp, work, timeout=timeout
+            )
         except InvertedElementsError as exc:
             return {
                 "solver_executed": False, "status": "inverted_elements", "metrics": {},
@@ -3071,9 +3180,18 @@ def solve_package_static(
                 "error": f"{type(exc).__name__}: {exc}",
             }
         if returncode != 0 or not frd_path:
+            # Say WHY: the log was discarded, so an undefined-set deck error and
+            # a mesh CalculiX rejects read identically to the caller.
             return {
                 "solver_executed": False, "status": "solver_error", "metrics": {}, "warnings": [],
                 "error": f"CalculiX returned code {returncode} or produced no FRD",
+                "failure_kind": (
+                    "solver_reported_error" if _solver_log_error_line(solver_log)
+                    else "solver_crash_undiagnosed"
+                ),
+                "solver_diagnosis": _diagnose_solver_log(solver_log),
+                "solver_retry": solver_retry,
+                "mesh_accuracy": mesh_accuracy,
             }
         extracted = _extract_metrics(frd_path)
 
@@ -3086,6 +3204,10 @@ def solve_package_static(
         # Full computed_metrics doc (carries metrics_source.software=CalculiX) — used
         # by the design-study candidate solver to write candidate-local results.
         "computed_metrics": extracted,
+        # The band `cae.generate_mesh` would report for this mesh — without it a
+        # batch caller cannot tell a trustworthy stress from an under-predicted one.
+        "mesh_accuracy": mesh_accuracy,
+        "solver_retry": solver_retry,
         "warnings": deck_warnings + (extracted.get("warnings") or []),
         "node_count": len(nodes),
         "element_count": element_count,
@@ -3222,7 +3344,7 @@ def _run_simulation_core(
     )
     timeout = int(payload.get("timeout_s") or 180)
 
-    with tempfile.TemporaryDirectory(prefix="aieng_sim_") as tmp_str:
+    with tempfile.TemporaryDirectory(prefix="aieng_sim_", ignore_cleanup_errors=True) as tmp_str:
         work_dir = Path(tmp_str)
 
         # ── Step 2: extract STEP ──────────────────────────────────────────────

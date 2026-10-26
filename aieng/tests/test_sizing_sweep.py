@@ -1,11 +1,15 @@
 """Tests for the pure sizing-sweep ranker (optimize→verify loop closure)."""
 from __future__ import annotations
 
+import pytest
+
 from aieng.converters.sizing_sweep import (
     STATUS_ERROR,
     STATUS_FEASIBLE,
     STATUS_INFEASIBLE,
     STATUS_UNKNOWN,
+    STATUS_UNRELIABLE_MESH,
+    estimate_constraint_boundary,
     extract_static_metrics,
     rank_sizing_sweep,
 )
@@ -164,3 +168,98 @@ def test_no_constraint_ranks_by_objective_only() -> None:
     assert report["constraint"]["allowable_stress"] is None
     assert report["feasible_count"] == 2  # unconstrained → all known are feasible
     assert report["recommended"]["value"] == 3.0
+
+
+# ---------------------------------------------------------------------------
+# mesh accuracy + constraint boundary (2026-10)
+# ---------------------------------------------------------------------------
+
+
+def _meshed(variant, band):
+    return {**variant, "mesh_accuracy": {"band": band}}
+
+
+def test_unreliable_mesh_only_suspends_a_pass_not_a_violation() -> None:
+    """An unreliable mesh is too stiff, so the true stress is HIGHER: a violation
+    it reports still holds, a pass does not."""
+    report = rank_sizing_sweep(
+        [
+            _meshed(_variant(2.0, stress=240.0, mass=1.0), "unreliable"),
+            _meshed(_variant(3.0, stress=160.0, mass=1.5), "unreliable"),
+            _meshed(_variant(4.0, stress=120.0, mass=2.0), "marginal"),
+        ],
+        objective="min_mass", stress_limit=200.0,
+    )
+    statuses = {v["value"]: v["status"] for v in report["variants"]}
+    assert statuses == {2.0: STATUS_INFEASIBLE, 3.0: STATUS_UNRELIABLE_MESH, 4.0: STATUS_FEASIBLE}
+    assert report["recommended"]["value"] == 4.0
+    assert report["unreliable_mesh_count"] == 1
+    # the winner's mesh verdict is carried into its stamp
+    assert report["recommended"]["credibility"]["tier"] == "executed_solver_result"
+    assert report["recommended"]["credibility"]["signals"]["mesh_accuracy_band"] == "marginal"
+
+
+def test_unjudged_mesh_qualifies_without_downgrading() -> None:
+    variant = {**_variant(3.0, stress=100.0, mass=1.0),
+               "mesh_accuracy": {"band": None, "measured_on": "not_determined"}}
+    report = rank_sizing_sweep([variant], objective="min_mass", stress_limit=200.0)
+    assert report["recommended"]["value"] == 3.0
+    stamp = report["recommended"]["credibility"]
+    assert stamp["tier"] == "executed_solver_result"
+    assert stamp.get("qualifications")
+
+
+def test_boundary_estimate_is_exact_for_the_cantilever_deflection_law() -> None:
+    """delta = 4 F L^3 / (E b t^3) with F=100 N, L=100 mm, E=69 GPa, b=20 mm;
+    delta <= 1 mm gives t* = (4 F L^3 / (E b))^(1/3) = 6.6178 mm."""
+    c = 4 * 100.0 * 100.0**3 / (69000.0 * 20.0)
+    report = rank_sizing_sweep(
+        [_variant(t, disp=c / t**3, mass=t) for t in (5.0, 6.0, 7.0, 8.0)],
+        objective="min_mass", displacement_limit=1.0,
+    )
+    assert report["recommended"]["value"] == 7.0
+    boundary = estimate_constraint_boundary(report)
+    assert boundary["status"] == "estimated"
+    assert boundary["governing_constraint"] == "max_displacement"
+    assert boundary["value"] == pytest.approx(c ** (1 / 3), rel=1e-12)
+    assert boundary["fitted_exponent"] == pytest.approx(-3.0, rel=1e-12)
+
+
+def test_boundary_takes_the_more_restrictive_of_two_violated_constraints() -> None:
+    variants = [_variant(t, stress=3000.0 / t**2, disp=50.0 / t**3, mass=t) for t in (3.0, 4.0)]
+    report = rank_sizing_sweep(variants, stress_limit=250.0, displacement_limit=1.0)
+    boundary = estimate_constraint_boundary(report)
+    # stress: t = sqrt(12) = 3.464; displacement: t = 50^(1/3) = 3.684 -> governs
+    assert boundary["governing_constraint"] == "max_displacement"
+    assert boundary["value"] == pytest.approx(50.0 ** (1 / 3), rel=1e-12)
+
+
+def test_boundary_refuses_without_a_solved_bracket() -> None:
+    report = rank_sizing_sweep(
+        [_variant(3.0, solved=False, error="x"), _variant(4.0, stress=100.0, mass=2.0)],
+        stress_limit=200.0,
+    )
+    assert estimate_constraint_boundary(report)["status"] == "not_applicable"
+    none = rank_sizing_sweep([_variant(3.0, stress=300.0, mass=1.0)], stress_limit=200.0)
+    assert estimate_constraint_boundary(none)["status"] == "not_applicable"
+
+
+def test_bad_ranking_inputs_raise() -> None:
+    for kwargs in ({"objective": "min_weight"}, {"safety_factor": 0}, {"safety_factor": -1.0},
+                   {"stress_limit": float("inf")}, {"displacement_limit": 0.0}):
+        with pytest.raises(ValueError):
+            rank_sizing_sweep([], **kwargs)
+
+
+def test_boundary_refuses_an_infeasible_neighbour_on_an_unreliable_mesh() -> None:
+    """Its violation stands, but its under-predicted metrics would pull the
+    fitted boundary toward the infeasible (non-conservative) end."""
+    report = rank_sizing_sweep(
+        [_meshed(_variant(5.0, stress=120.0, mass=5.0), "unreliable"),
+         _meshed(_variant(6.0, stress=80.0, mass=6.0), "reliable")],
+        stress_limit=100.0,
+    )
+    assert report["recommended"]["value"] == 6.0
+    boundary = estimate_constraint_boundary(report)
+    assert boundary["status"] == "not_applicable"
+    assert "unreliable" in boundary["reason"]
