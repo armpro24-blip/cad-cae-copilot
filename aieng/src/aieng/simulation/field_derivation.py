@@ -1,12 +1,13 @@
 """Derived FE result fields from a per-node stress tensor / displacement vector.
 
 Turns the raw CalculiX FRD per-node outputs — a symmetric stress tensor
-``[Sxx, Syy, Szz, Sxy, Sxz, Syz]`` and a displacement ``[D1, D2, D3]`` — into the
+``[Sxx, Syy, Szz, Sxy, Syz, Szx]`` and a displacement ``[D1, D2, D3]`` — into the
 scalar result fields a CAE post-processor offers: von Mises, principal stresses
 (S1/S2/S3), Tresca / max shear, individual stress components, displacement
 magnitude + per-axis components, and a **safety-factor** field (yield ÷ von Mises).
 
-Pure (numpy only); no FRD parsing or package I/O. The backend extractor reads the
+Pure; numpy is needed only for the principal stresses (imported there). No FRD
+parsing or package I/O. The backend extractor reads the
 FRD + material yield and calls these per node.
 """
 from __future__ import annotations
@@ -14,11 +15,21 @@ from __future__ import annotations
 import math
 from typing import Any
 
-import numpy as np
 
-# Index of each stress component in the FRD 6-vector [Sxx,Syy,Szz,Sxy,Sxz,Syz].
+# Canonical tensor order = the order CalculiX writes the FRD ``STRESS`` block:
+# SXX, SYY, SZZ, SXY, SYZ, SZX (measured on every ccx FRD in the workspace; the
+# ``-5`` component records name them in exactly this order). The shear entries
+# are TENSOR components (sigma_ij), so von Mises carries the usual 6*(tau^2) term.
+# The order matters beyond labels: swapping Syz and Szx changes the third
+# invariant, so the principal stresses come out wrong (measured: up to 29% of
+# peak von Mises per node on real packages) while von Mises does not notice.
+STRESS_COMPONENT_ORDER: tuple[str, ...] = ("SXX", "SYY", "SZZ", "SXY", "SYZ", "SZX")
 _STRESS_COMPONENT_INDEX: dict[str, int] = {
-    "sxx": 0, "syy": 1, "szz": 2, "sxy": 3, "sxz": 4, "syz": 5,
+    "sxx": 0, "syy": 1, "szz": 2, "sxy": 3, "syz": 4, "sxz": 5,
+}
+# Alternative spellings of the same symmetric shear components.
+_STRESS_NAME_ALIASES: dict[str, str] = {
+    "SYX": "SXY", "SZY": "SYZ", "SXZ": "SZX",
 }
 _DISP_AXIS_INDEX: dict[str, int] = {"ux": 0, "uy": 1, "uz": 2}
 
@@ -54,21 +65,48 @@ def canonical_field_name(field_name: str) -> str:
     return _FIELD_ALIASES.get(key, key)
 
 
+def stress_tensor_from_frd(
+    components: list[str] | tuple[str, ...] | None, values: list[float | None]
+) -> tuple[float | None, ...] | None:
+    """Reorder one FRD stress record into the canonical order by component NAME.
+
+    ``components`` are the ``-5`` record names of the block. When they are
+    absent the values are taken positionally in CalculiX's own order. When they
+    are present but do not name all six components, ``None`` is returned rather
+    than guessing which column is which.
+    """
+    names = [str(c or "").strip().upper() for c in (components or [])]
+    if not any(names):
+        return tuple(values[:6]) if len(values) >= 6 else None
+    position = {_STRESS_NAME_ALIASES.get(n, n): i for i, n in enumerate(names)}
+    if not all(c in position for c in STRESS_COMPONENT_ORDER):
+        return None
+    out: list[float | None] = []
+    for comp in STRESS_COMPONENT_ORDER:
+        i = position[comp]
+        out.append(values[i] if i < len(values) else None)
+    return tuple(out)
+
+
 def von_mises(tensor: tuple[float, ...]) -> float:
-    """Von Mises equivalent stress from [Sxx,Syy,Szz,Sxy,Sxz,Syz]."""
-    sxx, syy, szz, sxy, sxz, syz = (float(x) for x in tensor[:6])
+    """Von Mises equivalent stress from [Sxx,Syy,Szz,Sxy,Syz,Szx]."""
+    sxx, syy, szz, sxy, syz, szx = (float(x) for x in tensor[:6])
     return math.sqrt(
         0.5 * (
             (sxx - syy) ** 2 + (syy - szz) ** 2 + (szz - sxx) ** 2
-            + 6.0 * (sxy ** 2 + sxz ** 2 + syz ** 2)
+            + 6.0 * (sxy ** 2 + syz ** 2 + szx ** 2)
         )
     )
 
 
 def principal_stresses(tensor: tuple[float, ...]) -> tuple[float, float, float]:
-    """Principal stresses (S1 ≥ S2 ≥ S3) as eigenvalues of the stress tensor."""
-    sxx, syy, szz, sxy, sxz, syz = (float(x) for x in tensor[:6])
-    m = np.array([[sxx, sxy, sxz], [sxy, syy, syz], [sxz, syz, szz]], dtype=float)
+    """Principal stresses (S1 ≥ S2 ≥ S3): eigenvalues of [Sxx,Syy,Szz,Sxy,Syz,Szx]."""
+    # Imported here, not at module level: aieng declares no numpy dependency,
+    # and the FRD parser imports this module for von Mises alone.
+    import numpy as np
+
+    sxx, syy, szz, sxy, syz, szx = (float(x) for x in tensor[:6])
+    m = np.array([[sxx, sxy, szx], [sxy, syy, syz], [szx, syz, szz]], dtype=float)
     ev = np.linalg.eigvalsh(m)  # ascending, real (symmetric)
     s3, s2, s1 = float(ev[0]), float(ev[1]), float(ev[2])
     return s1, s2, s3

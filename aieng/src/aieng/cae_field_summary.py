@@ -60,7 +60,7 @@ def generate_field_summary(package_path: str | Path) -> dict[str, Any]:
     llm_summary: dict[str, Any] = {
         "one_line": _one_line(field_regions, clusters_sorted),
         "key_findings": _key_findings(field_regions, clusters_sorted),
-        "risks": _risks(clusters_sorted),
+        "risks": _risks(field_regions, clusters_sorted),
         "limitations": [
             "Field regions are observational clusters extracted from an external result file.",
             "No full-field data is serialized into this summary.",
@@ -234,11 +234,24 @@ def _read_targets_status(zf: zipfile.ZipFile) -> list[dict[str, Any]]:
     return out
 
 
+def _near_uniform(field_regions: dict[str, Any]) -> bool:
+    """True when the extractor found no concentration (field_statistics)."""
+    stats = field_regions.get("field_statistics")
+    return isinstance(stats, dict) and stats.get("near_uniform") is True
+
+
 def _one_line(field_regions: dict[str, Any], clusters: list[dict[str, Any]]) -> str:
     field = field_regions.get("field", "unknown")
     metric = field_regions.get("metric", "unknown")
     if not clusters:
         return f"No high-magnitude {field}/{metric} clusters were reported."
+    if _near_uniform(field_regions):
+        # A percentile cut always selects nodes; on a near-uniform field the
+        # selected ones are not concentrations, so they are not "high" either.
+        return (
+            f"The {field}/{metric} field is near-uniform; {len(clusters)} top-percentile "
+            "cluster(s) were reported, but none is a concentration."
+        )
     return f"{len(clusters)} high-magnitude {field}/{metric} cluster(s) were reported from external result data."
 
 
@@ -260,11 +273,11 @@ def _key_findings(field_regions: dict[str, Any], clusters: list[dict[str, Any]])
     return findings
 
 
-def _risks(clusters: list[dict[str, Any]]) -> list[str]:
+def _risks(field_regions: dict[str, Any], clusters: list[dict[str, Any]]) -> list[str]:
     risks = []
     if any(cluster.get("feature_ref") is None for cluster in clusters):
         risks.append("One or more clusters could not be mapped back to a .aieng feature ID.")
-    if clusters:
+    if clusters and not _near_uniform(field_regions):
         risks.append("High-magnitude regions require external engineering review before design decisions.")
     return risks
 

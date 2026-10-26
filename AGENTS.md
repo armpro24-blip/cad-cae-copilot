@@ -945,6 +945,41 @@ cantilever got `band: null`.) Neither proxy is trusted for the refused case — 
 numbers and points at `cae.mesh_convergence`. A body with no recorded volume
 keeps the old behaviour: absent evidence is not evidence of hollowness.
 
+**What the post-processed numbers are.** Verified against unedited CalculiX
+2.23 output (`aieng/tests/fixtures/frd_ccx_2_23/`) and, for the GCI, against
+Celik, Ghia, Roache & Freitas (J. Fluids Eng. 130(7):078001, 2008), Table 1:
+
+- The FRD stress block is `SXX SYY SZZ SXY SYZ SZX`; derived fields read it by
+  component **name** (`field_derivation.stress_tensor_from_frd`). Reading it by
+  position as `(Sxz, Syz)` left von Mises right and every principal-stress
+  field wrong (up to 29% of peak von Mises per node on real packages).
+- `max_von_mises_stress` is the max over **nodes** of von Mises formed from
+  ccx's nodal stresses — integration-point values extrapolated and averaged
+  over adjacent elements. The metric's `basis` says so; the unaveraged peak at
+  a concentration is higher.
+- Eigenmode steps are not physical results. A modal FRD reports
+  `natural_frequencies_hz` from each mode's step header; a buckling FRD reports
+  `buckling_factors` only when `analysis_type` is passed (ccx writes `*BUCKLE`
+  modes as the generic "user named" step type) — `cae.compare_runs` passes it
+  from `solver_run.json`. Before this, a modal FRD yielded "max_displacement
+  226 mm / max_von_mises 97,163 MPa" on an unloaded beam.
+- `cae.mesh_convergence` computes h from the **realized element count**
+  (Celik Eq. 1), not the requested Gmsh size — measured, a nominal r = 2
+  realized 1.45-2.06 — and reports `h_basis`. A series whose change grows
+  under refinement is `diverging_not_converged` (it used to read `converged`
+  with p = -1 and a negative GCI); r < 1.3 is warned; a "converged" verdict
+  outside the asymptotic range is qualified. Two requested sizes that realize
+  the SAME mesh are `repeated_grid` — refused, never counted as agreement.
+- `cae.compare_runs` compares eigenvalue lists mode by mode
+  (`natural_frequencies_hz[mode_3]`), by the solver's mode numbering — not by
+  tracked mode shape, so a mode swap between runs is not detected.
+- `/fields/{name}?load_case_id=` selects the FRD step by its header; a step
+  without that field is refused (`404 field_not_in_load_case`), not served
+  another step's field.
+- `cae.extract_field_regions` takes the top percentile, which always selects
+  something. Read `field_statistics.near_uniform` / `peak_to_median_ratio`
+  before calling a cluster a hot spot.
+
 **Inverted elements are repaired or refused at mesh time.** `setOrder(2)`
 curves boundary mid-side nodes onto the CAD surface, and next to small holes
 and fillets that can fold an element inside out — measured on a plate with M3
