@@ -37,6 +37,20 @@ def test_pyproject_exposes_branded_mcp_entrypoints() -> None:
     assert any(d.startswith("build123d>=0.10.0") for d in cad_extra)
 
 
+def test_cad_extras_keep_the_kernel_stack_capped() -> None:
+    """An uncapped CAD stack resolves to an unimportable OCP combination.
+
+    Measured: uncapped, a fresh install took build123d 0.13 / ocp_gordon 0.3
+    (OCP 8 API) next to the cadquery-ocp 7.8 that cadquery 2.7 pins, and
+    `import build123d` failed — the Docker image could not be built.
+    """
+    extras = tomllib.loads((BACKEND_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["optional-dependencies"]
+    for extra in ("cad", "full"):
+        for package in ("build123d", "bd_warehouse", "ocp_gordon"):
+            specs = [d for d in extras[extra] if d.startswith(package)]
+            assert specs and "<" in specs[0], f"[{extra}] {package} must carry an upper bound: {specs}"
+
+
 def test_python_module_entrypoint_uses_existing_mcp_server_main() -> None:
     from app.mcp_server import main as server_main
     from aieng_workbench_mcp.__main__ import main as branded_main
