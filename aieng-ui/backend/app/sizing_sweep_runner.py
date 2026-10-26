@@ -8,10 +8,13 @@ constraint via the pure :mod:`aieng.converters.sizing_sweep` ranker.
 Honesty + safety contract:
 - The **baseline package is never mutated** — each variant is built and solved on a
   throwaway copy.
-- **Recommend-only**: the winning value is returned for the caller to apply through
-  the existing approval-gated ``cad.edit_parameter``; this module applies nothing.
+- **Recommend-only** by default: ``apply_winner`` applies the winner through the
+  audited ``cad.edit_parameter`` path (snapshot + audit log + stale marking).
 - A variant that fails to build or solve is reported honestly (``solver_executed``
-  False) and can never be recommended as verified.
+  False) and can never be recommended as verified; a variant that passes only on
+  a mesh whose accuracy band is ``unreliable`` is not recommendable either.
+- The constraint boundary between grid points is reported as an interpolated
+  ESTIMATE; only ``refine_boundary`` turns it into a solved variant.
 
 The per-variant build+solve step is injected as ``evaluate_value`` so the
 orchestration is unit-testable without Gmsh/CalculiX; the production default wires
@@ -19,18 +22,26 @@ the real package-copy edit + :func:`simulation_runner.solve_package_static`.
 """
 from __future__ import annotations
 
+import math
+import re
 import shutil
 import tempfile
 import zipfile
 from pathlib import Path
 from typing import Any, Callable
 
-from aieng.converters.sizing_sweep import rank_sizing_sweep
+from aieng.converters.sizing_sweep import estimate_constraint_boundary, rank_sizing_sweep
 
 SIZING_SWEEP_REPORT_PATH = "analysis/sizing_sweep_report.json"
+MAX_SWEEP_VALUES = 25
 
 # A per-variant evaluator: value → {value, metrics, solver_executed, [error]}.
 EvaluateValue = Callable[[float], dict[str, Any]]
+
+
+def _clean_value(value: float) -> float:
+    """Drop float noise from generated grid values (4.000000000000001 → 4.0)."""
+    return round(float(value), 9)
 
 
 def _expand_sweep_values(
@@ -43,9 +54,9 @@ def _expand_sweep_values(
     """Normalize an explicit value list or a {min, max, steps/step} range.
 
     Returns ``(clean_values, range_metadata)``. ``range_metadata`` is non-None when
-    the caller supplied a range object, so the report can echo what was expanded.
-    The returned values are clamped to the parameter's declared min/max, deduped,
-    and capped at 25.
+    the caller supplied a range object; it echoes the requested interval, the
+    interval actually swept, and whether clamping to the parameter's declared
+    min/max changed it. Values are deduped and capped at ``MAX_SWEEP_VALUES``.
     """
     from .project_io import _validate_cad_parameter_edit_contract
 
@@ -60,11 +71,10 @@ def _expand_sweep_values(
         if rmin is None or rmax is None:
             raise ValueError("range must include min and max")
         try:
-            rmin_f = float(rmin)
-            rmax_f = float(rmax)
+            requested = (float(rmin), float(rmax))
         except (TypeError, ValueError) as exc:
             raise ValueError(f"bad_input: range min/max must be numbers: {exc}") from exc
-        if rmax_f < rmin_f:
+        if requested[1] < requested[0]:
             raise ValueError("bad_input: range max must be >= min")
 
         # Load parameter bounds (pass None so the contract check doesn't reject a
@@ -78,43 +88,51 @@ def _expand_sweep_values(
 
         # Clamp the range to declared bounds before generating values so that
         # step-based sweeps align with the feasible interval.
+        rmin_f, rmax_f = requested
         if param_min is not None:
             rmin_f = max(rmin_f, float(param_min))
         if param_max is not None:
             rmax_f = min(rmax_f, float(param_max))
+        if rmax_f < rmin_f:
+            # The whole requested range lies outside the declared bounds. Sweeping
+            # the clamped "range" would walk backwards across values nobody asked for.
+            raise ValueError(
+                f"bad_input: range [{requested[0]:g}, {requested[1]:g}] lies outside the "
+                f"parameter's declared bounds [{param_min}, {param_max}]"
+            )
 
         if "steps" in range_spec:
             steps = int(range_spec["steps"])
             if steps < 2:
                 raise ValueError("bad_input: range steps must be >= 2")
-            if steps > 25:
+            if steps > MAX_SWEEP_VALUES:
                 raise ValueError("too_many_values: range expands to more than 25 values (MVP cap)")
             step = (rmax_f - rmin_f) / (steps - 1)
             raw_values = [rmin_f + i * step for i in range(steps)]
         elif "step" in range_spec:
             step = float(range_spec["step"])
-            if step == 0:
-                raise ValueError("bad_input: range step cannot be zero")
-            n_steps = int((rmax_f - rmin_f) / step) + 1
-            if n_steps > 25:
+            if not step > 0:
+                raise ValueError("bad_input: range step must be > 0")
+            n_steps = int((rmax_f - rmin_f) / step + 1e-9) + 1
+            if n_steps > MAX_SWEEP_VALUES:
                 raise ValueError("too_many_values: range expands to more than 25 values (MVP cap)")
             raw_values = [rmin_f + i * step for i in range(n_steps)]
         else:
             raise ValueError("bad_input: range must include steps or step")
 
-        range_clean: list[float] = []
-        range_seen: set[float] = set()
-        for v in raw_values:
-            if v not in range_seen:
-                range_clean.append(v)
-                range_seen.add(v)
-        if not range_clean:
-            raise ValueError("bad_input: range expands to an empty value list after clamping")
+        range_clean = list(dict.fromkeys(_clean_value(v) for v in raw_values))
+        clamped = (rmin_f, rmax_f) != requested
         return range_clean, {
             "min": rmin_f,
             "max": rmax_f,
+            "requested": {"min": requested[0], "max": requested[1]},
+            "clamped": clamped,
             "steps_or_step": range_spec.get("steps", range_spec.get("step")),
-            "clamped_to_bounds": (param_min, param_max),
+            "declared_bounds": {"min": param_min, "max": param_max},
+            **({"note": (
+                f"requested range [{requested[0]:g}, {requested[1]:g}] was clamped to the "
+                f"declared bounds; swept [{rmin_f:g}, {rmax_f:g}]"
+            )} if clamped else {}),
         }
 
     if values is None:
@@ -122,16 +140,14 @@ def _expand_sweep_values(
     if not isinstance(values, list):
         raise ValueError("bad_input: values must be a list of numbers")
     clean: list[float] = []
-    seen: set[float] = set()
     for v in values:
         try:
             fv = float(v)
         except (TypeError, ValueError):
             continue
-        if fv not in seen:
+        if math.isfinite(fv) and fv not in clean:
             clean.append(fv)
-            seen.add(fv)
-    if len(clean) > 25:
+    if len(clean) > MAX_SWEEP_VALUES:
         raise ValueError("too_many_values: sweep is capped at 25 values per run (MVP scope)")
     if not clean:
         raise ValueError("bad_input: values must contain at least one valid number")
@@ -153,18 +169,102 @@ def _total_solid_volume(topology_map: dict[str, Any]) -> float | None:
     return total if seen else None
 
 
+def mass_metrics(topology_map: dict[str, Any], density_kg_m3: float | None) -> dict[str, Any]:
+    """``volume`` (mm³) and the ``mass`` the min_mass objective ranks on.
+
+    One definition for the sweep and the DOE study, which used to disagree: the
+    DOE read a ``volume_mm3`` solver metric that no solver path writes, so its
+    default objective had no mass to rank and could never recommend anything,
+    and the two multiplied ``density`` by factors 1e9 apart.
+
+    With ``density_kg_m3`` the mass is in kg (mm³ × 1e-9 m³/mm³ × kg/m³);
+    without it, mass is the volume in mm³ — the same ranking for one material.
+    """
+    volume = _total_solid_volume(topology_map)
+    if volume is None:
+        return {}
+    if density_kg_m3:
+        return {"volume": volume, "mass": volume * 1e-9 * float(density_kg_m3), "mass_unit": "kg"}
+    return {"volume": volume, "mass": volume, "mass_unit": "mm3 (volume; no density given)"}
+
+
+def replace_constants(source_code: str, replacements: dict[str, float]) -> tuple[str, list[str]]:
+    """Set UPPER_SNAKE_CASE constants in build123d source; return (source, not_found).
+
+    Mirrors ``edit_build123d_parameter``'s text edit. A constant that is not
+    found is RETURNED, not ignored: the DOE path used to drop it silently and
+    solve the baseline value labelled as the requested one.
+    """
+    patterns = {
+        name: re.compile(rf"^([ \t]*)({re.escape(name)})([ \t]*=[ \t]*)([0-9]+\.?[0-9]*)(.*)$")
+        for name in replacements
+    }
+    found: set[str] = set()
+    new_lines: list[str] = []
+    for line in source_code.splitlines():
+        for name, pattern in patterns.items():
+            if name in found:
+                continue
+            m = pattern.match(line)
+            if m:
+                line = f"{m.group(1)}{m.group(2)}{m.group(3)}{replacements[name]}{m.group(5)}"
+                found.add(name)
+                break
+        new_lines.append(line)
+    return "\n".join(new_lines), [n for n in replacements if n not in found]
+
+
 def _is_solver_abort(solve: dict[str, Any]) -> bool:
     """True when the solver ran but died without results (as opposed to never running).
 
     Distinguishes "CalculiX rejected this mesh" from setup gaps like a missing
     material or stale face references, which have their own explanations and
-    must not be blamed on the mesh.
+    must not be blamed on the mesh. A deck CalculiX could not even READ (e.g. an
+    undefined node set) is a setup gap too, however it was reported.
     """
     status = str(solve.get("status") or "")
     error = str(solve.get("error") or "")
     if status in {"no_setup", "tools_unavailable", "stale_topology_references"}:
         return False
+    diagnosis = " ".join(str(d) for d in solve.get("solver_diagnosis") or []).upper()
+    if "ERROR READING" in diagnosis or "NOT YET BEEN DEFINED" in diagnosis:
+        return False
     return "no FRD" in error or "returned code" in error or status == "solver_failed"
+
+
+def record_from_solve(
+    solve: dict[str, Any], topology_map: dict[str, Any], density: float | None,
+    mesh_size_mm: float | None,
+) -> dict[str, Any]:
+    """Variant fields shared by the sweep and the DOE study (no ``value`` key)."""
+    metrics = dict(solve.get("metrics") or {})
+    metrics.update(mass_metrics(topology_map, density))
+    record: dict[str, Any] = {
+        "metrics": metrics,
+        "solver_executed": bool(solve.get("solver_executed")),
+        "error": solve.get("error") if not solve.get("solver_executed") else None,
+        "solve_status": solve.get("status"),
+        "mesh_accuracy": solve.get("mesh_accuracy"),
+    }
+    # A variant can fail purely because the swept dimension changed the
+    # mesh: measured on the reference bracket, 8 mm aborted CalculiX
+    # (code 201, no FRD) at mesh_size 4 mm and solved cleanly at 3 mm,
+    # with identical geometry, BCs and load. Saying only "not solved"
+    # sends the caller looking at their design instead of their mesh.
+    if not record["solver_executed"] and _is_solver_abort(solve):
+        record["likely_cause"] = "mesh"
+        record["suggested_retry"] = {
+            "mesh_size_mm": round(float(mesh_size_mm) * 0.75, 3) if mesh_size_mm else None,
+            "reason": (
+                "The solver aborted without producing results while the geometry "
+                "built successfully — at this mesh size this variant's shape meshes "
+                "into elements CalculiX rejects. Re-run the sweep with a smaller "
+                "mesh_size_mm; the geometry itself is not necessarily the problem."
+            ),
+        }
+    elif solve.get("solver_diagnosis"):
+        record["solver_diagnosis"] = solve["solver_diagnosis"]
+    return record
 
 
 def make_default_evaluate_value(
@@ -181,13 +281,12 @@ def make_default_evaluate_value(
 
     Each call copies ``baseline_pkg`` to a throwaway, applies the parametric edit
     at package level (reusing the same primitives as ``cad.edit_parameter``),
-    solves the new geometry, and returns scalar metrics plus a volume-based ``mass``
-    proxy. The baseline is never touched.
+    solves the new geometry, and returns scalar metrics plus a volume-based ``mass``.
+    The baseline is never touched.
     """
     from . import cad_generation as _cg
     from .project_io import _validate_cad_parameter_edit_contract
     from .simulation_runner import solve_package_static
-    import re
 
     def _evaluate(value: float) -> dict[str, Any]:
         tmp_dir = Path(tempfile.mkdtemp(prefix="aieng_sweep_"))
@@ -208,19 +307,10 @@ def make_default_evaluate_value(
             # 2. Text-replace the UPPER_SNAKE_CASE constant (mirrors edit_build123d_parameter).
             with zipfile.ZipFile(tmp_pkg, "r") as zf:
                 source_code = zf.read("geometry/source.py").decode("utf-8")
-            pattern = rf'^([ \t]*)({re.escape(cad_parameter_name)})([ \t]*=[ \t]*)([0-9]+\.?[0-9]*)(.*)$'
-            new_lines, found = [], False
-            for line in source_code.splitlines():
-                m = re.match(pattern, line)
-                if m:
-                    new_lines.append(f"{m.group(1)}{m.group(2)}{m.group(3)}{value}{m.group(5)}")
-                    found = True
-                else:
-                    new_lines.append(line)
-            if not found:
+            modified_source, missing = replace_constants(source_code, {cad_parameter_name: value})
+            if missing:
                 return {"value": value, "metrics": {}, "solver_executed": False,
                         "error": f"constant {cad_parameter_name} not found in source.py"}
-            modified_source = "\n".join(new_lines)
 
             # 3. Re-execute build123d and write the new geometry into the copy.
             try:
@@ -251,42 +341,22 @@ def make_default_evaluate_value(
                 rebind_faces=True,
                 baseline_package_path=baseline_pkg,
             )
-            metrics = dict(solve.get("metrics") or {})
-
-            # 5. Mass proxy from solid volume (∝ mass for a single material).
-            volume = _total_solid_volume(topo)
-            if volume is not None:
-                metrics["volume"] = volume
-                metrics["mass"] = volume * density if density else volume
-
-            record = {
-                "value": value,
-                "metrics": metrics,
-                "solver_executed": bool(solve.get("solver_executed")),
-                "error": solve.get("error") if not solve.get("solver_executed") else None,
-                "solve_status": solve.get("status"),
-            }
-            # A variant can fail purely because the swept dimension changed the
-            # mesh: measured on the reference bracket, 8 mm aborted CalculiX
-            # (code 201, no FRD) at mesh_size 4 mm and solved cleanly at 3 mm,
-            # with identical geometry, BCs and load. Saying only "not solved"
-            # sends the caller looking at their design instead of their mesh.
-            if not record["solver_executed"] and _is_solver_abort(solve):
-                record["likely_cause"] = "mesh"
-                record["suggested_retry"] = {
-                    "mesh_size_mm": round(float(mesh_size_mm) * 0.75, 3) if mesh_size_mm else None,
-                    "reason": (
-                        "The solver aborted without producing results while the geometry "
-                        "built successfully — at this mesh size this variant's shape meshes "
-                        "into elements CalculiX rejects. Re-run the sweep with a smaller "
-                        "mesh_size_mm; the geometry itself is not necessarily the problem."
-                    ),
-                }
-            return record
+            return {"value": value, **record_from_solve(solve, topo, density, mesh_size_mm)}
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
     return _evaluate
+
+
+def _refinement_value(estimate: dict[str, Any]) -> float:
+    """The boundary estimate rounded TOWARD the feasible end, at 1% of the bracket."""
+    bracket = estimate["bracket"]
+    lo, hi = sorted((bracket["feasible_value"], bracket["infeasible_value"]))
+    resolution = 10.0 ** (math.floor(math.log10(hi - lo)) - 2)
+    toward_feasible_up = bracket["feasible_value"] > bracket["infeasible_value"]
+    steps = estimate["value"] / resolution
+    rounded = (math.ceil(steps) if toward_feasible_up else math.floor(steps)) * resolution
+    return _clean_value(rounded)
 
 
 def run_sizing_sweep(
@@ -305,15 +375,20 @@ def run_sizing_sweep(
     timeout: int = 180,
     density: float | None = None,
     apply_winner: bool = False,
+    refine_boundary: bool = False,
     evaluate_value: EvaluateValue | None = None,
 ) -> dict[str, Any]:
     """Sweep one parameter across ``values`` or a ``range``, solve each variant, and rank them.
 
     Resolves the project's package, evaluates each value via ``evaluate_value``
     (production default: copy → edit → solve), and feeds the per-variant results to
-    the pure ranker. By default the baseline is never modified; set
-    ``apply_winner=True`` to apply the recommended value through the existing
-    approval-gated ``cad.edit_parameter`` path.
+    the pure ranker. The report carries a ``boundary_estimate`` — where between the
+    recommended value and its infeasible neighbour the active constraint is met,
+    interpolated, not solved. ``refine_boundary=True`` spends ONE more solve at
+    that estimate (rounded toward the feasible side); the result is ranked like
+    any other variant, so it is recommended only if it actually solves feasible.
+    By default the baseline is never modified; ``apply_winner=True`` applies a
+    ``safe_to_apply`` recommendation through the audited ``cad.edit_parameter``.
     """
     from .project_io import get_project, resolve_project_path
 
@@ -329,6 +404,9 @@ def run_sizing_sweep(
         clean_values, range_metadata = _expand_sweep_values(
             values, range, Path(pkg), feature_id, parameter_name
         )
+        # Validate the ranking inputs BEFORE paying for N solves.
+        rank_sizing_sweep([], objective=objective, stress_limit=stress_limit,
+                          safety_factor=safety_factor, displacement_limit=displacement_limit)
     except ValueError as exc:
         msg = str(exc)
         code = "bad_input"
@@ -347,29 +425,45 @@ def run_sizing_sweep(
 
     variants = [evaluate_value(v) for v in clean_values]
 
-    report = rank_sizing_sweep(
-        variants,
-        objective=objective,
-        stress_limit=stress_limit,
-        safety_factor=safety_factor,
-        displacement_limit=displacement_limit,
-        parameter_name=parameter_name,
-    )
+    def _rank(vs: list[dict[str, Any]]) -> dict[str, Any]:
+        return rank_sizing_sweep(
+            vs,
+            objective=objective,
+            stress_limit=stress_limit,
+            safety_factor=safety_factor,
+            displacement_limit=displacement_limit,
+            parameter_name=parameter_name,
+        )
 
-    # The ranker rebuilds each variant from the metrics it scores, so the
-    # "why did this one die" fields the evaluator attached do not survive it.
-    # Carry them across by value — without them a mesh-killed variant reads as a
-    # bad design (measured: 8 mm aborted ccx at mesh 4 mm, solved at 3 mm).
-    hints = {
-        v.get("value"): v for v in variants
-        if isinstance(v, dict) and v.get("likely_cause")
-    }
-    if hints:
-        for ranked in report.get("variants") or []:
-            source = hints.get(ranked.get("value")) if isinstance(ranked, dict) else None
-            if source:
-                ranked["likely_cause"] = source["likely_cause"]
-                ranked["suggested_retry"] = source.get("suggested_retry")
+    report = _rank(variants)
+    boundary = estimate_constraint_boundary(report)
+    refinement: dict[str, Any] | None = None
+    if refine_boundary and boundary.get("status") == "estimated":
+        refine_value = _refinement_value(boundary)
+        if refine_value in clean_values:
+            refinement = {"value": refine_value, "status": "skipped",
+                          "reason": "the rounded boundary value was already swept"}
+        else:
+            refined = {**evaluate_value(refine_value), "origin": "boundary_refinement"}
+            variants.append(refined)
+            report = _rank(variants)
+            outcome = next(v for v in report["variants"] if v.get("value") == refine_value)
+            refinement = {
+                "value": refine_value,
+                "status": outcome["status"],
+                "reason": outcome.get("reason"),
+                "recommended": report.get("recommended") is not None
+                and report["recommended"].get("value") == refine_value,
+            }
+    elif refine_boundary:
+        refinement = {"status": "skipped", "reason": boundary.get("reason")}
+
+    warnings: list[str] = []
+    if objective == "min_mass" and stress_limit is None and displacement_limit is None:
+        warnings.append(
+            "min_mass with no stress_limit or displacement_limit is unconstrained: it "
+            "recommends the lightest value swept, whatever its stress"
+        )
     report.update({
         "status": "ok",
         "tool": "opt.sizing_sweep",
@@ -377,11 +471,14 @@ def run_sizing_sweep(
         "feature_id": feature_id,
         "swept_values": clean_values,
         "range": range_metadata,
+        "boundary_estimate": boundary,
+        "refinement": refinement,
+        "warnings": warnings,
         "apply_winner_requested": apply_winner,
     })
 
     # Optional: apply the winning value through the audited edit path.
-    if apply_winner and report.get("recommended") is not None:
+    if apply_winner and report.get("recommended") is not None and report.get("safe_to_apply"):
         from .cad_generation import edit_build123d_parameter
 
         winner = report["recommended"]["value"]
@@ -393,6 +490,8 @@ def run_sizing_sweep(
             winner,
             timeout=timeout,
             response_detail="summary",
+            # The sweep solved the rippled geometry for every variant, so a shared
+            # constant's reach is what was evaluated and approved as one operation.
             confirm_scope_risk=True,
         )
         report["apply_status"] = edit_result.get("status", "error")
@@ -416,7 +515,7 @@ def run_sizing_sweep(
         report["next_step"] = (
             "Apply the recommended value with cad.edit_parameter (approval-gated). "
             "This sweep modified nothing."
-            if report.get("recommended") is not None
+            if report.get("recommended") is not None and report.get("safe_to_apply")
             else "No value recommended — see recommendation_reason."
         )
 
