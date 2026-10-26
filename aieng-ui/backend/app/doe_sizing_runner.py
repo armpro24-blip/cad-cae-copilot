@@ -27,7 +27,7 @@ from typing import Any, Callable
 
 from aieng.converters.sizing_sweep import rank_sizing_sweep
 
-from .sizing_sweep_runner import record_from_solve, replace_constants
+from .sizing_sweep_runner import record_from_solve, replace_constants, validate_density
 
 DesignPoint = dict[str, float]
 EvaluateDesignPoint = Callable[[DesignPoint], dict[str, Any]]
@@ -337,6 +337,7 @@ def run_doe_sizing_study(
         seed = random.SystemRandom().randrange(2**31)
 
     try:
+        density = validate_density(density)
         rank_sizing_sweep([], objective=objective, stress_limit=stress_limit,
                           safety_factor=safety_factor, displacement_limit=displacement_limit)
         parameter_values: dict[str, list[float]] = {}
@@ -360,7 +361,8 @@ def run_doe_sizing_study(
             parameter_values, method, budget, seed=seed, bounds=bounds
         )
     except ValueError as exc:
-        return {"status": "error", "code": "bad_input", "message": str(exc)}
+        return {"status": "error", "code": "bad_input",
+                "message": str(exc).removeprefix("bad_input: ")}
 
     if evaluate_design_point is None:
         evaluate_design_point = make_default_evaluate_design_point(

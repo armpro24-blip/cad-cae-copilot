@@ -2376,6 +2376,47 @@ def _run_calculix(
     return result.returncode, log, frd if frd.exists() else None
 
 
+def _run_calculix_with_crash_retry(
+    inp_path: Path,
+    work_dir: Path,
+    timeout: int = 180,
+) -> tuple[int, str, Path | None, dict[str, Any] | None]:
+    """``_run_calculix``, re-run ONCE when CalculiX dies without saying why.
+
+    Measured with ccx 2.23 on Windows: about one run in three of the cantilever
+    V&V crashed with return code 0xFFFFFFFF right after printing its size
+    estimates — no ``*ERROR``, no FRD — and the identical deck solved on the
+    next attempt. A crash with nothing in the log is not evidence about the
+    model or the mesh, so one retry of the same deck is safe: CalculiX is
+    deterministic, and a run that then completes is an ordinary result. A run
+    in which CalculiX REPORTS an error is never retried. The retry is returned
+    (4th element) so the caller can label the result; ``None`` = no retry.
+    """
+    returncode, log, frd = _run_calculix(inp_path, work_dir, timeout=timeout)
+    if (returncode == 0 and frd) or _solver_log_error_line(log):
+        return returncode, log, frd, None
+    first_returncode = returncode
+    stale_frd = work_dir / f"{inp_path.stem}.frd"
+    if stale_frd.exists():
+        stale_frd.unlink()  # a partial FRD from the crash must not pass as a result
+    returncode, log, frd = _run_calculix(inp_path, work_dir, timeout=timeout)
+    return returncode, log, frd, {
+        "attempts": 2,
+        "first_returncode": first_returncode,
+        "reason": "CalculiX exited without a result and without reporting an error; "
+                  "the same deck was run once more",
+        "succeeded": returncode == 0 and frd is not None,
+    }
+
+
+def _solver_log_error_line(log: str) -> str | None:
+    """The first error line CalculiX printed, or None if it reported none."""
+    for line in (log or "").splitlines():
+        if "*ERROR" in line.upper() or "ERROR:" in line.upper():
+            return line.strip()
+    return None
+
+
 # ── Solver failure diagnosis ──────────────────────────────────────────────────
 
 def _diagnose_solver_log(log: str) -> list[str]:
@@ -2409,10 +2450,9 @@ def _diagnose_solver_log(log: str) -> list[str]:
         )
     if not diagnoses:
         # Extract the first *ERROR line from the log as a fallback
-        for line in log.splitlines():
-            if "*ERROR" in line.upper() or "ERROR:" in line.upper():
-                diagnoses.append(f"Solver reported: {line.strip()}")
-                break
+        error_line = _solver_log_error_line(log)
+        if error_line:
+            diagnoses.append(f"Solver reported: {error_line}")
         if not diagnoses:
             diagnoses.append(
                 "Solver exited with a non-zero return code — "
@@ -2483,13 +2523,19 @@ def solve_package_static(
         }
     with tempfile.TemporaryDirectory(prefix="aieng_solve_pkg_") as pkg_tmp:
         work_pkg = Path(pkg_tmp) / "package.aieng"
-        shutil.copy2(package_path, work_pkg)
-        normalize_cae_bindings(work_pkg)
         work_baseline: Path | None = None
-        if baseline_package_path is not None:
-            work_baseline = Path(pkg_tmp) / "baseline.aieng"
-            shutil.copy2(Path(baseline_package_path), work_baseline)
-            normalize_cae_bindings(work_baseline)
+        try:
+            shutil.copy2(package_path, work_pkg)
+            normalize_cae_bindings(work_pkg)
+            if baseline_package_path is not None:
+                work_baseline = Path(pkg_tmp) / "baseline.aieng"
+                shutil.copy2(Path(baseline_package_path), work_baseline)
+                normalize_cae_bindings(work_baseline)
+        except Exception as exc:  # noqa: BLE001 - one bad variant must not abort a study
+            return {
+                "solver_executed": False, "status": "solve_error", "metrics": {}, "warnings": [],
+                "error": f"could not prepare the CAE setup: {type(exc).__name__}: {exc}",
+            }
         return _solve_package_static_normalized(
             work_pkg,
             mesh_size_mm=mesh_size_mm,
@@ -2617,7 +2663,9 @@ def _solve_package_static_normalized(
             )
             deck_inp = work / "aieng_run.inp"
             deck_inp.write_text(deck_text)
-            returncode, solver_log, frd_path = _run_calculix(deck_inp, work, timeout=timeout)
+            returncode, solver_log, frd_path, solver_retry = _run_calculix_with_crash_retry(
+                deck_inp, work, timeout=timeout
+            )
         except Exception as exc:  # noqa: BLE001
             return {
                 "solver_executed": False, "status": "solve_error", "metrics": {}, "warnings": [],
@@ -2629,7 +2677,12 @@ def _solve_package_static_normalized(
             return {
                 "solver_executed": False, "status": "solver_error", "metrics": {}, "warnings": [],
                 "error": f"CalculiX returned code {returncode} or produced no FRD",
+                "failure_kind": (
+                    "solver_reported_error" if _solver_log_error_line(solver_log)
+                    else "solver_crash_undiagnosed"
+                ),
                 "solver_diagnosis": _diagnose_solver_log(solver_log),
+                "solver_retry": solver_retry,
                 "mesh_accuracy": mesh_accuracy,
             }
         extracted = _extract_metrics(frd_path)
@@ -2646,6 +2699,7 @@ def _solve_package_static_normalized(
         # The band `cae.generate_mesh` would report for this mesh — without it a
         # batch caller cannot tell a trustworthy stress from an under-predicted one.
         "mesh_accuracy": mesh_accuracy,
+        "solver_retry": solver_retry,
         "warnings": deck_warnings + (extracted.get("warnings") or []),
     }
 

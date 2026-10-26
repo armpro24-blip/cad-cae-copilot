@@ -444,3 +444,103 @@ def test_mass_uses_density_in_kg_per_m3() -> None:
     assert mass_metrics(topo, 2700.0) == {"volume": 1.0e6, "mass": pytest.approx(2.7), "mass_unit": "kg"}
     assert mass_metrics(topo, None)["mass"] == 1.0e6
     assert mass_metrics({}, 2700.0) == {}
+
+
+def test_invalid_density_is_refused_by_both_runners(fake_project, monkeypatch, tmp_path: Path) -> None:
+    """A negative density turns min_mass into max_mass: the heaviest feasible
+    design was recommended, stamped safe_to_apply."""
+    from app.doe_sizing_runner import run_doe_sizing_study
+
+    def boom(*_args):
+        raise AssertionError("no variant may be solved for a refused input")
+
+    for density in (-2700.0, 0.0, float("nan"), True, "2700"):
+        sweep = run_sizing_sweep(
+            None, "proj1", feature_id="f", parameter_name="t", values=[5.0, 6.0],
+            stress_limit=100.0, density=density, evaluate_value=boom,
+        )
+        assert sweep["code"] == "bad_input" and "density" in sweep["message"], density
+        doe = run_doe_sizing_study(
+            None, "proj1",
+            parameters=[{"featureId": "f", "parameterName": "a", "values": [1.0]},
+                        {"featureId": "f", "parameterName": "b", "values": [1.0]}],
+            stress_limit=100.0, density=density, evaluate_design_point=boom,
+        )
+        assert doe["code"] == "bad_input" and "density" in doe["message"], density
+
+
+def test_a_silent_solver_crash_is_not_blamed_on_the_mesh() -> None:
+    """ccx 2.23 intermittently exits 0xFFFFFFFF with no *ERROR and no FRD; the
+    same deck solves on a re-run. That was reported `likely_cause: mesh` with a
+    finer mesh suggested — the wrong advice."""
+    from app.sizing_sweep_runner import record_from_solve
+
+    crash = {
+        "solver_executed": False, "status": "solver_error",
+        "error": "CalculiX returned code 4294967295 or produced no FRD",
+        "failure_kind": "solver_crash_undiagnosed",
+        "solver_diagnosis": ["Solver exited with a non-zero return code — see the log."],
+        "solver_retry": {"attempts": 2, "first_returncode": 4294967295, "succeeded": False},
+    }
+    record = record_from_solve(crash, {}, None, 2.0)
+    assert record["likely_cause"] == "solver_crash"
+    assert record["suggested_retry"]["mesh_size_mm"] == 2.0
+    assert "automatic retry" in record["suggested_retry"]["reason"]
+    assert record["solver_retry"]["attempts"] == 2
+
+    reported = {**crash, "failure_kind": "solver_reported_error",
+                "solver_diagnosis": ["Solver reported: *ERROR in e_c3d: nonpositive jacobian"]}
+    reported.pop("solver_retry")
+    assert record_from_solve(reported, {}, None, 2.0)["likely_cause"] == "mesh"
+
+
+def test_crash_retry_reruns_the_same_deck_once(monkeypatch, tmp_path: Path) -> None:
+    from app import simulation_runner as sr
+
+    deck = tmp_path / "aieng_run.inp"
+    deck.write_text("*NODE\n")
+    frd = tmp_path / "aieng_run.frd"
+
+    def scripted(outcomes):
+        calls: list[int] = []
+
+        def run(inp_path, work_dir, timeout=180):
+            rc, log, makes_frd = outcomes[len(calls)]
+            calls.append(rc)
+            if makes_frd:
+                frd.write_text("frd")
+            return rc, log, frd if makes_frd else None
+        return run, calls
+
+    estimates = "Estimated memory consumption 12 MB\n"
+    run, calls = scripted([(4294967295, estimates, False), (0, "Job finished", True)])
+    monkeypatch.setattr(sr, "_run_calculix", run)
+    rc, _log, out, retry = sr._run_calculix_with_crash_retry(deck, tmp_path)
+    assert (rc, out, len(calls)) == (0, frd, 2)
+    assert retry == {"attempts": 2, "first_returncode": 4294967295, "succeeded": True,
+                     "reason": retry["reason"]}
+
+    frd.unlink()
+    run, calls = scripted([(201, " *ERROR reading *CLOAD: node set X has not yet been defined", False)])
+    monkeypatch.setattr(sr, "_run_calculix", run)
+    rc, _log, out, retry = sr._run_calculix_with_crash_retry(deck, tmp_path)
+    assert (rc, out, retry, len(calls)) == (201, None, None, 1)  # a reported error is never retried
+
+    run, calls = scripted([(0, "Job finished", True)])
+    monkeypatch.setattr(sr, "_run_calculix", run)
+    assert sr._run_calculix_with_crash_retry(deck, tmp_path)[3] is None and len(calls) == 1
+
+
+def test_a_setup_that_cannot_be_prepared_fails_the_variant_not_the_study(monkeypatch, tmp_path: Path) -> None:
+    """Copy + normalisation ran outside the solver's error boundary, so one
+    malformed package raised out of solve_package_static and aborted the study."""
+    from app import simulation_runner as sr
+
+    pkg = tmp_path / "variant.aieng"
+    with zipfile.ZipFile(pkg, "w") as zf:
+        zf.writestr("simulation/cae_mapping.json", "{not json")
+    monkeypatch.setattr(sr, "check_simulation_tools", lambda: {"ready": True, "missing": []})
+    result = sr.solve_package_static(pkg)
+    assert result["solver_executed"] is False
+    assert result["status"] == "solve_error"
+    assert "could not prepare the CAE setup" in result["error"]

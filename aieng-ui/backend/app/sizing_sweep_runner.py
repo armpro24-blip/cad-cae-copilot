@@ -226,6 +226,8 @@ def _is_solver_abort(solve: dict[str, Any]) -> bool:
     error = str(solve.get("error") or "")
     if status in {"no_setup", "tools_unavailable", "stale_topology_references"}:
         return False
+    if solve.get("failure_kind") == "solver_crash_undiagnosed":
+        return False  # a crash with nothing in the log says nothing about the mesh
     diagnosis = " ".join(str(d) for d in solve.get("solver_diagnosis") or []).upper()
     if "ERROR READING" in diagnosis or "NOT YET BEEN DEFINED" in diagnosis:
         return False
@@ -245,13 +247,28 @@ def record_from_solve(
         "error": solve.get("error") if not solve.get("solver_executed") else None,
         "solve_status": solve.get("status"),
         "mesh_accuracy": solve.get("mesh_accuracy"),
+        # Set when CalculiX crashed silently and the same deck was run again;
+        # a success after a retry is an ordinary result, but it is labelled.
+        "solver_retry": solve.get("solver_retry"),
     }
+    if not record["solver_executed"] and solve.get("failure_kind") == "solver_crash_undiagnosed":
+        record["likely_cause"] = "solver_crash"
+        record["suggested_retry"] = {
+            "mesh_size_mm": mesh_size_mm,
+            "reason": (
+                "CalculiX exited without a result and without reporting any error"
+                + (" (also on its automatic retry)" if solve.get("solver_retry") else "")
+                + ". That is not evidence about the mesh or the design: measured with "
+                "ccx 2.23, identical decks crash intermittently and solve on a re-run. "
+                "Re-run this variant at the SAME mesh size."
+            ),
+        }
     # A variant can fail purely because the swept dimension changed the
     # mesh: measured on the reference bracket, 8 mm aborted CalculiX
     # (code 201, no FRD) at mesh_size 4 mm and solved cleanly at 3 mm,
     # with identical geometry, BCs and load. Saying only "not solved"
     # sends the caller looking at their design instead of their mesh.
-    if not record["solver_executed"] and _is_solver_abort(solve):
+    elif not record["solver_executed"] and _is_solver_abort(solve):
         record["likely_cause"] = "mesh"
         record["suggested_retry"] = {
             "mesh_size_mm": round(float(mesh_size_mm) * 0.75, 3) if mesh_size_mm else None,
@@ -262,9 +279,24 @@ def record_from_solve(
                 "mesh_size_mm; the geometry itself is not necessarily the problem."
             ),
         }
-    elif solve.get("solver_diagnosis"):
+    if solve.get("solver_diagnosis"):
         record["solver_diagnosis"] = solve["solver_diagnosis"]
     return record
+
+
+def validate_density(density: Any) -> float | None:
+    """``None`` (rank by volume) or a positive finite kg/m^3; anything else raises.
+
+    A negative density turns min_mass into max_mass — the ranker would then
+    recommend the HEAVIEST feasible design, stamped safe_to_apply.
+    """
+    if density is None:
+        return None
+    if isinstance(density, bool) or not isinstance(density, (int, float)):
+        raise ValueError(f"bad_input: density must be a number in kg/m^3, got {density!r}")
+    if not math.isfinite(float(density)) or density <= 0:
+        raise ValueError(f"bad_input: density must be a positive finite number in kg/m^3, got {density!r}")
+    return float(density)
 
 
 def make_default_evaluate_value(
@@ -405,6 +437,7 @@ def run_sizing_sweep(
             values, range, Path(pkg), feature_id, parameter_name
         )
         # Validate the ranking inputs BEFORE paying for N solves.
+        density = validate_density(density)
         rank_sizing_sweep([], objective=objective, stress_limit=stress_limit,
                           safety_factor=safety_factor, displacement_limit=displacement_limit)
     except ValueError as exc:

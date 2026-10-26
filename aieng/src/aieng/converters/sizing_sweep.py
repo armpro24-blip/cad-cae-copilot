@@ -49,7 +49,7 @@ STATUS_UNRELIABLE_MESH = "unreliable_mesh"
 # Evaluator fields carried through ranking unchanged (diagnostics, not scores).
 _PASSTHROUGH_KEYS = (
     "parameters", "likely_cause", "suggested_retry", "mesh_accuracy", "solve_status",
-    "solver_diagnosis", "origin",
+    "solver_diagnosis", "origin", "solver_retry",
 )
 
 
@@ -421,6 +421,12 @@ def estimate_constraint_boundary(report: dict[str, Any]) -> dict[str, Any]:
     v_in, v_out = rec_value, float(outer["value"])
     if v_out <= 0:
         return {"status": "not_applicable", "reason": "swept values are not positive numbers"}
+    if _mesh_band(outer)[0] == "unreliable":
+        # Its violation stands, but its NUMBERS are under-predicted: fitting the
+        # exponent through them pulls the estimate toward the infeasible end.
+        return {"status": "not_applicable",
+                "reason": "the infeasible neighbour was solved on an unreliable mesh, so its "
+                          "metrics are under-predicted; re-run it on a finer mesh"}
 
     estimates: list[tuple[float, str, float]] = []
     for metric, limit in limits.items():

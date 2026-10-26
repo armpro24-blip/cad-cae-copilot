@@ -1458,23 +1458,32 @@ is possible).
 | `cad.tolerance_stackup` | Read-only 1D tolerance stack-up: pass an ordered list of contributors (name, nominal, plus, minus, optional distribution) and get worst-case arithmetic min/max, RSS sigma and confidence-band min/max, controlling contributors, and honesty notes. Assumes independence and +/- 3-sigma tolerance coverage; not a GD&T solver. No geometry mutation. |
 | `opt.sizing_sweep` | Parametric sizing sweep (approval required): vary ONE editable dimension across explicit `values` OR a `{min, max, steps/step}` range, solve each variant with real static FEA, and rank by objective. Range values are clamped to the parameter's declared min/max and the report says so (`range.clamped`, `range.requested`); a range entirely outside the bounds is refused. Each variant carries the mesh `accuracy` band; a variant that passes the constraints only on an `unreliable` mesh gets status `unreliable_mesh` and is never recommended. The report's `boundary_estimate` interpolates (log-log) where the active constraint is met between the winner and its infeasible neighbour — an estimate, not a solve; `refine_boundary=true` spends one extra solve there and that variant wins only if it solves feasible. Default is recommend-only; `apply_winner=true` applies a `safe_to_apply` winner through the audited `cad.edit_parameter` path and reports its `regression_diff`. A variant that fails to solve is reported honestly and never recommended. |
 | `opt.doe_sizing_study` | Multi-parameter DOE sizing study (approval required): jointly vary 2+ editable parameters, generate a full-factorial design (explicit values or stepped ranges) or a true Latin hypercube (`lhs`: `budget` points over each `range {min,max}`, one per stratum, seeded — the seed is reported) within a 64-point budget, solve each design point with real static FEA, and rank by objective + constraints with the same mesh-band rule as the sweep. Baseline never modified; failed points reported honestly. |
-
-**Both batch solves bind `cae.setup_static` targets.** `solve_package_static`
-(the solver behind the sweep, the DOE study, `cae.mesh_convergence` and the
-candidate solver) now runs `normalize_cae_bindings` — the same step deck
-generation runs — on a throwaway copy. Before, an `@face:` target with no
-`cae_mapping.json` reached CalculiX as `*CLOAD` on an undefined set: measured on
-a 100 x 20 mm cantilever, 5 of 5 sweep variants and 12 of 12 DOE points aborted
-with code 201, and the sweep blamed the mesh. `mass` is solid volume (mm³), or kg
-when `density` is given in kg/m³ — the DOE used to read a `volume_mm3` metric no
-solver writes, so its default `min_mass` objective could never recommend.
-Verified against Euler-Bernoulli beam theory in
-`aieng-ui/backend/tests/test_sizing_cantilever_vv.py`.
 | `opt.derive_problem_from_cae` | Derive a topology-optimization problem (grid + supports + loads + design space) from a project's CAE setup + geometry (`topology_map` faces + design-space bbox). Reads the setup **whichever path authored it** — `simulation/setup.yaml` or the key-free `simulation/cae_imports/parsed_*.json`, and in either an `@face:` pointer target, an NSET name, or a `target_feature`. Read-only; returns the problem + a `derivation` block. `dimension=2d` (default) projects supports/loads onto the plane of the two largest dims; `dimension=3d` keeps the full 3D layout (structured voxel grid, supports→boundary layers, full 3D force). **Both dimensions return `status=needs_user_input` rather than substituting a preset** when the BCs can't be mapped |
 | `opt.run_topology_optimization` | Run topology optimization (built-in self-contained SIMP, compliance-min, pure numpy — no external solver) → `analysis/topology_optimization.json`. `simp_2d` (default) or `simp_3d` (experimental structured-voxel 3D, `dimension=3d`; honest `capability` block: experimental_reference, production_ready:false). Honest coarse limitations recorded. Set `auto_derive` (or omit `problem`) to derive supports/loads/design-space from the project's CAE setup; either dimension may return `needs_user_input` instead of guessing |
 | `opt.writeback_to_shape_ir` | Author the optimization result back into `geometry/shape_ir.json`, then recompile through runtime routing → the optimized body meshes/views + gets verification + object_registry, linked to its `design_space_node`. 2D: `method=contour` (default) writes a marching-squares boundary as an `extruded_region` (`boundary=spline` default → closed periodic spline / CAD-friendly curve, falls back to `polygon` if it would overshoot the design-space envelope); `method=voxels` writes the blocky `density_voxels`. 3D: `method=surface` (default) writes a smooth **marching-cubes** `surface_mesh` proxy (mesh / lossy / not production CAD; falls back to `voxels` if no isosurface); `method=voxels` writes the blocky 3D `density_voxels`. Placed in the design-space frame. Default representation `brep_build123d` for 2D (analytic faces — pickable, STEP-exportable; auto-falls back to `manifold_mesh` if the B-Rep build fails); 3D defaults to `manifold_mesh` |
 | `postprocess.generate_computed_metrics` | Import metrics from CSV/JSON |
 | `postprocess.refresh_cae_summary` | Regenerate result summary + evidence markdown |
+
+**Both batch solves bind `cae.setup_static` targets.** `solve_package_static`
+(the solver behind the sweep, the DOE study, `cae.mesh_convergence` and the
+candidate solver) now runs `normalize_cae_bindings`, the same step that deck
+generation runs, on a throwaway copy. Before this, a `@face:` target with no
+`cae_mapping.json` reached CalculiX as `*CLOAD` on an undefined set: measured on
+a 100 x 20 mm cantilever, 5 of 5 sweep variants and 12 of 12 DOE points aborted
+with code 201, and the sweep blamed the mesh. `mass` is solid volume (mm³), or kg
+when `density` (positive, kg/m³) is given; the DOE used to read a `volume_mm3`
+metric no solver writes, so its default `min_mass` objective could never
+recommend. Verified against Euler-Bernoulli beam theory in
+`aieng-ui/backend/tests/test_sizing_cantilever_vv.py`.
+
+**A silent CalculiX crash is not a mesh verdict.** ccx 2.23 on Windows
+intermittently exits with 0xFFFFFFFF after printing its size estimates — no
+`*ERROR`, no FRD — and the same deck solves on a re-run (measured: about one
+run of the cantilever V&V in three). The batch solve therefore re-runs the same
+deck ONCE when CalculiX produced no result and reported no error, and labels the
+variant `solver_retry`; a run in which CalculiX reports an error is never
+retried. A crash that survives the retry is reported `likely_cause:
+"solver_crash"` with a same-mesh retry, not a finer mesh.
 
 **A refusal is not a problem — do not pass it back.** The derivation returns
 `status: needs_user_input` rather than inventing supports and loads, and the

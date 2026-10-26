@@ -249,3 +249,17 @@ def test_bad_ranking_inputs_raise() -> None:
                    {"stress_limit": float("inf")}, {"displacement_limit": 0.0}):
         with pytest.raises(ValueError):
             rank_sizing_sweep([], **kwargs)
+
+
+def test_boundary_refuses_an_infeasible_neighbour_on_an_unreliable_mesh() -> None:
+    """Its violation stands, but its under-predicted metrics would pull the
+    fitted boundary toward the infeasible (non-conservative) end."""
+    report = rank_sizing_sweep(
+        [_meshed(_variant(5.0, stress=120.0, mass=5.0), "unreliable"),
+         _meshed(_variant(6.0, stress=80.0, mass=6.0), "reliable")],
+        stress_limit=100.0,
+    )
+    assert report["recommended"]["value"] == 6.0
+    boundary = estimate_constraint_boundary(report)
+    assert boundary["status"] == "not_applicable"
+    assert "unreliable" in boundary["reason"]
