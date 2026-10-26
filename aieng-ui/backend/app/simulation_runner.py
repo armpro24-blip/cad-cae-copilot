@@ -547,7 +547,7 @@ def get_mesh_preview(package_path: Path) -> dict[str, Any]:
     if not inp_bytes:
         return {"available": False}
 
-    with tempfile.TemporaryDirectory(prefix="aieng_mesh_preview_") as tmp_str:
+    with tempfile.TemporaryDirectory(prefix="aieng_mesh_preview_", ignore_cleanup_errors=True) as tmp_str:
         work = Path(tmp_str)
         inp_path = work / "mesh.inp"
         inp_path.write_bytes(inp_bytes)
@@ -797,7 +797,7 @@ def get_mesh_quality_diagnostics(package_path: Path) -> dict[str, Any]:
     if not inp_bytes:
         return {"available": False}
 
-    with tempfile.TemporaryDirectory(prefix="aieng_mesh_quality_") as tmp_str:
+    with tempfile.TemporaryDirectory(prefix="aieng_mesh_quality_", ignore_cleanup_errors=True) as tmp_str:
         inp_path = Path(tmp_str) / "mesh.inp"
         inp_path.write_bytes(inp_bytes)
         nodes = _parse_inp_nodes(inp_path)
@@ -1130,7 +1130,7 @@ def generate_mesh_for_package(
                 "message": f"mesh_size_mm must be positive, got {size}"}
     order = 2 if int(element_order or DEFAULT_ELEMENT_ORDER) >= 2 else 1
 
-    with tempfile.TemporaryDirectory(prefix="aieng_generate_mesh_") as tmp_str:
+    with tempfile.TemporaryDirectory(prefix="aieng_generate_mesh_", ignore_cleanup_errors=True) as tmp_str:
         work = Path(tmp_str)
         step_path = _extract_step(package_path, work)
         if step_path is None:
@@ -1991,7 +1991,7 @@ def ensure_source_deck_from_mesh(package_path: Path) -> dict[str, Any]:
     topo_raw = _read_member(package_path, _TOPOLOGY_PATH)
     topology: dict[str, Any] = json.loads(topo_raw) if topo_raw else {}
 
-    with tempfile.TemporaryDirectory(prefix="aieng_source_deck_") as tmp_str:
+    with tempfile.TemporaryDirectory(prefix="aieng_source_deck_", ignore_cleanup_errors=True) as tmp_str:
         tmp_mesh_path = Path(tmp_str) / "mesh.inp"
         tmp_mesh_path.write_bytes(mesh_bytes)
         nodes = _parse_inp_nodes(tmp_mesh_path)
@@ -2823,7 +2823,7 @@ def _build_core_solver_deck_from_mesh(
     source_deck, _empty_nsets = build_source_deck_from_mesh(mesh_inp_text, setup, nsets)
     warnings: list[str] = []
 
-    with tempfile.TemporaryDirectory(prefix="aieng_core_deck_") as tmp_str:
+    with tempfile.TemporaryDirectory(prefix="aieng_core_deck_", ignore_cleanup_errors=True) as tmp_str:
         pkg = Path(tmp_str) / "runtime_deck.aieng"
         out_path = f"simulation/runs/{run_id}/solver_input.inp"
         with zipfile.ZipFile(pkg, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -3019,7 +3019,7 @@ def solve_package_static(
             "warnings": [],
             "error": f"required tools unavailable: {', '.join(tools['missing'])}",
         }
-    with tempfile.TemporaryDirectory(prefix="aieng_solve_pkg_") as pkg_tmp:
+    with tempfile.TemporaryDirectory(prefix="aieng_solve_pkg_", ignore_cleanup_errors=True) as pkg_tmp:
         work_pkg = Path(pkg_tmp) / "package.aieng"
         work_baseline: Path | None = None
         try:
@@ -3127,7 +3127,7 @@ def _solve_package_static_normalized(
             }
 
     size = float(mesh_size_mm or (setup.get("mesh") or {}).get("target_size_mm") or 2.5)
-    with tempfile.TemporaryDirectory(prefix="aieng_sweep_solve_") as tmp_str:
+    with tempfile.TemporaryDirectory(prefix="aieng_sweep_solve_", ignore_cleanup_errors=True) as tmp_str:
         work = Path(tmp_str)
         step_path = _extract_step(package_path, work)
         if not step_path:
@@ -3344,7 +3344,7 @@ def _run_simulation_core(
     )
     timeout = int(payload.get("timeout_s") or 180)
 
-    with tempfile.TemporaryDirectory(prefix="aieng_sim_") as tmp_str:
+    with tempfile.TemporaryDirectory(prefix="aieng_sim_", ignore_cleanup_errors=True) as tmp_str:
         work_dir = Path(tmp_str)
 
         # ── Step 2: extract STEP ──────────────────────────────────────────────
