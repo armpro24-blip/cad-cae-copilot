@@ -388,3 +388,41 @@ def test_each_side_reports_the_faces_its_run_bound(tmp_path: Path) -> None:
 
     assert result["baseline"]["setup_bindings"] == {"load_001": ["face_011"]}
     assert result["current"]["setup_bindings"] == {"load_001": ["face_013"]}
+
+
+_CCX = Path(__file__).parent / "fixtures" / "frd_ccx_2_23"
+
+
+@pytest.mark.parametrize(
+    "analysis, metric, value",
+    [("modal", "first_natural_frequency_hz", 1566.868114),
+     ("buckling", "lowest_buckling_factor", 155.889809)],
+)
+def test_eigen_runs_compare_eigenvalues_not_mode_shape_amplitudes(
+    tmp_path: Path, analysis: str, metric: str, value: float
+) -> None:
+    # Real CalculiX 2.23 output. Comparing two modal runs used to produce rows
+    # of max_displacement "mm" / max_von_mises_stress "MPa" per mode — the
+    # amplitude of a normalised eigenvector — and no frequency at all.
+    pkg = tmp_path / f"{analysis}.aieng"
+    with zipfile.ZipFile(pkg, "w") as zf:
+        zf.writestr("manifest.json", json.dumps({"model_id": "beam"}))
+        for rev, run_id in enumerate(("run_001", "run_002")):
+            zf.writestr(f"simulation/runs/{run_id}/outputs/result.frd",
+                        (_CCX / f"{analysis}.frd").read_bytes())
+            zf.writestr(f"simulation/runs/{run_id}/solver_run.json", json.dumps(
+                {"run_id": run_id, "state": "completed", "solved": True,
+                 "analysis_type": analysis}))
+            zf.writestr(f"simulation/runs/{run_id}/deck_provenance.json",
+                        json.dumps({"run_id": run_id, "geometry_revision": rev}))
+
+    result = compare_runs(pkg)
+
+    rows = {(r["load_case_id"], r["metric"]): r for r in result["comparison"]}
+    case = f"{analysis}_001"
+    assert rows[(case, metric)]["status"] == "compared"
+    assert rows[(case, metric)]["before"] == pytest.approx(value, rel=1e-9)
+    assert rows[(case, metric)]["percent_change"] == pytest.approx(0.0)
+    mode_shape_rows = [k for k in rows if k[1] in ("max_displacement", "max_von_mises_stress")
+                       and k[0] != "load_case_001"]
+    assert mode_shape_rows == []
