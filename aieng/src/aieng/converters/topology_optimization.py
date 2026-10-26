@@ -186,6 +186,17 @@ def _require_usable_bcs(fixed: np.ndarray, F: np.ndarray, ndof: int, what: str) 
             "substituted for a broken request.")
 
 
+def _explicit_bcs_requested(bcs: dict[str, Any]) -> bool:
+    """A ``supports`` or ``loads`` KEY is an explicit request, even when its list is
+    empty — `{supports: [], loads: []}` merged over a derived problem clears the
+    part's real BCs, and must not quietly become a textbook preset. Empty lists
+    defer to a preset only when the caller names that preset."""
+    supports, loads = bcs.get("supports"), bcs.get("loads")
+    if supports or loads:
+        return True
+    return (supports is not None or loads is not None) and not bcs.get("preset")
+
+
 def _resolve_bcs(nelx: int, nely: int, bcs: dict[str, Any]) -> tuple[np.ndarray, np.ndarray, str | None]:
     """Explicit supports/loads if present, else a named preset. Returns
     (fixed_dofs, force_vector, preset_name) — preset_name is None when explicit.
@@ -193,7 +204,7 @@ def _resolve_bcs(nelx: int, nely: int, bcs: dict[str, Any]) -> tuple[np.ndarray,
     Degenerate explicit BCs raise :class:`TopologyProblemRefused`."""
     supports = bcs.get("supports")
     loads = bcs.get("loads")
-    if supports or loads:
+    if _explicit_bcs_requested(bcs):
         fixed, F = _explicit_bcs(nelx, nely, supports or [], loads or [])
         _require_usable_bcs(fixed, F, F.size, "2d")
         return fixed, F, None
@@ -373,6 +384,15 @@ def _simp_solve(*, KE: np.ndarray, edof: np.ndarray, ndof: int, fixed: np.ndarra
     nele, nk = edof.shape
     penal, emin, xmin, move, tol = opts["penal"], opts["emin"], opts["xmin"], opts["move"], opts["tol"]
     density_filter = opts["filter"] == "density"
+    if density_filter and preserve is not None:
+        # The floor binds the design variable; the density filter then averages it
+        # into the physical field, so a "preserved" cell can be exported below
+        # preserve_min_density (measured 0.59 against a 0.9 floor) while still
+        # counted as preserved. Refuse until the floor acts on the physical field.
+        raise ValueError(
+            "filter='density' cannot honour a result-guidance preserve_mask (the filtered "
+            "physical density can fall below preserve_min_density); use the default "
+            "sensitivity filter with preservation")
 
     free = np.setdiff1d(np.arange(ndof), fixed)
     # Reduced assembly: index vectors once, dropping entries that touch a fixed dof.
@@ -418,6 +438,16 @@ def _simp_solve(*, KE: np.ndarray, edof: np.ndarray, ndof: int, fixed: np.ndarra
         step = np.sqrt(np.maximum(-dc, 0.0) / dv)
         lo_b = np.maximum(x - move, lower)
         hi_b = np.minimum(x + move, 1.0)
+        # The OC design as the multiplier -> 0+: everything with a positive
+        # sensitivity at its upper bound. If even that does not exceed the volume
+        # budget (volfrac = 1.0, or a move limit too tight to reach it), the
+        # constraint is inactive and this IS the update; bisecting for a
+        # multiplier that does not exist used to underflow and divide by zero.
+        x_lim = np.clip(np.where(x * step > 0, np.inf, 0.0), lo_b, hi_b)
+        xphys_lim = (H @ x_lim) / Hs if density_filter else x_lim
+        if xphys_lim.sum() <= target:
+            l1 = l2 = 1.0   # skip the bisection
+            xnew, xphys_new = x_lim, xphys_lim
         while (l2 - l1) / (l1 + l2) > 1e-3:
             lmid = 0.5 * (l2 + l1)
             xnew = np.clip(x * step / math.sqrt(lmid), lo_b, hi_b)
@@ -672,7 +702,7 @@ def _resolve_bcs_3d(nx: int, ny: int, nz: int, bcs: dict[str, Any]) -> tuple[np.
     loads = bcs.get("loads")
     nnx, nny, nnz = nx + 1, ny + 1, nz + 1
     ndof = 3 * nnx * nny * nnz
-    if supports or loads:
+    if _explicit_bcs_requested(bcs):
         fixed, F = _explicit_bcs_3d(nx, ny, nz, supports or [], loads or [])
         _require_usable_bcs(fixed, F, ndof, "3d")
         return fixed, F, None

@@ -174,3 +174,48 @@ def test_large_grid_is_feasible_without_a_dense_matrix():
                    "max_iters": 2, "bcs": {"preset": "mbb_beam"}})
     assert out["iterations"] == 2 and out["compliance_history"][1] < out["compliance_history"][0]
     assert out["converged"] is False
+
+
+# ── PR #544 review findings (each failed before its fix) ─────────────────────
+
+@pytest.mark.parametrize("bcs", [{"loads": []}, {"supports": []}, {"supports": [], "loads": []}])
+def test_explicitly_empty_bc_lists_are_refused_not_replaced_by_a_preset(bcs):
+    """A caller override ``problem: {bcs: {supports: [], loads: []}}`` merged over a
+    derived problem clears the part's real BCs; it used to solve the cantilever
+    preset with only a warning. Keys present = an explicit (here empty) request."""
+    from aieng.converters.topology_optimization import TopologyProblemRefused
+    with pytest.raises(TopologyProblemRefused):
+        simp_2d({"grid": {"nelx": 12, "nely": 6}, "volfrac": 0.5, "max_iters": 4, "bcs": bcs})
+    with pytest.raises(TopologyProblemRefused):
+        simp_3d({"grid": {"nx": 6, "ny": 3, "nz": 2}, "volume_fraction": 0.4, "max_iters": 3, "bcs": bcs})
+
+
+def test_named_preset_with_empty_lists_still_solves_the_preset_it_names():
+    out = simp_2d({"grid": {"nelx": 12, "nely": 6}, "volfrac": 0.5, "max_iters": 4,
+                   "bcs": {"preset": "mbb_beam", "supports": [], "loads": []}})
+    assert out["bcs_preset"] == "mbb_beam" and not any("preset" in w for w in out["warnings"])
+
+
+def test_density_filter_with_a_preserve_mask_is_refused():
+    """The floor is applied to the design variable, but the density filter averages
+    it into the physical field — measured: a preserved cell (floor 0.9) exported at
+    0.587 while still counted as preserved."""
+    nelx, nely = 30, 10
+    pm = np.zeros((nely, nelx))
+    pm[0, 15] = 1
+    with pytest.raises(ValueError, match="density"):
+        simp_2d({"grid": {"nelx": nelx, "nely": nely}, "volfrac": 0.3, "filter": "density", "rmin": 2.5,
+                 "bcs": {"preset": "cantilever"}, "use_result_guidance": True,
+                 "guidance_field": {"preserve_mask": pm.tolist(), "options": {"preserve_min_density": 0.9}}})
+
+
+@pytest.mark.parametrize("filt", ["sensitivity", "density"])
+def test_full_volume_fraction_returns_a_solid_design(filt):
+    """volfrac=1.0 makes the volume constraint inactive: the bisection never found a
+    multiplier and divided by zero once its bracket underflowed."""
+    out = simp_2d({"grid": {"nelx": 8, "nely": 4}, "volfrac": 1.0, "max_iters": 5,
+                   "filter": filt, "bcs": {"preset": "cantilever"}})
+    assert out["achieved_volume_fraction"] == 1.0 and out["converged"] is True
+    out3 = simp_3d({"grid": {"nx": 4, "ny": 2, "nz": 2}, "volume_fraction": 1.0, "max_iters": 5,
+                    "filter": filt})
+    assert out3["achieved_volume_fraction"] == 1.0
