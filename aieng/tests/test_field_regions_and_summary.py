@@ -409,3 +409,81 @@ def test_targets_status_absent_when_result_summary_missing(tmp_path: Path) -> No
     summary = generate_field_summary(pkg)
     assert "targets_status" not in summary["llm_summary"]
     assert validate_package(pkg).ok
+
+
+def test_uniform_field_is_not_presented_as_a_concentration(tmp_path: Path) -> None:
+    # A bar in uniform tension: every node at ~100 MPa. A percentile cut always
+    # selects nodes, so "high-stress clusters" came back with no hint that the
+    # "high" nodes are within 0.4% of the median.
+    pkg = _package(tmp_path / "test.aieng")
+    frd = tmp_path / "job.frd"
+    coords = {i: (float(i), 0.0, 0.0) for i in range(1, 11)}
+    stress = {i: 100.0 + 0.04 * i for i in coords}
+    frd.write_text(_make_frd(coords, stress), encoding="utf-8")
+
+    result = extract_field_regions_package(pkg, frd, threshold_percentile=80)
+
+    stats = result["field_statistics"]
+    assert stats["near_uniform"] is True
+    assert stats["peak_to_median_ratio"] == pytest.approx(100.4 / 100.22, abs=1e-4)
+    assert any("near-uniform" in w for w in result["warnings"])
+    assert result["clusters"][0]["peak_to_median_ratio"] < 1.1
+    assert validate_package(pkg).ok
+
+
+def test_summary_of_a_near_uniform_field_does_not_say_high_magnitude(tmp_path: Path) -> None:
+    pkg = _package(tmp_path / "test.aieng")
+    frd = tmp_path / "job.frd"
+    coords = {i: (float(i), 0.0, 0.0) for i in range(1, 11)}
+    frd.write_text(_make_frd(coords, {i: 100.0 + 0.04 * i for i in coords}), encoding="utf-8")
+    extract_field_regions_package(pkg, frd, threshold_percentile=80)
+
+    summary = generate_field_summary(pkg)["llm_summary"]
+
+    assert "high-magnitude" not in summary["one_line"]
+    assert "near-uniform" in summary["one_line"]
+    assert not any("High-magnitude" in r for r in summary["risks"])
+
+
+def test_field_statistics_keep_small_values(tmp_path: Path) -> None:
+    # 1e-7-scale values rounded to 6 decimals read as all zeros beside a
+    # non-zero peak/median ratio.
+    pkg = _package(tmp_path / "test.aieng")
+    frd = tmp_path / "job.frd"
+    coords = {i: (float(i), 0.0, 0.0) for i in range(1, 11)}
+    frd.write_text(_make_frd(coords, {i: 1e-7 * i for i in coords}), encoding="utf-8")
+
+    stats = extract_field_regions_package(pkg, frd, threshold_percentile=80)["field_statistics"]
+
+    assert stats["max"] == pytest.approx(1e-6, rel=1e-4)
+    assert stats["median"] == pytest.approx(5.5e-7, rel=1e-4)
+    assert stats["min"] == pytest.approx(1e-7, rel=1e-4)
+    assert stats["threshold_value"] > 0
+    assert validate_package(pkg).ok
+
+
+def test_concentrated_field_reports_its_ratio(tmp_path: Path) -> None:
+    pkg = _package(tmp_path / "test.aieng")
+    frd = tmp_path / "job.frd"
+    coords = {i: (float(i), 0.0, 0.0) for i in range(1, 11)}
+    stress = {i: 10.0 for i in coords}
+    stress[10] = 50.0  # a 5x hot spot
+    frd.write_text(_make_frd(coords, stress), encoding="utf-8")
+
+    result = extract_field_regions_package(pkg, frd, threshold_percentile=90)
+
+    assert result["field_statistics"]["near_uniform"] is False
+    assert result["clusters"][0]["peak_to_median_ratio"] == pytest.approx(5.0)
+    assert not any("near-uniform" in w for w in result["warnings"])
+    assert validate_package(pkg).ok
+
+
+def test_ccx_field_name_stress_is_accepted(tmp_path: Path) -> None:
+    # CalculiX names the block STRESS; field="STRESS" used to fall through to
+    # "Unsupported metric" and raise.
+    pkg = _package(tmp_path / "test.aieng")
+    frd = tmp_path / "job.frd"
+    frd.write_text(_make_frd({1: (0, 0, 0), 2: (0.1, 0, 0), 3: (10, 0, 0)},
+                             {1: 100, 2: 99, 3: 1}), encoding="utf-8")
+    result = extract_field_regions_package(pkg, frd, field="STRESS", threshold_percentile=80)
+    assert result["clusters"][0]["magnitude"] == {"value": 100.0, "unit": "MPa"}

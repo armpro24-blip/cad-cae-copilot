@@ -54,11 +54,31 @@
           "feature_ref": {
             "description": "Feature ID when mesh-to-feature mapping evidence exists; null when unavailable.",
             "type": ["string", "null"]
+          },
+          "peak_to_median_ratio": {
+            "description": "Cluster peak divided by the field median; null when the median is not positive.",
+            "type": ["number", "null"]
           }
         }
       }
     },
     "warnings": {"type": "array", "items": {"type": "string"}},
+    "field_statistics": {
+      "description": "Whole-field context for the percentile cut. A percentile always selects nodes, so these numbers say whether the selected nodes are a concentration at all.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_count", "median", "max", "threshold_percentile", "threshold_value", "peak_to_median_ratio", "near_uniform"],
+      "properties": {
+        "node_count": {"type": "integer", "minimum": 0},
+        "min": {"type": ["number", "null"]},
+        "median": {"type": "number"},
+        "max": {"type": "number"},
+        "threshold_percentile": {"type": "number"},
+        "threshold_value": {"type": "number"},
+        "peak_to_median_ratio": {"type": ["number", "null"]},
+        "near_uniform": {"type": "boolean"}
+      }
+    },
     "claim_policy": {
       "type": "object",
       "additionalProperties": false,

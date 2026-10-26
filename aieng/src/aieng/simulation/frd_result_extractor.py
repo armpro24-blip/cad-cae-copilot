@@ -22,8 +22,21 @@ from pathlib import Path
 from typing import Any
 
 from ..schema_versions import FRD_COMPUTED_METRICS_SCHEMA
+from .field_derivation import stress_tensor_from_frd, von_mises
 
 METRICS_PATH = "results/computed_metrics.json"
+
+# What the extrema ARE, stated with the number. CalculiX computes stresses at
+# the integration points, extrapolates them to the nodes and averages over the
+# elements sharing each node before writing the .frd (ccx manual, *EL FILE), and
+# von Mises is then formed from those averaged components here. The peak of an
+# averaged nodal field is lower than the integration-point / unaveraged peak at
+# a concentration, and it moves with the mesh — see cae.mesh_convergence.
+_STRESS_BASIS = (
+    "max over nodes of von Mises formed from CalculiX nodal stresses "
+    "(integration-point values extrapolated to nodes and averaged over adjacent elements)"
+)
+_DISP_BASIS = "max over nodes of the nodal displacement magnitude sqrt(D1^2+D2^2+D3^2)"
 _BINARY_FRD_UNSUPPORTED = (
     "binary or non-UTF-8 FRD files are unsupported by frd_parser_v1; "
     "provide a CalculiX text FRD export before extracting computed metrics"
@@ -34,22 +47,75 @@ _BINARY_FRD_UNSUPPORTED = (
 # FRD parser
 # ---------------------------------------------------------------------------
 
-def _detect_frd_layout(lines: list[str]) -> tuple[int, int]:
-    """Detect the FRD record key/node field widths from the first tag line.
+def _format_indicator(lines: list[str]) -> int | None:
+    """The FORMAT field of the first ``2C`` / ``100C`` header, or None.
 
-    Returns ``(key_width, node_width)``. Standard CalculiX output leads each
-    record with a single space + 2-char key (" -4", key_width=3) and an I10 node
-    field (node_width=10); a wider dialect uses key_width=6 / node_width=12.
-    Defaults to the wide layout when no tag line is found.
+    CalculiX GraphiX manual, "Result Format": FORMAT is 0 = short ASCII
+    (data records ``(1X,I2,I5,6E12.5)``), 1 = long ASCII (``(1X,I2,I10,6E12.5)``),
+    2 = binary. It is the last integer on both header records.
+    """
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("2C") or stripped.startswith("100C"):
+            token = stripped.split()[-1] if stripped.split() else ""
+            try:
+                return int(token)
+            except ValueError:
+                return None
+    return None
+
+
+def _detect_frd_layout(lines: list[str]) -> tuple[int, int]:
+    """Detect the FRD record key/node field widths.
+
+    Returns ``(key_width, node_width)``. CalculiX leads each record with a single
+    space + 2-char key (" -4", key_width=3) followed by the node number: I10 in
+    the long format ccx writes, I5 in the short format (read from the header's
+    FORMAT indicator — guessing I10 for a short-format file read the first value
+    into the node id and silently dropped every record). A wider dialect uses
+    key_width=6 / node_width=12. Defaults to the wide layout when no tag line is
+    found.
     """
     for line in lines:
         stripped = line.lstrip()
         if stripped[:2] in ("-1", "-2", "-3", "-4", "-5"):
             lead = len(line) - len(stripped)
             key_width = lead + 2
-            node_width = 12 if key_width >= 6 else 10
-            return key_width, node_width
+            if key_width >= 6:
+                return key_width, 12
+            return key_width, 5 if _format_indicator(lines) == 0 else 10
     return 6, 12
+
+
+def _parse_step_header(line: str) -> dict[str, Any] | None:
+    """Parse a ``100C`` nodal-results header record (fixed columns).
+
+    Layout (cgx manual): ``'  100','C',6A1,E12.5,I12,20A1,I2,I5,10A1,I2`` =
+    KEY, CODE, SETNAME, VALUE, NUMNOD, TEXT, ICTYPE, NUMSTP, ANALYS, FORMAT.
+    ICTYPE: 0 static, 1 time step, 2 frequency, 3 load step, 4 user named.
+    VALUE is the step time, the eigenfrequency (cycles/time) of a modal step, or
+    the buckling factor of a ccx ``*BUCKLE`` mode.
+    """
+    if not line.strip().startswith("100C"):
+        return None
+    start = line.index("100C") + 4  # column after CODE
+    body = line[start:]
+    try:
+        value = float(body[6:18])
+    except ValueError:
+        value = None
+    def _int(text: str) -> int | None:
+        try:
+            return int(text)
+        except ValueError:
+            return None
+    return {
+        "value": value,
+        "analysis_code": _int(body[50:52]),
+        "step_number": _int(body[52:57]),
+        "analysis_text": body[57:67].strip() or None,
+        "format": _int(body[67:69]),
+    }
 
 
 def _parse_frd_text(text: str) -> list[dict[str, Any]]:
@@ -77,10 +143,25 @@ def _parse_frd_text(text: str) -> list[dict[str, Any]]:
     def _key(text_line: str) -> str:
         return text_line[:key_width].strip()
 
+    step_header: dict[str, Any] | None = None
+
     while i < len(lines):
         line = lines[i]
 
+        header = _parse_step_header(line)
+        if header is not None:
+            step_header = header
+            i += 1
+            continue
+
         if _key(line) == "-4":
+            # The FRD spec gives every result block its own FORMAT flag (on its
+            # 100C header), independent of the coordinate block's: a file may
+            # store coordinates short (I5) and results long (I10). Read node ids
+            # with the width THIS block declares.
+            block_value_start = value_start
+            if key_width == 3 and step_header and step_header.get("format") in (0, 1):
+                block_value_start = key_width + (5 if step_header["format"] == 0 else 10)
             # Field header: "<key>  FIELDNAME  n_components  ..."
             parts = line[key_width:].split()
             if not parts:
@@ -114,11 +195,13 @@ def _parse_frd_text(text: str) -> list[dict[str, Any]]:
 
                 if t == "-1":
                     try:
-                        current_node_id = int(ln[key_width:value_start])
+                        current_node_id = int(ln[key_width:block_value_start])
                     except (ValueError, IndexError):
                         i += 1
                         continue
-                    node_data[current_node_id] = _slice_values(ln, value_start, n_components)
+                    node_data[current_node_id] = _slice_values(
+                        ln, block_value_start, n_components
+                    )
 
                 elif t == "-2" and current_node_id is not None:
                     # Continuation line for the same node; -2 lines also carry the
@@ -126,7 +209,7 @@ def _parse_frd_text(text: str) -> list[dict[str, Any]]:
                     already = len(node_data.get(current_node_id, []))
                     remaining = n_components - already
                     if remaining > 0:
-                        more = _slice_values(ln, value_start, remaining)
+                        more = _slice_values(ln, block_value_start, remaining)
                         node_data.setdefault(current_node_id, []).extend(more)
 
                 i += 1
@@ -139,6 +222,10 @@ def _parse_frd_text(text: str) -> list[dict[str, Any]]:
                         "components": component_names,
                         "node_data": node_data,
                         "step_index": occurrence,
+                        # The 100C header this block belongs to (None for files
+                        # without one). Lets callers group DISP/STRESS of the
+                        # same step and recognise eigenmode blocks.
+                        "step": step_header,
                     }
                 )
                 field_occurrence[field_name] = occurrence + 1
@@ -270,7 +357,9 @@ def _extract_step_metrics(
                 max_disp = v
 
         if max_disp is not None:
-            metrics["max_displacement"] = {"value": round(max_disp, 6), "unit": "mm"}
+            metrics["max_displacement"] = {
+                "value": round(max_disp, 6), "unit": "mm", "basis": _DISP_BASIS,
+            }
         else:
             warnings.append(
                 "DISP field present but no valid displacement values could be extracted"
@@ -281,25 +370,20 @@ def _extract_step_metrics(
     # --- Max von Mises stress -----------------------------------------------
     if stress_dataset:
         node_data = stress_dataset["node_data"]
+        components = stress_dataset.get("components")
         max_vm: float | None = None
         for vals in node_data.values():
-            if len(vals) < 6 or any(v is None for v in vals[:6]):
+            tensor = stress_tensor_from_frd(components, vals)
+            if tensor is None or any(v is None for v in tensor):
                 continue
-            sxx, syy, szz = float(vals[0]), float(vals[1]), float(vals[2])
-            sxy, sxz, syz = float(vals[3]), float(vals[4]), float(vals[5])
-            vm = math.sqrt(
-                0.5 * (
-                    (sxx - syy) ** 2
-                    + (syy - szz) ** 2
-                    + (szz - sxx) ** 2
-                    + 6.0 * (sxy ** 2 + sxz ** 2 + syz ** 2)
-                )
-            )
+            vm = von_mises(tensor)
             if max_vm is None or vm > max_vm:
                 max_vm = vm
 
         if max_vm is not None:
-            metrics["max_von_mises_stress"] = {"value": round(max_vm, 4), "unit": "MPa"}
+            metrics["max_von_mises_stress"] = {
+                "value": round(max_vm, 4), "unit": "MPa", "basis": _STRESS_BASIS,
+            }
         else:
             warnings.append(
                 "S field present but no valid stress tensor values could be extracted"
@@ -344,6 +428,92 @@ def _load_case_id_for_step(
     return f"load_case_{step_index + 1:03d}"
 
 
+_BUCKLING_TYPES = ("buckling", "buckle")
+
+
+def _step_groups(datasets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Group FRD blocks into analysis steps: ``[{step, fields: {name: dataset}}]``.
+
+    When every block carries its ``100C`` header the blocks are grouped by that
+    header (step number, step value, analysis type) — the solver's own statement
+    of which DISP belongs with which STRESS. Files without headers fall back to
+    pairing the n-th block of each field.
+    """
+    if datasets and all(d.get("step") for d in datasets):
+        groups: dict[tuple[Any, ...], dict[str, Any]] = {}
+        for d in datasets:
+            h = d["step"]
+            key = (h.get("step_number"), h.get("value"), h.get("analysis_code"))
+            group = groups.setdefault(key, {"step": h, "fields": {}})
+            group["fields"].setdefault(d["field_name"], d)
+        return list(groups.values())
+    by_field: dict[str, list[dict[str, Any]]] = {}
+    for d in datasets:
+        by_field.setdefault(d["field_name"], []).append(d)
+    n = max((len(v) for v in by_field.values()), default=0)
+    return [
+        {"step": None, "fields": {name: v[i] for name, v in by_field.items() if i < len(v)}}
+        for i in range(n)
+    ]
+
+
+def _eigenmode_kind(step: dict[str, Any] | None, analysis_type: str | None) -> str | None:
+    """``"modal"`` / ``"buckling"`` when this step holds an eigenmode, else None.
+
+    ICTYPE 2 is "frequency" in the FRD spec, so a modal mode is recognised from
+    the file alone. CalculiX writes ``*BUCKLE`` modes as ICTYPE 4 ("user
+    named") with VALUE = the buckling factor, after a VALUE 0 block holding the
+    real stress state under the reference load (measured on ccx output). ICTYPE
+    4 is not specific to buckling, so a buckling mode is recognised only when
+    the caller says the analysis IS buckling.
+    """
+    if not step:
+        return None
+    if step.get("analysis_code") == 2:
+        return "modal"
+    if (
+        (analysis_type or "").lower() in _BUCKLING_TYPES
+        and step.get("analysis_code") == 4
+        and step.get("value") not in (None, 0.0)
+    ):
+        return "buckling"
+    return None
+
+
+def _eigen_load_case(kind: str, values: list[float]) -> dict[str, Any]:
+    """One load case carrying the eigenvalues, in the `.dat` extractor's shape."""
+    from .dat_result_extractor import _BUCKLING_NOTE, _MODAL_NOTE
+
+    basis = "VALUE of each mode's FRD step header (100C record)"
+    if kind == "modal":
+        return {
+            "id": "modal_001",
+            "metrics": {
+                "natural_frequencies_hz": {
+                    "value": [round(v, 6) for v in values], "unit": "Hz",
+                    "note": _MODAL_NOTE, "basis": basis,
+                },
+                "first_natural_frequency_hz": {
+                    "value": round(values[0], 6), "unit": "Hz",
+                    "note": _MODAL_NOTE, "basis": basis,
+                },
+            },
+        }
+    return {
+        "id": "buckling_001",
+        "metrics": {
+            "buckling_factors": {
+                "value": [round(v, 6) for v in values], "unit": "dimensionless",
+                "note": _BUCKLING_NOTE, "basis": basis,
+            },
+            "lowest_buckling_factor": {
+                "value": round(min(values, key=abs), 6), "unit": "dimensionless",
+                "note": _BUCKLING_NOTE, "basis": basis,
+            },
+        },
+    }
+
+
 def extract_computed_metrics(
     frd_path: Path,
     *,
@@ -352,11 +522,18 @@ def extract_computed_metrics(
     software: str = "CalculiX",
     source_files: list[str] | None = None,
     run_id: str | None = None,
+    analysis_type: str | None = None,
 ) -> dict[str, Any]:
     """Extract scalar extrema from a CalculiX FRD file.
 
     Returns a dict matching the ``results/computed_metrics.json`` schema
     (version ``"0.1"``).  Multi-step FRDs produce one load case per step.
+
+    Eigenmode steps (modal, and buckling when ``analysis_type`` says so) are not
+    reported as ``max_displacement`` / ``max_von_mises_stress``: a mode shape is a
+    normalised eigenvector, so its amplitude in "mm" and its "stress" in "MPa"
+    are not physical results. Their eigenvalues are reported instead, under the
+    same metric names the ``.dat`` extractor uses.
 
     Args:
         frd_path: Path to the CalculiX ``.frd`` file.
@@ -369,35 +546,69 @@ def extract_computed_metrics(
             anyone who opens the package later.
         run_id: The solver run these metrics came from, recorded so an exported
             package can still say which run supports which number.
+        analysis_type: The analysis the run performed, when known (e.g. from
+            ``solver_run.json``). Needed to recognise buckling modes.
 
     Returns:
         Dict with ``schema_version``, ``metrics_source``, ``load_cases``,
         and ``warnings``.
     """
-    fields = parse_frd_steps(frd_path)
-    disp_steps = fields.get("DISP", [])
-    # CalculiX names the stress field "STRESS"; some exports use "S". Accept both.
-    stress_steps = fields.get("S") or fields.get("STRESS") or []
-    # Steady-state heat transfer emits nodal temperature as NDTEMP (some exports
-    # use TEMP).
-    temp_steps = fields.get("NDTEMP") or fields.get("TEMP") or []
-    n_steps = max(len(disp_steps), len(stress_steps), len(temp_steps), 1)
+    datasets = _parse_frd_text(_read_frd_text(frd_path))
+    groups = _step_groups(datasets) or [{"step": None, "fields": {}}]
 
     warnings: list[str] = []
-    load_cases: list[dict[str, Any]] = []
-
-    for step_index in range(n_steps):
-        disp = disp_steps[step_index] if step_index < len(disp_steps) else None
-        stress = stress_steps[step_index] if step_index < len(stress_steps) else None
-        temp = temp_steps[step_index] if step_index < len(temp_steps) else None
-        case_metrics = _extract_step_metrics(disp, stress, warnings, temp)
-        case_id = _load_case_id_for_step(
-            step_index,
-            provided_id=load_case_id,
-            provided_ids=load_case_ids,
-            n_steps=n_steps,
+    # (FRD step index, group) — the index into `load_case_ids` is the step's
+    # position in the FILE, so an eigenmode step removed from the physical
+    # list must not shift the explicit ids of the steps after it.
+    physical: list[tuple[int, dict[str, Any]]] = []
+    eigen: dict[str, list[float]] = {}
+    for frd_step_index, group in enumerate(groups):
+        step = group["step"] or {}
+        kind = _eigenmode_kind(group["step"], analysis_type)
+        if kind is not None:
+            if step.get("value") is not None:
+                eigen.setdefault(kind, []).append(float(step["value"]))
+            continue
+        physical.append((frd_step_index, group))
+        if (
+            analysis_type is None
+            and step.get("analysis_code") == 4
+            and step.get("value") not in (None, 0.0)
+        ):
+            warnings.append(
+                f"FRD step {step.get('step_number')} is a 'user named' step (ICTYPE 4) "
+                f"with value {step.get('value')}; CalculiX writes *BUCKLE mode shapes "
+                "this way. Its magnitudes are reported as-is because the analysis "
+                "type was not given — if this is a buckling run they are normalised "
+                "mode shapes, not physical results."
+            )
+    for kind, values in eigen.items():
+        warnings.append(
+            f"{len(values)} {kind} eigenmode step(s): their DISP/STRESS blocks are "
+            "normalised mode shapes, so they are not reported as max_displacement / "
+            "max_von_mises_stress; the eigenvalues are reported instead."
         )
+
+    load_cases: list[dict[str, Any]] = []
+    n_steps = len(physical)
+    for step_index, (frd_step_index, group) in enumerate(physical):
+        fields = group["fields"]
+        disp = fields.get("DISP")
+        # CalculiX names the stress field "STRESS"; some exports use "S".
+        stress = fields.get("S") or fields.get("STRESS")
+        # Steady-state heat transfer emits nodal temperature as NDTEMP (some
+        # exports use TEMP).
+        temp = fields.get("NDTEMP") or fields.get("TEMP")
+        case_metrics = _extract_step_metrics(disp, stress, warnings, temp)
+        if load_case_ids is not None and frd_step_index < len(load_case_ids):
+            case_id = load_case_ids[frd_step_index]
+        else:
+            case_id = _load_case_id_for_step(
+                step_index, provided_id=load_case_id, provided_ids=None, n_steps=n_steps,
+            )
         load_cases.append({"id": case_id, "metrics": case_metrics})
+    for kind, values in eigen.items():
+        load_cases.append(_eigen_load_case(kind, values))
 
     # `frd_path` is wherever the caller staged the file — usually a temp
     # directory that no longer exists by the time anyone reads the package. A
@@ -431,6 +642,7 @@ def write_computed_metrics_package(
     overwrite: bool = True,
     source_files: list[str] | None = None,
     run_id: str | None = None,
+    analysis_type: str | None = None,
 ) -> dict[str, Any]:
     """Extract FRD metrics and write ``results/computed_metrics.json`` into
     the package atomically.
@@ -447,7 +659,7 @@ def write_computed_metrics_package(
     """
     metrics = extract_computed_metrics(
         frd_path, load_case_id=load_case_id, software=software,
-        source_files=source_files, run_id=run_id,
+        source_files=source_files, run_id=run_id, analysis_type=analysis_type,
     )
     metrics_bytes = (json.dumps(metrics, indent=2, sort_keys=True) + "\n").encode()
 

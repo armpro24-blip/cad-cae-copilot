@@ -309,3 +309,238 @@ def test_sweep_persists_report_to_package(valid_project: Path) -> None:
         persisted = json.loads(zf.read(SIZING_SWEEP_REPORT_PATH).decode("utf-8"))
     assert persisted["tool"] == "opt.sizing_sweep"
     assert persisted["recommended"]["value"] == 3.0
+
+
+# --- Product-grade checks (2026-10) -----------------------------------------
+#
+# The analytic model is the Euler-Bernoulli cantilever used for the real-ccx
+# V&V: sigma_max = 6 F L / (b t^2). With F = 100 N, L = 100 mm, b = 20 mm that is
+# sigma = 3000 / t^2 MPa, so the stress-limited minimum-mass thickness for an
+# allowable of 100 MPa is t* = sqrt(6 F L / (b sigma)) = sqrt(30) = 5.4772 mm.
+
+
+def _beam(value, *, band="reliable"):
+    return {
+        "value": value,
+        "metrics": {"max_von_mises_stress": 3000.0 / value**2, "mass": 2000.0 * value},
+        "solver_executed": True,
+        "mesh_accuracy": {"band": band, "recommended_action": "re-mesh with mesh_size_mm <= 2"},
+    }
+
+
+def test_boundary_estimate_recovers_the_closed_form_and_refinement_solves_it(fake_project) -> None:
+    solved: list[float] = []
+
+    def evaluate(value):
+        solved.append(value)
+        return _beam(value)
+
+    report = run_sizing_sweep(
+        None, "proj1", feature_id="f", parameter_name="t",
+        values=[4.0, 5.0, 6.0, 7.0, 8.0], stress_limit=100.0,
+        refine_boundary=True, evaluate_value=evaluate,
+    )
+    boundary = report["boundary_estimate"]
+    assert boundary["status"] == "estimated"
+    assert boundary["interpolated"] is True and boundary["solved"] is False
+    # log-log interpolation is exact for a power law: t* = sqrt(30)
+    assert boundary["value"] == pytest.approx(30 ** 0.5, rel=1e-12)
+    assert boundary["fitted_exponent"] == pytest.approx(-2.0, rel=1e-12)
+    assert boundary["bracket"] == {"feasible_value": 6.0, "infeasible_value": 5.0}
+    # One extra solve, at the estimate rounded TOWARD the feasible side (5.4772 -> 5.48).
+    assert solved == [4.0, 5.0, 6.0, 7.0, 8.0, 5.48]
+    assert report["refinement"]["status"] == "feasible"
+    assert report["recommended"]["value"] == 5.48
+    assert report["recommended"]["origin"] == "boundary_refinement"
+    assert report["recommended"]["metrics"]["max_von_mises_stress"] <= 100.0
+
+
+def test_boundary_not_applicable_when_the_constraint_is_inactive(fake_project) -> None:
+    report = run_sizing_sweep(
+        None, "proj1", feature_id="f", parameter_name="t",
+        values=[6.0, 7.0], stress_limit=100.0, refine_boundary=True,
+        evaluate_value=_beam,
+    )
+    assert report["recommended"]["value"] == 6.0
+    assert report["boundary_estimate"]["status"] == "not_applicable"
+    assert report["refinement"]["status"] == "skipped"
+
+
+def test_unreliable_mesh_pass_does_not_win(fake_project) -> None:
+    """A min-mass sweep at one mesh size gives its THINNEST variant the fewest
+    elements through the thickness. Before, that variant won on a stress an
+    unreliable mesh under-predicts, stamped executed_solver_result."""
+    def evaluate(value):
+        return _beam(value, band="unreliable" if value == 6.0 else "reliable")
+
+    report = run_sizing_sweep(
+        None, "proj1", feature_id="f", parameter_name="t",
+        values=[5.0, 6.0, 7.0], stress_limit=100.0, evaluate_value=evaluate,
+    )
+    statuses = {v["value"]: v["status"] for v in report["variants"]}
+    assert statuses == {5.0: "infeasible", 6.0: "unreliable_mesh", 7.0: "feasible"}
+    assert report["recommended"]["value"] == 7.0
+    assert "unreliable mesh" in report["recommendation_reason"]
+    unreliable = next(v for v in report["variants"] if v["value"] == 6.0)
+    assert unreliable["credibility"]["tier"] == "unverified"
+
+    only_unreliable = run_sizing_sweep(
+        None, "proj1", feature_id="f", parameter_name="t",
+        values=[5.0, 6.0], stress_limit=100.0, evaluate_value=evaluate,
+    )
+    assert only_unreliable["recommended"] is None
+    assert only_unreliable["safe_to_apply"] is False
+    assert "mesh_size_mm" in only_unreliable["recommendation_reason"]
+    assert only_unreliable["credibility"]["tier"] == "unverified"
+
+
+def test_ranking_inputs_are_refused_not_replaced(fake_project) -> None:
+    """A typo'd objective used to become min_mass and SF 0 used to become 1.0 —
+    a different study, reported as the one asked for — and only after N solves."""
+    calls: list[float] = []
+
+    def evaluate(value):
+        calls.append(value)
+        return _beam(value)
+
+    for kwargs in ({"objective": "min_weight"}, {"safety_factor": 0.0},
+                   {"stress_limit": -5.0}, {"displacement_limit": float("nan")}):
+        report = run_sizing_sweep(
+            None, "proj1", feature_id="f", parameter_name="t", values=[5.0],
+            evaluate_value=evaluate, **{"stress_limit": 100.0, **kwargs},
+        )
+        assert report["status"] == "error" and report["code"] == "bad_input", kwargs
+    assert calls == []
+
+
+def test_range_clamping_is_reported_and_an_outside_range_refused(monkeypatch, tmp_path: Path) -> None:
+    pkg = _make_pkg_with_feature_graph(tmp_path)  # declared bounds [2, 8]
+    monkeypatch.setattr(project_io, "get_project", lambda settings, pid: {"aieng_file": str(pkg)})
+    monkeypatch.setattr(project_io, "resolve_project_path", lambda settings, pid, f: pkg)
+
+    report = run_sizing_sweep(
+        None, "proj1", feature_id="f_wall", parameter_name="thickness",
+        range={"min": 0.5, "max": 6.0, "steps": 5}, stress_limit=1000.0,
+        evaluate_value=_beam,
+    )
+    assert report["range"]["clamped"] is True
+    assert report["range"]["requested"] == {"min": 0.5, "max": 6.0}
+    assert report["swept_values"] == [2.0, 3.0, 4.0, 5.0, 6.0]
+
+    outside = run_sizing_sweep(
+        None, "proj1", feature_id="f_wall", parameter_name="thickness",
+        range={"min": 9.0, "max": 12.0, "steps": 3}, evaluate_value=_beam,
+    )
+    # Before: clamping produced min=9, max=8 and the sweep walked BACKWARDS
+    # through 9.0, 8.5, 8.0 — values outside the request and the bounds.
+    assert outside["status"] == "error" and outside["code"] == "bad_input"
+    assert "outside" in outside["message"]
+
+
+def test_mass_uses_density_in_kg_per_m3() -> None:
+    from app.sizing_sweep_runner import mass_metrics
+
+    topo = {"entities": [{"type": "solid", "volume": 1.0e6}, {"type": "face", "volume": 5.0}]}
+    assert mass_metrics(topo, 2700.0) == {"volume": 1.0e6, "mass": pytest.approx(2.7), "mass_unit": "kg"}
+    assert mass_metrics(topo, None)["mass"] == 1.0e6
+    assert mass_metrics({}, 2700.0) == {}
+
+
+def test_invalid_density_is_refused_by_both_runners(fake_project, monkeypatch, tmp_path: Path) -> None:
+    """A negative density turns min_mass into max_mass: the heaviest feasible
+    design was recommended, stamped safe_to_apply."""
+    from app.doe_sizing_runner import run_doe_sizing_study
+
+    def boom(*_args):
+        raise AssertionError("no variant may be solved for a refused input")
+
+    for density in (-2700.0, 0.0, float("nan"), True, "2700"):
+        sweep = run_sizing_sweep(
+            None, "proj1", feature_id="f", parameter_name="t", values=[5.0, 6.0],
+            stress_limit=100.0, density=density, evaluate_value=boom,
+        )
+        assert sweep["code"] == "bad_input" and "density" in sweep["message"], density
+        doe = run_doe_sizing_study(
+            None, "proj1",
+            parameters=[{"featureId": "f", "parameterName": "a", "values": [1.0]},
+                        {"featureId": "f", "parameterName": "b", "values": [1.0]}],
+            stress_limit=100.0, density=density, evaluate_design_point=boom,
+        )
+        assert doe["code"] == "bad_input" and "density" in doe["message"], density
+
+
+def test_a_silent_solver_crash_is_not_blamed_on_the_mesh() -> None:
+    """ccx 2.23 intermittently exits 0xFFFFFFFF with no *ERROR and no FRD; the
+    same deck solves on a re-run. That was reported `likely_cause: mesh` with a
+    finer mesh suggested — the wrong advice."""
+    from app.sizing_sweep_runner import record_from_solve
+
+    crash = {
+        "solver_executed": False, "status": "solver_error",
+        "error": "CalculiX returned code 4294967295 or produced no FRD",
+        "failure_kind": "solver_crash_undiagnosed",
+        "solver_diagnosis": ["Solver exited with a non-zero return code — see the log."],
+        "solver_retry": {"attempts": 2, "first_returncode": 4294967295, "succeeded": False},
+    }
+    record = record_from_solve(crash, {}, None, 2.0)
+    assert record["likely_cause"] == "solver_crash"
+    assert record["suggested_retry"]["mesh_size_mm"] == 2.0
+    assert "automatic retry" in record["suggested_retry"]["reason"]
+    assert record["solver_retry"]["attempts"] == 2
+
+    reported = {**crash, "failure_kind": "solver_reported_error",
+                "solver_diagnosis": ["Solver reported: *ERROR in e_c3d: nonpositive jacobian"]}
+    reported.pop("solver_retry")
+    assert record_from_solve(reported, {}, None, 2.0)["likely_cause"] == "mesh"
+
+
+def test_crash_retry_reruns_the_same_deck_once(monkeypatch, tmp_path: Path) -> None:
+    from app import simulation_runner as sr
+
+    deck = tmp_path / "aieng_run.inp"
+    deck.write_text("*NODE\n")
+    frd = tmp_path / "aieng_run.frd"
+
+    def scripted(outcomes):
+        calls: list[int] = []
+
+        def run(inp_path, work_dir, timeout=180):
+            rc, log, makes_frd = outcomes[len(calls)]
+            calls.append(rc)
+            if makes_frd:
+                frd.write_text("frd")
+            return rc, log, frd if makes_frd else None
+        return run, calls
+
+    estimates = "Estimated memory consumption 12 MB\n"
+    run, calls = scripted([(4294967295, estimates, False), (0, "Job finished", True)])
+    monkeypatch.setattr(sr, "_run_calculix", run)
+    rc, _log, out, retry = sr._run_calculix_with_crash_retry(deck, tmp_path)
+    assert (rc, out, len(calls)) == (0, frd, 2)
+    assert retry == {"attempts": 2, "first_returncode": 4294967295, "succeeded": True,
+                     "reason": retry["reason"]}
+
+    frd.unlink()
+    run, calls = scripted([(201, " *ERROR reading *CLOAD: node set X has not yet been defined", False)])
+    monkeypatch.setattr(sr, "_run_calculix", run)
+    rc, _log, out, retry = sr._run_calculix_with_crash_retry(deck, tmp_path)
+    assert (rc, out, retry, len(calls)) == (201, None, None, 1)  # a reported error is never retried
+
+    run, calls = scripted([(0, "Job finished", True)])
+    monkeypatch.setattr(sr, "_run_calculix", run)
+    assert sr._run_calculix_with_crash_retry(deck, tmp_path)[3] is None and len(calls) == 1
+
+
+def test_a_setup_that_cannot_be_prepared_fails_the_variant_not_the_study(monkeypatch, tmp_path: Path) -> None:
+    """Copy + normalisation ran outside the solver's error boundary, so one
+    malformed package raised out of solve_package_static and aborted the study."""
+    from app import simulation_runner as sr
+
+    pkg = tmp_path / "variant.aieng"
+    with zipfile.ZipFile(pkg, "w") as zf:
+        zf.writestr("simulation/cae_mapping.json", "{not json")
+    monkeypatch.setattr(sr, "check_simulation_tools", lambda: {"ready": True, "missing": []})
+    result = sr.solve_package_static(pkg)
+    assert result["solver_executed"] is False
+    assert result["status"] == "solve_error"
+    assert "could not prepare the CAE setup" in result["error"]

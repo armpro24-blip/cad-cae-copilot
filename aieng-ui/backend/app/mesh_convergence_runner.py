@@ -62,6 +62,8 @@ def make_default_evaluate_size(
             "metrics": dict(solve.get("metrics") or {}),
             "solver_executed": bool(solve.get("solver_executed")),
             "solve_status": solve.get("status"),
+            "node_count": solve.get("node_count"),
+            "element_count": solve.get("element_count"),
             "error": solve.get("error") if not solve.get("solver_executed") else None,
         }
 
@@ -122,7 +124,12 @@ def run_mesh_convergence(
     convergence: dict[str, Any] = {}
     for metric in metric_names:
         levels = [
-            {"size": s["size"], "value": (s.get("metrics") or {}).get(metric)}
+            {
+                "size": s["size"],
+                "value": (s.get("metrics") or {}).get(metric),
+                "node_count": s.get("node_count"),
+                "element_count": s.get("element_count"),
+            }
             for s in solved
             if isinstance((s.get("metrics") or {}).get(metric), (int, float))
         ]

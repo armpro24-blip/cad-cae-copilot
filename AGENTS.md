@@ -956,13 +956,102 @@ thin-walled part, which is the shape `housing()` is for.
 
 The check is a **contradiction between two proxies**, not a shape classifier:
 `2 x volume / area` is the wall thickness of a thin shell, and when it falls
-below half the box's smallest side the box cannot be a wall. The housing lands
-at 2.92 mm against 40 mm (ratio 0.07) and is refused; a slender beam (6.32 vs
-10) and a tapered gusset (3.75 vs 6) both land at 0.63 and keep their box
-verdict, because `2V/A` conflates taper with hollowness and would mis-rule
-them. Neither proxy is trusted for the refused case — the response reports both
+below half of what the SAME box would give if it were solid
+(`1 / (1/dx + 1/dy + 1/dz)`) the box cannot be a wall. The housing lands at
+2.92 mm against 18.5 mm (ratio 0.16) and is refused; any solid box scores 1, a
+slender beam ~1 and a tapered gusset 0.84, and they keep their box verdict.
+(Comparing with the box's smallest side instead refused every chunky solid —
+a square bar's `2V/A` is half its side, a cube's a third: a 200 x 20 x 20 mm
+cantilever got `band: null`.) Neither proxy is trusted for the refused case — the response reports both
 numbers and points at `cae.mesh_convergence`. A body with no recorded volume
 keeps the old behaviour: absent evidence is not evidence of hollowness.
+
+**What the post-processed numbers are.** Verified against unedited CalculiX
+2.23 output (`aieng/tests/fixtures/frd_ccx_2_23/`) and, for the GCI, against
+Celik, Ghia, Roache & Freitas (J. Fluids Eng. 130(7):078001, 2008), Table 1:
+
+- The FRD stress block is `SXX SYY SZZ SXY SYZ SZX`; derived fields read it by
+  component **name** (`field_derivation.stress_tensor_from_frd`). Reading it by
+  position as `(Sxz, Syz)` left von Mises right and every principal-stress
+  field wrong (up to 29% of peak von Mises per node on real packages).
+- `max_von_mises_stress` is the max over **nodes** of von Mises formed from
+  ccx's nodal stresses — integration-point values extrapolated and averaged
+  over adjacent elements. The metric's `basis` says so; the unaveraged peak at
+  a concentration is higher.
+- Eigenmode steps are not physical results. A modal FRD reports
+  `natural_frequencies_hz` from each mode's step header; a buckling FRD reports
+  `buckling_factors` only when `analysis_type` is passed (ccx writes `*BUCKLE`
+  modes as the generic "user named" step type) — `cae.compare_runs` passes it
+  from `solver_run.json`. Before this, a modal FRD yielded "max_displacement
+  226 mm / max_von_mises 97,163 MPa" on an unloaded beam.
+- `cae.mesh_convergence` computes h from the **realized element count**
+  (Celik Eq. 1), not the requested Gmsh size — measured, a nominal r = 2
+  realized 1.45-2.06 — and reports `h_basis`. A series whose change grows
+  under refinement is `diverging_not_converged` (it used to read `converged`
+  with p = -1 and a negative GCI); r < 1.3 is warned; a "converged" verdict
+  outside the asymptotic range is qualified. Two requested sizes that realize
+  the SAME mesh are `repeated_grid` — refused, never counted as agreement.
+- `cae.compare_runs` compares eigenvalue lists mode by mode
+  (`natural_frequencies_hz[mode_3]`), by the solver's mode numbering — not by
+  tracked mode shape, so a mode swap between runs is not detected.
+- `/fields/{name}?load_case_id=` selects the FRD step by its header; a step
+  without that field is refused (`404 field_not_in_load_case`), not served
+  another step's field.
+- `cae.extract_field_regions` takes the top percentile, which always selects
+  something. Read `field_statistics.near_uniform` / `peak_to_median_ratio`
+  before calling a cluster a hot spot.
+
+**Inverted elements are repaired or refused at mesh time.** `setOrder(2)`
+curves boundary mid-side nodes onto the CAD surface, and next to small holes
+and fillets that can fold an element inside out — measured on a plate with M3
+holes and 1 mm fillets: 26 inverted tets at a 3 mm mesh, `cae.generate_mesh`
+reported success, and ccx aborted with `nonpositive jacobian`. The mesher now
+checks gmsh's scaled Jacobian (`quality.jacobian`), gives any inverted
+quadratic element straight edges (`straightened_element_count`; those elements
+follow curved boundaries by chords), and refuses with `code:
+"inverted_elements"` if any remain.
+
+**How a setup reaches the nodes.** A face's node set is the nodes of the gmsh
+mesh surfaces that make up that face (`binding_method: "mesh_surface"`), read
+from the per-CAD-surface element sets gmsh writes into `mesh.inp`; on a plane
+the matched surfaces must also add up to the face's AREA, so a flush cap of
+another solid sitting in a ring face's hole is not absorbed into it. Two
+matches are refused with NO nodes rather than approximated:
+`internal_surface` (the face is a glued interface between bodies, inside the
+material) and `ambiguous_surface` (more than one combination of surfaces fits);
+the empty set is then refused at deck generation. Only when no mesh surface
+matches at all is the old tolerance band used (`geometric_band`, restricted to
+free-boundary nodes) — the band caught nodes up to 1.83 mm INSIDE a 10 mm bar.
+`binding_methods` is returned by every source-deck synthesis, including the
+`up_to_date` one. A total force on a face is applied as the
+**traction-consistent** nodal split over the face's element faces (`∫ N_i dA`
+on the actual quadratic face: corners 0 and mid-sides A/3 when flat, the real
+integral when gmsh has curved it onto a hole or fillet), not an equal share per
+node: the equal share put the peak von Mises stress of a uniform-tension patch
+test at +295 % of the exact F/A. A **pressure** load (`type: "pressure"`,
+`pressure_mpa`, positive pushes into the face) is emitted as ccx `*DLOAD`
+face pressures and follows a curved face's normal — it is what NAFEMS LE1
+needs; a pressure with no finite `pressure_mpa` is refused, never read as
+0 MPa. In a `thermal_structural` step loads are told apart by DOF: DOF 11 is a
+heat flux (`*CFLUX`), DOF 1-3 a force (`*CLOAD`), and pressure a `*DLOAD`.
+`cae.setup_static` splits one force over several faces by AREA and reports
+`load_share_basis` (`area` / `single_face` / `equal` — the last only when a
+face records no area, and then with a warning).
+`aieng-ui/backend/tests/test_product_path_benchmarks.py` gates all of this
+through the product path (patch test, cantilever, NAFEMS LE1, modal,
+conduction) in the real-ccx lane.
+
+**Not expressible yet:** a restraint or load on an EDGE or a point (NAFEMS
+LE10's `u_z = 0` on the mid-plane line of its outer edge), and a pressure in a
+pure `thermal` step (refused).
+
+**Known limitation — area shares are fixed at authoring time.** The per-face
+`value_n` that `cae.setup_static` writes is each face's area share WHEN THE
+SETUP WAS AUTHORED. A later edit that resizes the faces unequally does not
+recompute it, so after an edit the split is the old one. A group with unequal
+shares is not interchangeable, so a selector rebind refuses it rather than
+shuffling the shares; re-run `cae.setup_static` after a resizing edit to
+re-split by the new areas.
 
 **Installing CalculiX.** `cae.run_solver` needs the `ccx` executable available at runtime.
 
@@ -1243,11 +1332,12 @@ suitable for a fixed support, pass `"faceId": "f_top_001"` in your CAE setup cal
 (`bspline`, `bezier`, `sphere`, `cone`, `torus`, `surface_of_revolution`,
 `surface_of_extrusion`, or `freeform`) and carry `freeform: true`, `uv_bounds`
 when available, and a *proxy* normal sampled at the face midpoint. That is
-enough to pick them and bind an approximate CAE boundary condition, but the
-node-mapping is a tangent-plane band, not the exact curved surface. For accurate
-fixtures/loads prefer **planar faces** (a `rounded_box` keeps its flat faces as
-true planes with exact normals). This is also good engineering practice —
-fixture and load on flat interfaces.
+enough to pick them and bind a CAE boundary condition. The node mapping is
+exact when exactly one mesh surface spans the face's bounding box
+(`binding_method: "mesh_surface"`); otherwise it falls back to a tangent-plane
+band around the proxy normal (`geometric_band`), which is approximate — read
+`binding_methods` in the source-deck synthesis result. Planar faces remain the
+safest fixture/load interfaces.
 
 ---
 
@@ -1477,13 +1567,34 @@ is possible).
 | `cae.extract_field_regions` | Cluster high-stress / high-displacement regions |
 | `cae.map_results` | Map stress/deflection results back to topology entities, object_registry objects, and `source_ir_node` → `analysis/cae_result_map.json` (unmapped regions reported honestly) |
 | `cad.tolerance_stackup` | Read-only 1D tolerance stack-up: pass an ordered list of contributors (name, nominal, plus, minus, optional distribution) and get worst-case arithmetic min/max, RSS sigma and confidence-band min/max, controlling contributors, and honesty notes. Assumes independence and +/- 3-sigma tolerance coverage; not a GD&T solver. No geometry mutation. |
-| `opt.sizing_sweep` | Parametric sizing sweep (approval required): vary ONE editable dimension across explicit `values` OR a `{min, max, steps/step}` range, solve each variant with real static FEA, and rank by objective. Range values are clamped to the parameter's declared min/max. Default is recommend-only; set `apply_winner=true` to apply the winning value through the audited `cad.edit_parameter` path and report its `regression_diff`. A variant that fails to solve is reported honestly and never recommended. |
-| `opt.doe_sizing_study` | Multi-parameter DOE sizing study (approval required): jointly vary 2+ editable parameters by explicit values or ranges, generate a full-factorial or LHS design within a 64-point budget, solve each design point with real static FEA, and rank by objective + constraints. Baseline never modified; failed points reported honestly. |
+| `opt.sizing_sweep` | Parametric sizing sweep (approval required): vary ONE editable dimension across explicit `values` OR a `{min, max, steps/step}` range, solve each variant with real static FEA, and rank by objective. Range values are clamped to the parameter's declared min/max and the report says so (`range.clamped`, `range.requested`); a range entirely outside the bounds is refused. Each variant carries the mesh `accuracy` band; a variant that passes the constraints only on an `unreliable` mesh gets status `unreliable_mesh` and is never recommended. The report's `boundary_estimate` interpolates (log-log) where the active constraint is met between the winner and its infeasible neighbour — an estimate, not a solve; `refine_boundary=true` spends one extra solve there and that variant wins only if it solves feasible. Default is recommend-only; `apply_winner=true` applies a `safe_to_apply` winner through the audited `cad.edit_parameter` path and reports its `regression_diff`. A variant that fails to solve is reported honestly and never recommended. |
+| `opt.doe_sizing_study` | Multi-parameter DOE sizing study (approval required): jointly vary 2+ editable parameters, generate a full-factorial design (explicit values or stepped ranges) or a true Latin hypercube (`lhs`: `budget` points over each `range {min,max}`, one per stratum, seeded — the seed is reported) within a 64-point budget, solve each design point with real static FEA, and rank by objective + constraints with the same mesh-band rule as the sweep. Baseline never modified; failed points reported honestly. |
 | `opt.derive_problem_from_cae` | Derive a topology-optimization problem (grid + supports + loads + design space) from a project's CAE setup + geometry (`topology_map` faces + design-space bbox). Reads the setup **whichever path authored it** — `simulation/setup.yaml` or the key-free `simulation/cae_imports/parsed_*.json`, and in either an `@face:` pointer target, an NSET name, or a `target_feature`. Read-only; returns the problem + a `derivation` block. `dimension=2d` (default) projects supports/loads onto the plane of the two largest dims; `dimension=3d` keeps the full 3D layout (structured voxel grid, supports→boundary layers, full 3D force). **Both dimensions return `status=needs_user_input` rather than substituting a preset** when the BCs can't be mapped |
 | `opt.run_topology_optimization` | Run topology optimization (built-in self-contained SIMP, compliance-min, pure numpy — no external solver) → `analysis/topology_optimization.json`. `simp_2d` (default) or `simp_3d` (experimental structured-voxel 3D, `dimension=3d`; honest `capability` block: experimental_reference, production_ready:false). Honest coarse limitations recorded. Set `auto_derive` (or omit `problem`) to derive supports/loads/design-space from the project's CAE setup; either dimension may return `needs_user_input` instead of guessing |
 | `opt.writeback_to_shape_ir` | Author the optimization result back into `geometry/shape_ir.json`, then recompile through runtime routing → the optimized body meshes/views + gets verification + object_registry, linked to its `design_space_node`. 2D: `method=contour` (default) writes a marching-squares boundary as an `extruded_region` (`boundary=spline` default → closed periodic spline / CAD-friendly curve, falls back to `polygon` if it would overshoot the design-space envelope); `method=voxels` writes the blocky `density_voxels`. 3D: `method=surface` (default) writes a smooth **marching-cubes** `surface_mesh` proxy (mesh / lossy / not production CAD; falls back to `voxels` if no isosurface); `method=voxels` writes the blocky 3D `density_voxels`. Placed in the design-space frame. Default representation `brep_build123d` for 2D (analytic faces — pickable, STEP-exportable; auto-falls back to `manifold_mesh` if the B-Rep build fails); 3D defaults to `manifold_mesh` |
 | `postprocess.generate_computed_metrics` | Import metrics from CSV/JSON |
 | `postprocess.refresh_cae_summary` | Regenerate result summary + evidence markdown |
+
+**Both batch solves bind `cae.setup_static` targets.** `solve_package_static`
+(the solver behind the sweep, the DOE study, `cae.mesh_convergence` and the
+candidate solver) now runs `normalize_cae_bindings`, the same step that deck
+generation runs, on a throwaway copy. Before this, a `@face:` target with no
+`cae_mapping.json` reached CalculiX as `*CLOAD` on an undefined set: measured on
+a 100 x 20 mm cantilever, 5 of 5 sweep variants and 12 of 12 DOE points aborted
+with code 201, and the sweep blamed the mesh. `mass` is solid volume (mm³), or kg
+when `density` (positive, kg/m³) is given; the DOE used to read a `volume_mm3`
+metric no solver writes, so its default `min_mass` objective could never
+recommend. Verified against Euler-Bernoulli beam theory in
+`aieng-ui/backend/tests/test_sizing_cantilever_vv.py`.
+
+**A silent CalculiX crash is not a mesh verdict.** ccx 2.23 on Windows
+intermittently exits with 0xFFFFFFFF after printing its size estimates — no
+`*ERROR`, no FRD — and the same deck solves on a re-run (measured: about one
+run of the cantilever V&V in three). The batch solve therefore re-runs the same
+deck ONCE when CalculiX produced no result and reported no error, and labels the
+variant `solver_retry`; a run in which CalculiX reports an error is never
+retried. A crash that survives the retry is reported `likely_cause:
+"solver_crash"` with a same-mesh retry, not a finer mesh.
 
 **A refusal is not a problem — do not pass it back.** The derivation returns
 `status: needs_user_input` rather than inventing supports and loads, and the
