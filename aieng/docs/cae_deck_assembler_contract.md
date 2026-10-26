@@ -118,9 +118,14 @@ drift fails CI:
 1. **DOF mapping.** Solid (C3D4/C3D10) elements expose **translational DOFs only**.
    A `fixed` constraint emits `*BOUNDARY <nset>, 1, 3, 0.0` — never the old
    `1, 6` rotational range (which corrupts solid analyses).
-2. **Force-per-node distribution.** `value_n` is the **total** force on the NSET.
-   The emitted `*CLOAD` value is `value_n / n_nodes(nset)`, applied per node, so
-   the resultant equals the requested total regardless of mesh density.
+2. **Force distribution.** `value_n` is the **total** force on the NSET, applied
+   as a uniform traction: each node gets its traction-consistent share over the
+   free element faces the NSET covers (`aieng.simulation.surface_loads`; on a
+   quadratic face corners get 0, mid-side nodes A/3), emitted as per-node
+   `*CLOAD` lines. The resultant equals the requested total. Only an NSET that
+   covers no element face (a point/line set) falls back to `value_n / n_nodes`
+   per node, with a warning. A `type: pressure` load (`pressure_mpa`, positive
+   into the face) is emitted as `*DLOAD` `P<n>` face pressures.
 3. **Direction decomposition.** Each non-zero component of `direction` yields one
    `*CLOAD` line on the matching DOF (1=x, 2=y, 3=z), preserving sign.
 4. **Density conversion.** As above — kg/m^3 -> tonne/mm^3.
