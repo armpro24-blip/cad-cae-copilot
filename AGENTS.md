@@ -469,7 +469,9 @@ ratios far more reliably than low-res 3D renders):
   `ok:false` = the pair is NOT symmetric (fix the coordinates); `align_residual_mm`
   is how far off the mirror is; `status:missing_partner` = you named one side only;
   `status:coincident` = both sides sit in the same place (the side coordinate was
-  never negated). Tolerances are 2% of the model/part size — no absolute floor.
+  never negated). Size and coincidence are judged at 2% of the pair's own size,
+  alignment at 2% of the model size — no absolute floor beyond the 1e-4 mm
+  rounding of the stored bounding boxes.
 - `gaps[]` — `status:floating` flags a part further from every other part than
   the mean part size (usually a coordinate typo); `near` = detached but closer
   than that (any visible gap — a joint you meant to close is still open);

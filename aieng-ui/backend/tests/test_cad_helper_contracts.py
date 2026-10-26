@@ -265,6 +265,9 @@ def test_helper_builds_valid_single_solid(h: dict, call: str) -> None:
     ("fuselage_profile(400, 60, nose_frac=0.7, tail_frac=0.7)", "nose_frac + tail_frac"),
     ("organic_blend([Box(10, 10, 10)], 0)", "radius"),
     ("l_bracket(80, 40, 60, 6, fillet_radius=-1)", "fillet_radius"),
+    ("rib(40, 30, 5, fillet_radius=-1)", "fillet_radius"),  # silently built sharp
+    ("rib(float('nan'), 30, 5)", "length"),                 # passed the `<= 0` check
+    ("rib(40, 30, 0)", "thickness"),                        # message named no parameter
 ])
 def test_invalid_input_is_refused_naming_the_parameter(h: dict, call: str, param: str) -> None:
     with pytest.raises(ValueError, match=param.replace("+", r"\+")):
@@ -381,6 +384,28 @@ def test_small_asymmetry_on_a_small_model_is_caught() -> None:
                    _box("ear_L", -4, 0, 0, 4, 4, 5),
                    _box("ear_R", 4, 0, 0, 4, 4, 5.8)])
     assert rep["symmetry"][0]["ok"] is False
+
+
+def test_pair_size_mismatch_is_judged_against_the_pair_not_the_model() -> None:
+    # A 10 mm / 20 mm "mirror" pair beside a 1 m body: 2% of the LARGEST part
+    # (20 mm) used to swallow a 100% size mismatch.
+    rep = _report([_box("frame", 0, 0, 0, 1000, 200, 200),
+                   _box("lamp_L", -40, 0, 105, 10, 10, 10),
+                   _box("lamp_R", 40, 0, 105, 20, 10, 10)])
+    (item,) = rep["symmetry"]
+    assert item["ok"] is False
+    assert item.get("status") != "coincident"
+
+
+def test_small_pair_near_the_centreline_is_not_coincident() -> None:
+    # Two 10 mm parts 15 mm apart on a 1 m model are a real mirror pair; 2% of
+    # the MODEL (20 mm) used to call them "coincident".
+    rep = _report([_box("frame", 0, 0, 0, 1000, 200, 200),
+                   _box("lamp_L", -7.5, 0, 105, 10, 10, 10),
+                   _box("lamp_R", 7.5, 0, 105, 10, 10, 10)])
+    (item,) = rep["symmetry"]
+    assert item["ok"] is True
+    assert "status" not in item
 
 
 @pytest.mark.parametrize("scale", [0.1, 1.0, 10.0])

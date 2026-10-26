@@ -1009,9 +1009,9 @@ def rib(length, height, thickness, fillet_radius=0.0, label=None, color=None):
     centred on Y): right angle at the origin, one leg ``length`` along +X, the
     other ``height`` along +Z. Place it where a wall meets a plate to stiffen the
     join. Optional ``fillet_radius`` breaks the through-thickness edges.\"\"\"
+    _aieng_require_positive("rib", length=length, height=height, thickness=thickness)
+    _aieng_require_non_negative("rib", fillet_radius=fillet_radius)
     L = float(length); H = float(height); t = float(thickness)
-    if L <= 0 or H <= 0 or t <= 0:
-        raise ValueError("rib needs length, height, thickness all > 0")
     with BuildPart() as _bp:
         with BuildSketch(Plane.XZ):
             with BuildLine():
@@ -3019,9 +3019,15 @@ def _compute_geometry_report(
         # Tolerances are purely relative (2%) so the verdict does not depend on
         # the unit scale of the model; the old 1 mm floor accepted a 20%
         # mismatch on a 5 mm part. The tiny floor is only the 1e-4 mm rounding
-        # quantum of the stored bounding boxes.
-        size_tol = max(_BBOX_ROUNDING_MM, largest_part_dim * 0.02)
+        # quantum of the stored bounding boxes (below it residuals are noise).
+        # Size and coincidence are judged against the PAIR's own size: the
+        # largest part in the model let a 10 mm / 20 mm pair pass on a 1 m
+        # model, and called two 10 mm parts 15 mm apart "coincident".
+        # Alignment stays model-relative (where the pair sits in the model).
+        pair_dim = max(_mx, _pmx)
+        size_tol = max(_BBOX_ROUNDING_MM, pair_dim * 0.02)
         align_tol = max(_BBOX_ROUNDING_MM, ov_max * 0.02)
+        coincident_tol = max(_BBOX_ROUNDING_MM, pair_dim * 0.02)
         rec = {
             "pair": [name, named[pidx][0]],
             "size_residual_mm": _r(size_res),
@@ -3030,7 +3036,7 @@ def _compute_geometry_report(
             "align_residual_mm": _r(align_res),
             "ok": bool(size_res < size_tol and align_res < align_tol),
         }
-        if seps[mirror_ax] <= align_tol:
+        if seps[mirror_ax] <= coincident_tol:
             # A pair sitting on top of each other has align_residual 0 on every
             # axis, which used to read as a perfect mirror. It is the classic
             # copy-paste typo (the side's coordinate was never negated).
