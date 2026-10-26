@@ -407,10 +407,25 @@ def register_evidence_routes(app: FastAPI, *, active_settings: Any) -> None:
                         "source": "frd",
                     },
                 )
+            from ..services.platform_logic import FrdFieldNotInStep
+
             try:
                 frd_data = _extract_frd_field_data(
                     pkg, field_name, active_settings.aieng_root, load_case_id=load_case_id
                 )
+            except FrdFieldNotInStep as exc:
+                # Falling through to the synthetic descriptor would answer a
+                # question about step N with invented data.
+                raise HTTPException(
+                    status_code=404,
+                    detail={
+                        "code": "field_not_in_load_case",
+                        "message": str(exc),
+                        "field_name": field_name,
+                        "load_case_id": load_case_id,
+                        "source": "frd",
+                    },
+                ) from exc
             except Exception:
                 log_exception(
                     LOGGER,

@@ -114,6 +114,7 @@ def _parse_step_header(line: str) -> dict[str, Any] | None:
         "analysis_code": _int(body[50:52]),
         "step_number": _int(body[52:57]),
         "analysis_text": body[57:67].strip() or None,
+        "format": _int(body[67:69]),
     }
 
 
@@ -154,6 +155,13 @@ def _parse_frd_text(text: str) -> list[dict[str, Any]]:
             continue
 
         if _key(line) == "-4":
+            # The FRD spec gives every result block its own FORMAT flag (on its
+            # 100C header), independent of the coordinate block's: a file may
+            # store coordinates short (I5) and results long (I10). Read node ids
+            # with the width THIS block declares.
+            block_value_start = value_start
+            if key_width == 3 and step_header and step_header.get("format") in (0, 1):
+                block_value_start = key_width + (5 if step_header["format"] == 0 else 10)
             # Field header: "<key>  FIELDNAME  n_components  ..."
             parts = line[key_width:].split()
             if not parts:
@@ -187,11 +195,13 @@ def _parse_frd_text(text: str) -> list[dict[str, Any]]:
 
                 if t == "-1":
                     try:
-                        current_node_id = int(ln[key_width:value_start])
+                        current_node_id = int(ln[key_width:block_value_start])
                     except (ValueError, IndexError):
                         i += 1
                         continue
-                    node_data[current_node_id] = _slice_values(ln, value_start, n_components)
+                    node_data[current_node_id] = _slice_values(
+                        ln, block_value_start, n_components
+                    )
 
                 elif t == "-2" and current_node_id is not None:
                     # Continuation line for the same node; -2 lines also carry the
@@ -199,7 +209,7 @@ def _parse_frd_text(text: str) -> list[dict[str, Any]]:
                     already = len(node_data.get(current_node_id, []))
                     remaining = n_components - already
                     if remaining > 0:
-                        more = _slice_values(ln, value_start, remaining)
+                        more = _slice_values(ln, block_value_start, remaining)
                         node_data.setdefault(current_node_id, []).extend(more)
 
                 i += 1
@@ -547,16 +557,19 @@ def extract_computed_metrics(
     groups = _step_groups(datasets) or [{"step": None, "fields": {}}]
 
     warnings: list[str] = []
-    physical: list[dict[str, Any]] = []
+    # (FRD step index, group) — the index into `load_case_ids` is the step's
+    # position in the FILE, so an eigenmode step removed from the physical
+    # list must not shift the explicit ids of the steps after it.
+    physical: list[tuple[int, dict[str, Any]]] = []
     eigen: dict[str, list[float]] = {}
-    for group in groups:
+    for frd_step_index, group in enumerate(groups):
         step = group["step"] or {}
         kind = _eigenmode_kind(group["step"], analysis_type)
         if kind is not None:
             if step.get("value") is not None:
                 eigen.setdefault(kind, []).append(float(step["value"]))
             continue
-        physical.append(group)
+        physical.append((frd_step_index, group))
         if (
             analysis_type is None
             and step.get("analysis_code") == 4
@@ -578,7 +591,7 @@ def extract_computed_metrics(
 
     load_cases: list[dict[str, Any]] = []
     n_steps = len(physical)
-    for step_index, group in enumerate(physical):
+    for step_index, (frd_step_index, group) in enumerate(physical):
         fields = group["fields"]
         disp = fields.get("DISP")
         # CalculiX names the stress field "STRESS"; some exports use "S".
@@ -587,12 +600,12 @@ def extract_computed_metrics(
         # exports use TEMP).
         temp = fields.get("NDTEMP") or fields.get("TEMP")
         case_metrics = _extract_step_metrics(disp, stress, warnings, temp)
-        case_id = _load_case_id_for_step(
-            step_index,
-            provided_id=load_case_id,
-            provided_ids=load_case_ids,
-            n_steps=n_steps,
-        )
+        if load_case_ids is not None and frd_step_index < len(load_case_ids):
+            case_id = load_case_ids[frd_step_index]
+        else:
+            case_id = _load_case_id_for_step(
+                step_index, provided_id=load_case_id, provided_ids=None, n_steps=n_steps,
+            )
         load_cases.append({"id": case_id, "metrics": case_metrics})
     for kind, values in eigen.items():
         load_cases.append(_eigen_load_case(kind, values))

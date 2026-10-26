@@ -147,6 +147,28 @@ def analyze_mesh_convergence(
     base["warnings"] = warnings
     base["qualifications"] = qualifications
 
+    # Two levels with the same realized grid size are ONE mesh solved twice
+    # (Gmsh can return identical meshes for different requested sizes). Their
+    # agreement is not convergence evidence: counts [1000, 1000, 125] used to
+    # yield `converged_flat` with GCI 0%. Refuse instead of solving.
+    repeated = [
+        (a["size"], b["size"])
+        for a, b in zip(clean, clean[1:])
+        if abs(b["h"] - a["h"]) <= 1e-9 * max(abs(a["h"]), abs(b["h"]))
+    ]
+    if repeated:
+        base.update({
+            "converged": None,
+            "verdict": "repeated_grid",
+            "message": (
+                "requested sizes "
+                + ", ".join(f"{s1:g} and {s2:g}" for s1, s2 in repeated)
+                + f" produced the same realized grid ({h_basis}); a repeated mesh is "
+                "not a refinement — use sizes that change the element count"
+            ),
+        })
+        return base
+
     if len(clean) < 2:
         base.update({
             "converged": None,

@@ -431,6 +431,37 @@ def test_uniform_field_is_not_presented_as_a_concentration(tmp_path: Path) -> No
     assert validate_package(pkg).ok
 
 
+def test_summary_of_a_near_uniform_field_does_not_say_high_magnitude(tmp_path: Path) -> None:
+    pkg = _package(tmp_path / "test.aieng")
+    frd = tmp_path / "job.frd"
+    coords = {i: (float(i), 0.0, 0.0) for i in range(1, 11)}
+    frd.write_text(_make_frd(coords, {i: 100.0 + 0.04 * i for i in coords}), encoding="utf-8")
+    extract_field_regions_package(pkg, frd, threshold_percentile=80)
+
+    summary = generate_field_summary(pkg)["llm_summary"]
+
+    assert "high-magnitude" not in summary["one_line"]
+    assert "near-uniform" in summary["one_line"]
+    assert not any("High-magnitude" in r for r in summary["risks"])
+
+
+def test_field_statistics_keep_small_values(tmp_path: Path) -> None:
+    # 1e-7-scale values rounded to 6 decimals read as all zeros beside a
+    # non-zero peak/median ratio.
+    pkg = _package(tmp_path / "test.aieng")
+    frd = tmp_path / "job.frd"
+    coords = {i: (float(i), 0.0, 0.0) for i in range(1, 11)}
+    frd.write_text(_make_frd(coords, {i: 1e-7 * i for i in coords}), encoding="utf-8")
+
+    stats = extract_field_regions_package(pkg, frd, threshold_percentile=80)["field_statistics"]
+
+    assert stats["max"] == pytest.approx(1e-6, rel=1e-4)
+    assert stats["median"] == pytest.approx(5.5e-7, rel=1e-4)
+    assert stats["min"] == pytest.approx(1e-7, rel=1e-4)
+    assert stats["threshold_value"] > 0
+    assert validate_package(pkg).ok
+
+
 def test_concentrated_field_reports_its_ratio(tmp_path: Path) -> None:
     pkg = _package(tmp_path / "test.aieng")
     frd = tmp_path / "job.frd"

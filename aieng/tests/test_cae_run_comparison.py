@@ -426,3 +426,31 @@ def test_eigen_runs_compare_eigenvalues_not_mode_shape_amplitudes(
     mode_shape_rows = [k for k in rows if k[1] in ("max_displacement", "max_von_mises_stress")
                        and k[0] != "load_case_001"]
     assert mode_shape_rows == []
+
+
+def test_a_higher_mode_change_is_reported(tmp_path: Path) -> None:
+    # The eigenvalue LISTS used to be rows of "no extracted value" although both
+    # runs had them, so only mode 1 was compared and a change in mode 3 vanished.
+    base = (_CCX / "modal.frd").read_text()
+    assert base.count("8070.768289") == 3  # mode 3 header, on DISP/STRESS/ERROR blocks
+    edited = base.replace("8070.768289", "8100.000000")
+    pkg = tmp_path / "modal.aieng"
+    with zipfile.ZipFile(pkg, "w") as zf:
+        zf.writestr("manifest.json", json.dumps({"model_id": "beam"}))
+        for rev, (run_id, text) in enumerate((("run_001", base), ("run_002", edited))):
+            zf.writestr(f"simulation/runs/{run_id}/outputs/result.frd", text)
+            zf.writestr(f"simulation/runs/{run_id}/solver_run.json", json.dumps(
+                {"run_id": run_id, "state": "completed", "solved": True,
+                 "analysis_type": "modal"}))
+            zf.writestr(f"simulation/runs/{run_id}/deck_provenance.json",
+                        json.dumps({"run_id": run_id, "geometry_revision": rev}))
+
+    rows = {r["metric"]: r for r in compare_runs(pkg)["comparison"]}
+
+    mode3 = rows["natural_frequencies_hz[mode_3]"]
+    assert mode3["status"] == "compared"
+    assert mode3["percent_change"] == pytest.approx(
+        (8100.0 - 8070.768289) / 8070.768289 * 100.0, rel=1e-6
+    )
+    assert rows["natural_frequencies_hz[mode_1]"]["percent_change"] == pytest.approx(0.0)
+    assert "natural_frequencies_hz" not in rows  # no "no extracted value" row any more

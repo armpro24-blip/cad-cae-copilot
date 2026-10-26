@@ -128,9 +128,12 @@ def _frd(fmt: int, nodes: dict[int, tuple[float, float, float]], steps: list[dic
     lines += [f" -1{nid:{nw}d}{_e(x)}{_e(y)}{_e(z)}" for nid, (x, y, z) in nodes.items()]
     lines.append(" -3")
     for step in steps:
+        # each result block carries its own FORMAT flag (default: the file's)
+        sfmt = step.get("fmt", fmt)
+        snw = 5 if sfmt == 0 else 10
         header = (
             f"  100CL{100 + step['numstp']:5d}{_e(step['value'])}{len(nodes):12d}"
-            f"{'':20s}{step['ictype']:2d}{step['numstp']:5d}{step.get('analys', ''):10s}{fmt:2d}"
+            f"{'':20s}{step['ictype']:2d}{step['numstp']:5d}{step.get('analys', ''):10s}{sfmt:2d}"
         )
         for name, comps, data in step["blocks"]:
             lines.append(header)
@@ -138,7 +141,7 @@ def _frd(fmt: int, nodes: dict[int, tuple[float, float, float]], steps: list[dic
             for c in comps:
                 lines.append(f" -5  {c:8s}    1    2    1    0")
             for nid, vals in data.items():
-                lines.append(f" -1{nid:{nw}d}" + "".join(_e(v) for v in vals))
+                lines.append(f" -1{nid:{snw}d}" + "".join(_e(v) for v in vals))
             lines.append(" -3")
     lines.append(" 9999")
     return "\n".join(lines) + "\n"
@@ -197,3 +200,61 @@ def test_blocks_pair_by_step_header_not_by_occurrence(tmp_path: Path) -> None:
     cases = _metrics(extract_computed_metrics(path))
     assert "max_von_mises_stress" not in cases["load_case_001"]
     assert cases["load_case_002"] == {"max_displacement": 2.0, "max_von_mises_stress": 50.0}
+
+
+def test_result_block_width_comes_from_its_own_header(tmp_path: Path) -> None:
+    # Coordinates in the short format (2C FORMAT 0), results in the long format
+    # (100C FORMAT 1): the spec gives each block its own flag. Reading the
+    # result node ids with the coordinate block's I5 width dropped them.
+    steps = [dict(step, fmt=1) for step in _static_steps(7, 12345)]
+    path = tmp_path / "mixed.frd"
+    path.write_text(_frd(0, {7: (0.0, 0.0, 0.0), 12345: (1.0, -2.5, 3.0)}, steps))
+    cases = _metrics(extract_computed_metrics(path))
+    assert cases["load_case_001"]["max_displacement"] == pytest.approx(3.0)
+    assert cases["load_case_001"]["max_von_mises_stress"] == pytest.approx(100.0)
+    assert _extract_node_coords_from_frd(path)[12345] == (1.0, -2.5, 3.0)
+
+
+def test_explicit_load_case_ids_stay_on_their_frd_step(tmp_path: Path) -> None:
+    # static, modal (ICTYPE 2), static: the third step's id is load_case_ids[2].
+    # Filtering the eigenmode out before numbering handed it load_case_ids[1].
+    steps = [
+        {"numstp": 1, "value": 1.0, "ictype": 0,
+         "blocks": [("DISP", _DISP, {1: [1.0, 0.0, 0.0]})]},
+        {"numstp": 2, "value": 1234.5, "ictype": 2, "analys": "MODAL",
+         "blocks": [("DISP", _DISP, {1: [9.0, 0.0, 0.0]})]},
+        {"numstp": 3, "value": 2.0, "ictype": 0,
+         "blocks": [("DISP", _DISP, {1: [2.0, 0.0, 0.0]})]},
+    ]
+    path = tmp_path / "mixed_steps.frd"
+    path.write_text(_frd(1, {1: (0.0, 0.0, 0.0)}, steps))
+    cases = _metrics(extract_computed_metrics(path, load_case_ids=["pull", "mode", "push"]))
+    assert cases["pull"]["max_displacement"] == pytest.approx(1.0)
+    assert cases["push"]["max_displacement"] == pytest.approx(2.0)
+    assert cases["modal_001"]["natural_frequencies_hz"] == pytest.approx([1234.5])
+    assert "mode" not in cases
+
+
+def test_parsing_does_not_need_numpy() -> None:
+    # aieng declares no numpy dependency; the FRD parser (and compare_runs) must
+    # import and run without it — numpy is needed only for principal stresses.
+    import os
+    import subprocess
+    import sys
+
+    code = (
+        "import sys; sys.modules['numpy'] = None\n"
+        "from pathlib import Path\n"
+        "from aieng.simulation.frd_result_extractor import extract_computed_metrics\n"
+        "import aieng.cae_run_comparison\n"
+        f"m = extract_computed_metrics(Path({str(CCX / 'static.frd')!r}))\n"
+        "print(m['load_cases'][0]['metrics']['max_von_mises_stress']['value'])\n"
+    )
+    src = Path(__file__).resolve().parents[1] / "src"
+    proc = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True,
+        env={**os.environ, "PYTHONPATH": str(src)},
+        stdin=subprocess.DEVNULL, timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert float(proc.stdout.strip()) > 0

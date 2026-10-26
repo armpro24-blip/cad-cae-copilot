@@ -380,11 +380,13 @@ def _field_statistics(
     ratio = round(peak / median, 4) if median > 0 else None
     return {
         "node_count": n,
-        "min": round(ordered[0], 6) if n else None,
-        "median": round(median, 6),
-        "max": round(peak, 6),
+        # Unrounded: a 1e-7 mm displacement field rounded to 6 decimals read
+        # as all zeros beside a non-zero ratio.
+        "min": ordered[0] if n else None,
+        "median": median,
+        "max": peak,
         "threshold_percentile": percentile,
-        "threshold_value": round(threshold, 6),
+        "threshold_value": threshold,
         "peak_to_median_ratio": ratio,
         # A zero median with a positive peak is a concentration by any measure.
         "near_uniform": ratio is not None and ratio < NEAR_UNIFORM_PEAK_TO_MEDIAN,

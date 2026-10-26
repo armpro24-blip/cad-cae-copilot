@@ -6,7 +6,8 @@ scalar result fields a CAE post-processor offers: von Mises, principal stresses
 (S1/S2/S3), Tresca / max shear, individual stress components, displacement
 magnitude + per-axis components, and a **safety-factor** field (yield ÷ von Mises).
 
-Pure (numpy only); no FRD parsing or package I/O. The backend extractor reads the
+Pure; numpy is needed only for the principal stresses (imported there). No FRD
+parsing or package I/O. The backend extractor reads the
 FRD + material yield and calls these per node.
 """
 from __future__ import annotations
@@ -14,7 +15,6 @@ from __future__ import annotations
 import math
 from typing import Any
 
-import numpy as np
 
 # Canonical tensor order = the order CalculiX writes the FRD ``STRESS`` block:
 # SXX, SYY, SZZ, SXY, SYZ, SZX (measured on every ccx FRD in the workspace; the
@@ -101,6 +101,10 @@ def von_mises(tensor: tuple[float, ...]) -> float:
 
 def principal_stresses(tensor: tuple[float, ...]) -> tuple[float, float, float]:
     """Principal stresses (S1 ≥ S2 ≥ S3): eigenvalues of [Sxx,Syy,Szz,Sxy,Syz,Szx]."""
+    # Imported here, not at module level: aieng declares no numpy dependency,
+    # and the FRD parser imports this module for von Mises alone.
+    import numpy as np
+
     sxx, syy, szz, sxy, syz, szx = (float(x) for x in tensor[:6])
     m = np.array([[sxx, sxy, szx], [sxy, syy, syz], [szx, syz, szz]], dtype=float)
     ev = np.linalg.eigvalsh(m)  # ascending, real (symmetric)

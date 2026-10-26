@@ -966,7 +966,14 @@ Celik, Ghia, Roache & Freitas (J. Fluids Eng. 130(7):078001, 2008), Table 1:
   realized 1.45-2.06 — and reports `h_basis`. A series whose change grows
   under refinement is `diverging_not_converged` (it used to read `converged`
   with p = -1 and a negative GCI); r < 1.3 is warned; a "converged" verdict
-  outside the asymptotic range is qualified.
+  outside the asymptotic range is qualified. Two requested sizes that realize
+  the SAME mesh are `repeated_grid` — refused, never counted as agreement.
+- `cae.compare_runs` compares eigenvalue lists mode by mode
+  (`natural_frequencies_hz[mode_3]`), by the solver's mode numbering — not by
+  tracked mode shape, so a mode swap between runs is not detected.
+- `/fields/{name}?load_case_id=` selects the FRD step by its header; a step
+  without that field is refused (`404 field_not_in_load_case`), not served
+  another step's field.
 - `cae.extract_field_regions` takes the top percentile, which always selects
   something. Read `field_statistics.near_uniform` / `peak_to_median_ratio`
   before calling a cluster a hot spot.

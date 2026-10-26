@@ -195,6 +195,25 @@ def test_flat_coarse_pair_under_a_moving_fine_pair_is_not_converged() -> None:
     assert report["converged"] is None
 
 
+@pytest.mark.parametrize(
+    "counts, values",
+    [
+        ([1000, 1000, 125], [10.0, 10.0, 13.0]),  # used to be converged_flat, GCI 0%
+        ([1000, 1000], [10.0, 10.0]),             # used to be a converged two-grid result
+    ],
+)
+def test_repeated_realized_grid_is_refused(counts, values) -> None:
+    # Different requested sizes, one realized mesh: no refinement happened.
+    levels = [
+        {"size": s, "value": v, "element_count": n}
+        for s, v, n in zip([1.0, 2.0, 4.0], values, counts)
+    ]
+    report = analyze_mesh_convergence(levels)
+    assert report["verdict"] == "repeated_grid"
+    assert report["converged"] is None
+    assert report.get("gci_fine_percent") is None
+
+
 def test_diverging_series_is_not_converged() -> None:
     # The change GROWS under refinement (eps21 = 1.0 > eps32 = 0.5). The old
     # constant-ratio formula dropped Celik's absolute value: p = -1, GCI = -25%,

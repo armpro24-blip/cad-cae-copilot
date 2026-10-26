@@ -92,3 +92,69 @@ def test_a_step_the_result_does_not_have_is_named_not_silently_replaced(tmp_path
     assert asked["values"] == last["values"]
     assert any("step 5" in w and "showing step 2" in w for w in asked["warnings"])
     assert last["warnings"] == []
+
+
+def _e(v: float) -> str:
+    return f"{v:12.5E}"
+
+
+def _disp_then_stress_frd() -> str:
+    """Step 1 wrote displacements only; step 2 wrote displacements and stress."""
+    lines = ["    1C".ljust(72), f"    2C{'':18s}{1:12d}{'':37s}1",
+             f" -1{1:10d}{_e(0.0)}{_e(0.0)}{_e(0.0)}", " -3"]
+    for numstp, blocks in ((1, [("DISP", ["D1", "D2", "D3", "ALL"], [1.0, 0.0, 0.0])]),
+                           (2, [("DISP", ["D1", "D2", "D3", "ALL"], [2.0, 0.0, 0.0]),
+                                ("STRESS", ["SXX", "SYY", "SZZ", "SXY", "SYZ", "SZX"],
+                                 [50.0, 0.0, 0.0, 0.0, 0.0, 0.0])])):
+        for name, comps, vals in blocks:
+            lines.append(f"  100CL{100 + numstp:5d}{_e(float(numstp))}{1:12d}{'':20s}"
+                         f"{0:2d}{numstp:5d}{'':10s}{1:2d}")
+            lines.append(f" -4  {name:8s}{len(comps):4d}    1")
+            lines += [f" -5  {c:8s}    1    2    1    0" for c in comps]
+            lines += [f" -1{1:10d}" + "".join(_e(v) for v in vals), " -3"]
+    return "\n".join(lines + [" 9999"]) + "\n"
+
+
+def _synthetic_package(tmp_path: Path) -> Path:
+    pkg = tmp_path / "steps.aieng"
+    with zipfile.ZipFile(pkg, "w") as zf:
+        zf.writestr("manifest.json", json.dumps({"model_id": "beam"}))
+        zf.writestr("simulation/runs/run_001/outputs/result.frd", _disp_then_stress_frd())
+    return pkg
+
+
+def test_a_step_without_stress_is_refused_not_served_another_steps_stress(tmp_path: Path) -> None:
+    # Counting STRESS blocks, "load_case_001" used to pick the first stress block
+    # in the file — step 2's — and serve it as step 1.
+    from app.services.platform_logic import FrdFieldNotInStep
+
+    pkg = _synthetic_package(tmp_path)
+    with pytest.raises(FrdFieldNotInStep, match="step 1"):
+        _extract_frd_field_data(pkg, "von_mises", _AIENG_ROOT, load_case_id="load_case_001")
+    step2 = _extract_frd_field_data(pkg, "von_mises", _AIENG_ROOT, load_case_id="load_case_002")
+    assert step2["values"] == [pytest.approx(50.0)]
+    disp1 = _extract_frd_field_data(pkg, "disp_magnitude", _AIENG_ROOT, load_case_id="load_case_001")
+    assert disp1["values"] == [pytest.approx(1.0)]
+    # no load case asked: the first step that has the field, as before
+    assert _extract_frd_field_data(pkg, "von_mises", _AIENG_ROOT)["values"] == [pytest.approx(50.0)]
+
+
+def test_endpoint_returns_a_refusal_not_a_synthetic_field(tmp_path: Path) -> None:
+    from starlette.testclient import TestClient
+
+    from app.main import create_app, default_project, project_dir, save_project
+    from tests.test_api import _make_patch_settings
+
+    settings = _make_patch_settings(tmp_path)
+    client = TestClient(create_app(settings))
+    project = save_project(settings, default_project("steps"))
+    pkg_path = project_dir(settings, project["id"]) / "steps.aieng"
+    pkg_path.parent.mkdir(parents=True, exist_ok=True)
+    pkg_path.write_bytes(_synthetic_package(tmp_path).read_bytes())
+    project["aieng_file"] = "steps.aieng"
+    save_project(settings, project)
+
+    resp = client.get(f"/api/projects/{project['id']}/fields/stress?load_case_id=load_case_001")
+
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "field_not_in_load_case"
