@@ -256,6 +256,16 @@ def _describe_cae_setup(package_path: Path) -> list[str]:
             )
     for load in (loads.get("loads") or []):
         if isinstance(load, dict):
+            if str(load.get("type") or "").lower() == "pressure":
+                pressure = load.get("pressure_mpa")
+                lines.append(
+                    "load: pressure {} MPa normal to the face (+ = into it) on {}".format(
+                        f"{float(pressure):g}" if isinstance(pressure, (int, float))
+                        and not isinstance(pressure, bool) else "(magnitude not recorded)",
+                        _render(load.get("target")),
+                    )
+                )
+                continue
             newtons, direction = _load_magnitude_and_direction(load)
             if newtons is None:
                 lines.append(
@@ -1117,13 +1127,42 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                  "boundary_conditions", boundary_conditions, authored_by="cae.setup_static")},
         ]
         loads: list[dict[str, Any]] = []
+        share_basis: str | None = None
+        setup_warnings: list[str] = []
         if load_hit is not None:
-            share = force_n / len(load_hit["face_ids"])
+            # A force spread over several faces is one uniform traction, so each
+            # face carries its AREA share. An equal share per face put the same
+            # newtons on a 10 mm² face as on a 1000 mm² one.
+            face_area = {
+                str(e.get("id")): float(e.get("area") or 0.0)
+                for e in (topology.get("entities") or [])
+                if isinstance(e, dict) and e.get("type") == "face"
+            }
+            areas = [face_area.get(str(fid), 0.0) for fid in load_hit["face_ids"]]
+            total_area = sum(areas)
+            if total_area > 0 and all(areas):
+                share_basis = "area"
+                shares = [force_n * a / total_area for a in areas]
+            else:
+                # Not every face records an area, so an area share cannot be
+                # formed. Say so: an equal share per face is a different load.
+                share_basis = "equal" if len(areas) > 1 else "single_face"
+                shares = [force_n / len(areas)] * len(areas)
+                if len(areas) > 1:
+                    setup_warnings.append(
+                        "The load spans {} faces but not all of them record an area in "
+                        "the topology, so the force was split EQUALLY per face instead "
+                        "of by area; a small face carries as much as a large one. "
+                        "Rebuild the geometry to refresh the topology, or bind each "
+                        "face with its own force.".format(len(areas))
+                    )
+            if len(areas) == 1:
+                share_basis = "single_face"
             loads = [
                 {"id": f"load_{i + 1:03d}", "type": "force", "target": f"@face:{fid}",
                  "target_selector": load_selector,
                  "value_n": share, "direction": direction}
-                for i, fid in enumerate(load_hit["face_ids"])
+                for i, (fid, share) in enumerate(zip(load_hit["face_ids"], shares))
             ]
             patches.append({
                 "action_type": "create_file",
@@ -1193,6 +1232,10 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             "tool": "cae.setup_static",
             "analysis_type": analysis_type,
             "summary": summary_lines,
+            # How one force was divided over several faces: `area` (a uniform
+            # traction), `equal` (areas unknown — see warnings) or `single_face`.
+            "load_share_basis": share_basis,
+            "warnings": setup_warnings,
             "resolved": {
                 "fix": {"face_pointers": [f"@face:{f}" for f in fix_hit["face_ids"]],
                         "why": fix_hit["reason"], "confidence": fix_hit["confidence"]},
