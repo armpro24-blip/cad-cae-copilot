@@ -458,6 +458,47 @@ def _aieng_finish(part, label=None, color=None):
     return part
 
 
+# Every place a helper builds something other than what was literally asked
+# for (a clamped radius, a skipped fillet, a degraded blend) is recorded here
+# and returned to the caller as ``helper_adjustments`` -- a substitute that is
+# not reported is indistinguishable from the requested geometry.
+_AIENG_HELPER_ADJUSTMENTS = []
+
+
+def _aieng_adjusted(helper, label, parameter, requested, applied, reason):
+    _AIENG_HELPER_ADJUSTMENTS.append({
+        "helper": helper,
+        "label": label,
+        "parameter": parameter,
+        "requested": requested,
+        "applied": applied,
+        "reason": reason,
+    })
+
+
+def _aieng_require_positive(helper, **values):
+    # Refuse a non-positive / non-finite dimension by NAME instead of letting
+    # OCCT raise an anonymous Standard_ConstructionError -- or, worse, build a
+    # zero-volume or inside-out solid that looks like a result.
+    for _name, _value in values.items():
+        try:
+            _v = float(_value)
+        except (TypeError, ValueError):
+            raise ValueError(helper + ": " + _name + " must be a number, got " + repr(_value))
+        if not (0.0 < _v < float("inf")):
+            raise ValueError(helper + ": " + _name + " must be > 0, got " + repr(_value))
+
+
+def _aieng_require_non_negative(helper, **values):
+    for _name, _value in values.items():
+        try:
+            _v = float(_value)
+        except (TypeError, ValueError):
+            raise ValueError(helper + ": " + _name + " must be a number, got " + repr(_value))
+        if not (0.0 <= _v < float("inf")):
+            raise ValueError(helper + ": " + _name + " must be >= 0, got " + repr(_value))
+
+
 def lofted_stack(sections, label=None, color=None, ruled=False):
     \"\"\"Loft a smooth solid through cross-sections stacked along Z.
 
@@ -471,8 +512,19 @@ def lofted_stack(sections, label=None, color=None, ruled=False):
     secs = list(sections)
     if len(secs) < 2:
         raise ValueError("lofted_stack needs >= 2 sections")
+    zs = [float(sec[0]) for sec in secs]
+    if any(z1 <= z0 for z0, z1 in zip(zs, zs[1:])):
+        raise ValueError("lofted_stack: section z values must be strictly increasing, got " + repr(zs))
+    for i, sec in enumerate(secs):
+        if len(sec) == 2:
+            _aieng_require_positive("lofted_stack", **{"section[%d] radius" % i: sec[1]})
+        else:
+            _aieng_require_positive("lofted_stack", **{
+                "section[%d] width" % i: sec[1], "section[%d] depth" % i: sec[2]})
+            if len(sec) > 3:
+                _aieng_require_non_negative("lofted_stack", **{"section[%d] corner_r" % i: sec[3]})
     with BuildPart() as _bp:
-        for sec in secs:
+        for i, sec in enumerate(secs):
             z = float(sec[0])
             with BuildSketch(Plane.XY.offset(z)):
                 if len(sec) == 2:
@@ -484,7 +536,11 @@ def lofted_stack(sections, label=None, color=None, ruled=False):
                 else:
                     w, d, cr = float(sec[1]), float(sec[2]), float(sec[3])
                     if cr > 0:
-                        RectangleRounded(w, d, min(cr, min(w, d) / 2 - 0.01))
+                        cr_applied = min(cr, min(w, d) / 2 - 0.01)
+                        if cr_applied < cr:
+                            _aieng_adjusted("lofted_stack", label, "section[%d] corner_r" % i, cr,
+                                            cr_applied, "corner radius must be < half the smaller side")
+                        RectangleRounded(w, d, cr_applied)
                     else:
                         Rectangle(w, d)
         loft(ruled=ruled)
@@ -495,7 +551,12 @@ def rounded_box(length, width, height, radius, label=None, color=None, edges="al
     \"\"\"A box with filleted edges -- the default block for *designed* enclosures
     and bodies instead of a hard-edged Box. ``edges`` is "all" or "vertical".
     \"\"\"
-    r = max(0.01, min(float(radius), min(length, width, height) / 2 - 0.01))
+    _aieng_require_positive("rounded_box", length=length, width=width, height=height, radius=radius)
+    limit = (min(length, width) if edges == "vertical" else min(length, width, height)) / 2 - 0.01
+    r = max(0.01, min(float(radius), limit))
+    if r != float(radius):
+        _aieng_adjusted("rounded_box", label, "radius", float(radius), r,
+                        "fillet radius must be < half the smallest filleted dimension")
     with BuildPart() as _bp:
         Box(length, width, height)
         try:
@@ -504,7 +565,10 @@ def rounded_box(length, width, height, radius, label=None, color=None, edges="al
             else:
                 fillet(_bp.edges(), radius=r)
         except Exception:
-            fillet(_bp.edges().filter_by(Axis.Z), radius=min(r, min(length, width) / 2 - 0.01))
+            r_v = min(r, min(length, width) / 2 - 0.01)
+            fillet(_bp.edges().filter_by(Axis.Z), radius=r_v)
+            _aieng_adjusted("rounded_box", label, "edges", edges, "vertical",
+                            "filleting every edge failed; only the vertical edges were rounded (r=%g)" % r_v)
     return _aieng_finish(_bp.part, label, color)
 
 
@@ -513,6 +577,7 @@ def capsule(radius, length, axis="Z", label=None, color=None):
     ``length`` is the cylindrical span; total length = length + 2*radius.
     ``axis`` in {"X","Y","Z"}.
     \"\"\"
+    _aieng_require_positive("capsule", radius=radius, length=length)
     part = Cylinder(radius, length) + Sphere(radius).moved(Location((0, 0, length / 2))) \\
         + Sphere(radius).moved(Location((0, 0, -length / 2)))
     if isinstance(part, (list, tuple)) or type(part).__name__ == "ShapeList":
@@ -529,7 +594,15 @@ def tapered_cylinder(bottom_radius, top_radius, height, axis="Z", label=None, co
     \"\"\"A truncated cone (different top/bottom radii) -- necks, nozzles, legs.
     ``axis`` in {"X","Y","Z"}.
     \"\"\"
-    part = Cone(bottom_radius, top_radius, height)
+    _aieng_require_non_negative("tapered_cylinder", bottom_radius=bottom_radius, top_radius=top_radius)
+    _aieng_require_positive("tapered_cylinder", height=height)
+    if float(bottom_radius) == 0 and float(top_radius) == 0:
+        raise ValueError("tapered_cylinder: bottom_radius and top_radius cannot both be 0")
+    if float(bottom_radius) == float(top_radius):
+        # OCCT refuses a cone with two identical radii; that shape is a cylinder.
+        part = Cylinder(bottom_radius, height)
+    else:
+        part = Cone(bottom_radius, top_radius, height)
     a = str(axis).upper()
     if a == "X":
         part = part.rotate(Axis.Y, 90)
@@ -545,6 +618,7 @@ def swept_tube(path_points, radius, label=None, color=None):
     pts = [tuple(float(c) for c in p) for p in path_points]
     if len(pts) < 2:
         raise ValueError("swept_tube needs >= 2 path points")
+    _aieng_require_positive("swept_tube", radius=radius)
     with BuildPart() as _bp:
         with BuildLine() as _ln:
             if len(pts) == 2:
@@ -565,6 +639,10 @@ def revolved_profile(profile_points, label=None, color=None, degrees=360):
     pts = [(float(r), float(z)) for r, z in profile_points]
     if len(pts) < 2:
         raise ValueError("revolved_profile needs >= 2 points")
+    for i, (r, _z) in enumerate(pts):
+        _aieng_require_non_negative("revolved_profile", **{"profile_points[%d] r" % i: r})
+    if not (0.0 < float(degrees) <= 360.0):
+        raise ValueError("revolved_profile: degrees must be in (0, 360], got " + repr(degrees))
     if pts[0][0] != 0:
         pts.insert(0, (0.0, pts[0][1]))
     if pts[-1][0] != 0:
@@ -581,22 +659,32 @@ def revolved_profile(profile_points, label=None, color=None, degrees=360):
 def organic_blend(solids, radius, label=None, color=None):
     \"\"\"Fuse solids and fillet the resulting edges so the join reads as one
     smooth body instead of glued primitives. Falls back to smaller radii (then
-    no fillet) if the requested radius is geometrically infeasible.
+    no fillet) if the requested radius is geometrically infeasible; any such
+    fallback is reported in the response's ``helper_adjustments``.
     \"\"\"
     items = list(solids)
     if not items:
         raise ValueError("organic_blend needs >= 1 solid")
+    _aieng_require_positive("organic_blend", radius=radius)
     fused = items[0]
     for s in items[1:]:
         fused = fused + s
     if isinstance(fused, (list, tuple)) or type(fused).__name__ == "ShapeList":
         fused = Compound(children=list(fused))
+    applied = None
     for rr in (float(radius), float(radius) * 0.5, float(radius) * 0.25):
         try:
             fused = fillet(fused.edges(), radius=rr)
+            applied = rr
             break
         except Exception:
             continue
+    if applied != float(radius):
+        _aieng_adjusted(
+            "organic_blend", label, "radius", float(radius), applied,
+            "requested blend radius was geometrically infeasible; "
+            + ("fell back to a smaller radius" if applied else "the join was left UNFILLETED"),
+        )
     return _aieng_finish(fused, label, color)
 
 
@@ -608,16 +696,32 @@ def organic_blend(solids, radius, label=None, color=None):
 def naca_airfoil(chord, thickness, span=None, label=None, color=None):
     \"\"\"A symmetric NACA-4-digit airfoil section extruded into a 3D wing solid.
 
-    ``chord`` = chord length (mm) along X, ``thickness`` = max thickness (mm),
-    ``span`` = extrusion length along Y (default = chord). Wings, fins, blades,
-    struts. Profile follows the standard NACA00xx half-thickness polynomial.
-    For a tapered/swept wing, build two and ``loft`` between them.
+    ``chord`` = chord length (mm) along +X (leading edge at X=0), ``thickness``
+    = max thickness (mm, symmetric about Z=0), ``span`` = extrusion length along
+    +Y from Y=0 (default = chord). Wings, fins, blades, struts.
+
+    Profile: the NACA 4-digit half-thickness equation (Abbott & von Doenhoff,
+    *Theory of Wing Sections*, 1959) with the standard open-trailing-edge
+    coefficient -0.1015, so the trailing edge is a short flat of height
+    0.021 * thickness (also kinder to a mesher than a knife edge). Upper and
+    lower surfaces are each one spline through 61 cosine-spaced ordinates
+    (dense at the leading edge; see NASA TM-4741, Ladson et al. 1996, for the
+    same equation). For a tapered/swept wing, build two and ``loft`` them.
     \"\"\"
+    import math as _m
+    _aieng_require_positive("naca_airfoil", chord=chord, thickness=thickness)
+    if span is not None:
+        _aieng_require_positive("naca_airfoil", span=span)
     c = float(chord)
+    if float(thickness) >= c:
+        raise ValueError("naca_airfoil: thickness must be < chord, got thickness="
+                         + repr(thickness) + " chord=" + repr(chord))
     tf = float(thickness) / c
     sp = float(span) if span is not None else c
-    n = 30
-    xs = [i / n for i in range(n + 1)]
+    n = 60
+    # Cosine spacing clusters ordinates at the leading edge, where the sqrt
+    # term makes curvature unbounded; uniform spacing chopped the nose off.
+    xs = [0.5 * (1.0 - _m.cos(_m.pi * i / n)) for i in range(n + 1)]
 
     def _yt(x):
         return 5 * tf * c * (
@@ -626,15 +730,24 @@ def naca_airfoil(chord, thickness, span=None, label=None, color=None):
         )
 
     upper = [(x * c, _yt(x)) for x in xs]
-    lower = [(x * c, -_yt(x)) for x in reversed(xs[1:-1])]
-    pts = upper + lower
+    lower = [(x * c, -_yt(x)) for x in xs]
+    # One spline per surface, LE -> TE, closed by the trailing-edge flat. With
+    # cosine spacing the two natural end tangents at the nose meet within ~1
+    # degree of vertical. Deliberately NOT a single spline around the nose:
+    # that builds the same shape but OCCT's default mass-property integration
+    # then under-reports its volume by ~9% (measured), and topology volumes
+    # feed regression_diff and the BOM.
     with BuildPart() as _bp:
         with BuildSketch(Plane.XZ):
             with BuildLine():
-                Polyline(*pts, close=True)
+                Spline(*upper)
+                Line(upper[-1], lower[-1])
+                Spline(*reversed(lower))
             make_face()
         extrude(amount=sp)
-    return _aieng_finish(_bp.part, label, color)
+    # Plane.XZ's normal is -Y; shift so the span runs +Y from 0 as documented.
+    part = _bp.part.moved(Location((0, sp, 0)))
+    return _aieng_finish(part, label, color)
 
 
 def fuselage_profile(length, max_diameter, nose_frac=0.2, tail_frac=0.3, label=None, color=None):
@@ -644,10 +757,15 @@ def fuselage_profile(length, max_diameter, nose_frac=0.2, tail_frac=0.3, label=N
     ``nose_frac`` / ``tail_frac`` are the fractions of length spent on the nose
     and tail tapers. Aircraft/rocket bodies, pods, bottles.
     \"\"\"
+    _aieng_require_positive("fuselage_profile", length=length, max_diameter=max_diameter)
+    _aieng_require_non_negative("fuselage_profile", nose_frac=nose_frac, tail_frac=tail_frac)
+    if float(nose_frac) + float(tail_frac) > 1.0:
+        raise ValueError("fuselage_profile: nose_frac + tail_frac must be <= 1, got "
+                         + repr(float(nose_frac) + float(tail_frac)))
     L = float(length)
     R = float(max_diameter) / 2.0
-    nose = max(0.0, float(nose_frac)) * L
-    tail = max(0.0, float(tail_frac)) * L
+    nose = float(nose_frac) * L
+    tail = float(tail_frac) * L
     pts = []
     ns = 6
     for i in range(ns + 1):
@@ -668,6 +786,8 @@ def wheel(rim_radius, tire_radius, width, label=None, color=None):
     thickness. The bore is 30% of ``rim_radius``. Vehicle wheels, pulleys,
     rollers, gear blanks.
     \"\"\"
+    _aieng_require_positive("wheel", rim_radius=rim_radius, width=width)
+    _aieng_require_non_negative("wheel", tire_radius=tire_radius)
     rr = float(rim_radius)
     outer = rr + float(tire_radius)
     bore = max(0.001, rr * 0.3)
@@ -684,10 +804,15 @@ def ribbed_plate(length, width, thickness, rib_count=2, rib_height=None, label=N
     3x ``thickness``; rib thickness is ~0.8x plate ``thickness``. Brackets, base
     plates, structural panels. The plate bottom sits at Z=0.
     \"\"\"
+    _aieng_require_positive("ribbed_plate", length=length, width=width, thickness=thickness)
+    if rib_height is not None:
+        _aieng_require_positive("ribbed_plate", rib_height=rib_height)
+    if int(rib_count) < 1:
+        raise ValueError("ribbed_plate: rib_count must be >= 1, got " + repr(rib_count))
     L = float(length)
     W = float(width)
     t = float(thickness)
-    n = max(1, int(rib_count))
+    n = int(rib_count)
     rh = float(rib_height) if rib_height is not None else t * 3.0
     rt = max(1.0, t * 0.8)
     ys = [(-W / 2 + W * (i + 0.5) / n) for i in range(n)]
@@ -707,10 +832,12 @@ def ribbed_plate(length, width, thickness, rib_count=2, rib_height=None, label=N
 def tube(outer_radius, inner_radius, length, axis="Z", label=None, color=None):
     \"\"\"A hollow cylinder (pipe / bushing / sleeve / standoff). ``axis`` in
     {"X","Y","Z"}; the bore runs the full ``length``. inner_radius must be < outer_radius.\"\"\"
+    _aieng_require_positive("tube", outer_radius=outer_radius, inner_radius=inner_radius, length=length)
     outer = float(outer_radius)
     inner = float(inner_radius)
-    if inner <= 0 or inner >= outer:
-        raise ValueError("tube needs 0 < inner_radius < outer_radius")
+    if inner >= outer:
+        raise ValueError("tube needs 0 < inner_radius < outer_radius, got inner_radius="
+                         + repr(inner_radius) + " outer_radius=" + repr(outer_radius))
     with BuildPart() as _bp:
         Cylinder(outer, float(length))
         Cylinder(inner, float(length), mode=Mode.SUBTRACT)
@@ -726,9 +853,8 @@ def tube(outer_radius, inner_radius, length, axis="Z", label=None, color=None):
 def hex_prism(across_flats, height, axis="Z", label=None, color=None):
     \"\"\"A hexagonal prism (nut blank, hex standoff, hex stock). ``across_flats`` is
     the wrench size (distance between opposite flats); ``axis`` in {"X","Y","Z"}.\"\"\"
+    _aieng_require_positive("hex_prism", across_flats=across_flats, height=height)
     af = float(across_flats)
-    if af <= 0:
-        raise ValueError("hex_prism needs across_flats > 0")
     with BuildPart() as _bp:
         with BuildSketch():
             RegularPolygon(af / 2.0, 6, major_radius=False)
@@ -747,7 +873,13 @@ def chamfered_box(length, width, height, chamfer_size, edges="all", label=None, 
     edges (the angular counterpart to ``rounded_box``). ``edges`` is "all" or
     "vertical". Degrades to vertical-only / smaller chamfer if the size is tight.
     (Parameter is ``chamfer_size`` so it does not shadow build123d's ``chamfer``.)\"\"\"
-    c = max(0.01, min(float(chamfer_size), min(length, width, height) / 2 - 0.01))
+    _aieng_require_positive("chamfered_box", length=length, width=width, height=height,
+                            chamfer_size=chamfer_size)
+    limit = (min(length, width) if edges == "vertical" else min(length, width, height)) / 2 - 0.01
+    c = max(0.01, min(float(chamfer_size), limit))
+    if c != float(chamfer_size):
+        _aieng_adjusted("chamfered_box", label, "chamfer_size", float(chamfer_size), c,
+                        "chamfer must be < half the smallest chamfered dimension")
     with BuildPart() as _bp:
         Box(length, width, height)
         try:
@@ -756,7 +888,10 @@ def chamfered_box(length, width, height, chamfer_size, edges="all", label=None, 
             else:
                 chamfer(_bp.edges(), length=c)
         except Exception:
-            chamfer(_bp.edges().filter_by(Axis.Z), length=min(c, min(length, width) / 2 - 0.01))
+            c_v = min(c, min(length, width) / 2 - 0.01)
+            chamfer(_bp.edges().filter_by(Axis.Z), length=c_v)
+            _aieng_adjusted("chamfered_box", label, "edges", edges, "vertical",
+                            "chamfering every edge failed; only the vertical edges were chamfered (c=%g)" % c_v)
     return _aieng_finish(_bp.part, label, color)
 
 
@@ -765,23 +900,30 @@ def l_bracket(length, width, height, thickness, fillet_radius=0, label=None, col
     +X) joined to a vertical wall (thickness x width x height, rising in +Z) at the
     X=0 edge. Optional ``fillet_radius`` rounds the interior corner; it is
     best-effort and skipped if geometrically infeasible. Base bottom sits at Z=0.\"\"\"
+    _aieng_require_positive("l_bracket", length=length, width=width, height=height, thickness=thickness)
+    _aieng_require_non_negative("l_bracket", fillet_radius=fillet_radius)
     L = float(length)
     W = float(width)
     H = float(height)
     t = float(thickness)
-    if t <= 0 or t >= L or t >= H:
+    if t >= L or t >= H:
         raise ValueError("l_bracket needs 0 < thickness < length and < height")
     with BuildPart() as _bp:
         Box(L, W, t, align=(Align.MIN, Align.CENTER, Align.MIN))
         Box(t, W, H, align=(Align.MIN, Align.CENTER, Align.MIN))
         r = float(fillet_radius)
         if r > 0:
+            r_applied = min(r, t - 0.01, H - t - 0.01, L - t - 0.01)
             try:
                 # The concave interior edge runs along Y at (x=t, z=t).
                 inner = _bp.edges().filter_by(Axis.Y).group_by(Axis.Z)[1].sort_by(Axis.X)[1]
-                fillet(inner, radius=min(r, t - 0.01, H - t - 0.01, L - t - 0.01))
-            except Exception:
-                pass
+                fillet(inner, radius=r_applied)
+                if r_applied != r:
+                    _aieng_adjusted("l_bracket", label, "fillet_radius", r, r_applied,
+                                    "interior fillet must be < thickness and < the free leg lengths")
+            except Exception as _e:
+                _aieng_adjusted("l_bracket", label, "fillet_radius", r, 0.0,
+                                "interior fillet failed (" + type(_e).__name__ + "); corner left sharp")
     return _aieng_finish(_bp.part, label, color)
 
 
@@ -793,14 +935,22 @@ def housing(length, width, height, wall=3.0, fillet_radius=None, open_top=True,
     vertical edges, so it reads as a designed housing instead of a crude box.
     ``open_top`` leaves the top open (a removable cover mates there); ``floor``
     keeps a solid bottom. ``fillet_radius`` rounds the outer vertical edges
-    (default ~min(2*wall, 12% of the smaller plan dimension)). Bottom sits at Z=0.
+    (default ~min(2*wall, 12% of the smaller plan dimension)); the cavity's
+    corners follow at ``fillet_radius - wall`` so the wall is ``wall`` thick
+    everywhere, corners included. Bottom sits at Z=0.
     Use this for gearbox/pump bodies, electronics enclosures, valve bodies.\"\"\"
+    _aieng_require_positive("housing", length=length, width=width, height=height, wall=wall)
+    if fillet_radius is not None:
+        _aieng_require_non_negative("housing", fillet_radius=fillet_radius)
     L, W, H = float(length), float(width), float(height)
     t = float(wall)
-    if t <= 0 or 2 * t >= min(L, W) or t >= H:
+    if 2 * t >= min(L, W) or t >= H:
         raise ValueError("housing needs 0 < wall, 2*wall < length & width, and wall < height")
-    fr = min(2.0 * t, min(L, W) * 0.12) if fillet_radius is None else float(fillet_radius)
-    fr = max(0.0, min(fr, min(L, W) / 2.0 - t - 0.01))
+    fr_req = min(2.0 * t, min(L, W) * 0.12) if fillet_radius is None else float(fillet_radius)
+    fr = max(0.0, min(fr_req, min(L, W) / 2.0 - t - 0.01))
+    if fillet_radius is not None and fr != fr_req:
+        _aieng_adjusted("housing", label, "fillet_radius", fr_req, fr,
+                        "outer corner radius must leave room for the wall inside it")
     cz = t if floor else -1.0
     top = (H + 1.0) if open_top else (H - t)
     cavity_h = top - cz
@@ -811,11 +961,22 @@ def housing(length, width, height, wall=3.0, fillet_radius=None, open_top=True,
         if fr > 0:
             try:
                 fillet(_bp.edges().filter_by(Axis.Z), radius=fr)
-            except Exception:
-                pass
-        with Locations((0, 0, cz)):
-            Box(L - 2 * t, W - 2 * t, cavity_h,
-                align=(Align.CENTER, Align.CENTER, Align.MIN), mode=Mode.SUBTRACT)
+            except Exception as _e:
+                if fillet_radius is not None:
+                    _aieng_adjusted("housing", label, "fillet_radius", fr_req, 0.0,
+                                    "outer fillet failed (" + type(_e).__name__ + "); corners left sharp")
+                fr = 0.0
+        # The cavity's vertical corners are the outer corners offset inward by
+        # the wall: radius fr - wall. A sharp cavity corner under a rounded outer
+        # corner thins the wall there to fr - sqrt(2)*(fr - wall) (1.76 mm for
+        # the default 3 mm wall) and leaves an internal corner no cutter can make.
+        inner_r = fr - t
+        with BuildSketch(Plane.XY.offset(cz)):
+            if inner_r > 0.01:
+                RectangleRounded(L - 2 * t, W - 2 * t, inner_r)
+            else:
+                Rectangle(L - 2 * t, W - 2 * t)
+        extrude(amount=cavity_h, mode=Mode.SUBTRACT)
     return _aieng_finish(_bp.part, label, color)
 
 
@@ -825,9 +986,9 @@ def boss(diameter, height, hole_dia=0.0, axis="Z", label=None, color=None):
     on a housing wall, bore = shaft/bearing OD), a screw/insert boss (bore = tap
     drill), or a standoff. Base sits at the origin along ``axis`` ("X"/"Y"/"Z").
     Union it onto a wall (or `organic_blend` it) so it reads as integral.\"\"\"
+    _aieng_require_positive("boss", diameter=diameter, height=height)
+    _aieng_require_non_negative("boss", hole_dia=hole_dia)
     d = float(diameter); h = float(height); hd = float(hole_dia)
-    if d <= 0 or h <= 0:
-        raise ValueError("boss needs diameter > 0 and height > 0")
     if hd >= d:
         raise ValueError("boss hole_dia must be < diameter")
     with BuildPart() as _bp:
@@ -859,10 +1020,15 @@ def rib(length, height, thickness, fillet_radius=0.0, label=None, color=None):
         extrude(amount=t / 2.0, both=True)
         r = float(fillet_radius)
         if r > 0:
+            r_applied = min(r, t / 2.0 - 0.01)
             try:
-                fillet(_bp.edges().filter_by(Axis.Y), radius=min(r, t / 2.0 - 0.01))
-            except Exception:
-                pass
+                fillet(_bp.edges().filter_by(Axis.Y), radius=r_applied)
+                if r_applied != r:
+                    _aieng_adjusted("rib", label, "fillet_radius", r, r_applied,
+                                    "corner fillet is capped below half the rib thickness")
+            except Exception as _e:
+                _aieng_adjusted("rib", label, "fillet_radius", r, 0.0,
+                                "corner fillet failed (" + type(_e).__name__ + "); corners left sharp")
     return _aieng_finish(_bp.part, label, color)
 
 
@@ -871,19 +1037,29 @@ def mounting_tab(length, width, thickness, hole_dia, fillet_radius=None, label=N
     bottom at Z=0) with rounded outer corners and a central bolt hole
     (``hole_dia``). Place several around a housing base as mounting feet.
     ``fillet_radius`` defaults to ~25% of the smaller plan dimension.\"\"\"
+    _aieng_require_positive("mounting_tab", length=length, width=width, thickness=thickness)
+    _aieng_require_non_negative("mounting_tab", hole_dia=hole_dia)
+    if fillet_radius is not None:
+        _aieng_require_non_negative("mounting_tab", fillet_radius=fillet_radius)
     L = float(length); W = float(width); t = float(thickness); hd = float(hole_dia)
-    if L <= 0 or W <= 0 or t <= 0:
-        raise ValueError("mounting_tab needs length, width, thickness all > 0")
-    fr = min(L, W) * 0.25 if fillet_radius is None else float(fillet_radius)
-    fr = max(0.0, min(fr, min(L, W) / 2.0 - 0.01))
+    if hd >= min(L, W):
+        # Used to drop the hole silently: a tab with no bolt hole is not a tab.
+        raise ValueError("mounting_tab: hole_dia must be < min(length, width), got hole_dia="
+                         + repr(hole_dia) + " for a " + repr(L) + " x " + repr(W) + " tab")
+    fr_req = min(L, W) * 0.25 if fillet_radius is None else float(fillet_radius)
+    fr = max(0.0, min(fr_req, min(L, W) / 2.0 - 0.01))
+    if fillet_radius is not None and fr != fr_req:
+        _aieng_adjusted("mounting_tab", label, "fillet_radius", fr_req, fr,
+                        "corner radius must be < half the smaller plan dimension")
     with BuildPart() as _bp:
         Box(L, W, t, align=(Align.CENTER, Align.CENTER, Align.MIN))
         if fr > 0:
             try:
                 fillet(_bp.edges().filter_by(Axis.Z), radius=fr)
-            except Exception:
-                pass
-        if 0 < hd < min(L, W):
+            except Exception as _e:
+                _aieng_adjusted("mounting_tab", label, "fillet_radius", fr_req, 0.0,
+                                "corner fillet failed (" + type(_e).__name__ + "); corners left sharp")
+        if hd > 0:
             Cylinder(hd / 2.0, t * 3, align=(Align.CENTER, Align.CENTER, Align.CENTER), mode=Mode.SUBTRACT)
     return _aieng_finish(_bp.part, label, color)
 
@@ -1514,6 +1690,11 @@ else:
         "total_triangles": _aieng_total_tris,
     }
 
+# mesh_meta.json is the runner's only non-geometry side channel back to the
+# parent (returned explicitly, never persisted into topology_map), so helper
+# substitutions ride on it to reach the tool response.
+if _AIENG_HELPER_ADJUSTMENTS:
+    _aieng_mesh_meta["helper_adjustments"] = _AIENG_HELPER_ADJUSTMENTS
 (out_stl.with_name("mesh_meta.json")).write_text(json.dumps(_aieng_mesh_meta, indent=2))
 
 try:
@@ -1523,6 +1704,8 @@ except Exception as _e:
 topo = _extract_topology(result)
 out_topo.write_text(json.dumps(topo, indent=2))
 """
+
+_RUNNER_TEMPLATE_SHA256 = hashlib.sha256(_RUNNER_TEMPLATE.encode("utf-8")).hexdigest()
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -2720,6 +2903,10 @@ def _prioritize_geometry_rows(
     return selected
 
 
+# Solid bounding boxes are stored rounded to 4 decimals (_bbox_list in the runner).
+_BBOX_ROUNDING_MM = 1e-4
+
+
 def _compute_geometry_report(
     topology_map: dict[str, Any],
     max_parts: int = 14,
@@ -2829,17 +3016,28 @@ def _compute_geometry_report(
         seps = [abs(c[ax] - pc[ax]) for ax in range(3)]
         mirror_ax = max(range(3), key=lambda ax: seps[ax])
         align_res = max(seps[o] for o in range(3) if o != mirror_ax)
-        symmetry.append({
+        # Tolerances are purely relative (2%) so the verdict does not depend on
+        # the unit scale of the model; the old 1 mm floor accepted a 20%
+        # mismatch on a 5 mm part. The tiny floor is only the 1e-4 mm rounding
+        # quantum of the stored bounding boxes.
+        size_tol = max(_BBOX_ROUNDING_MM, largest_part_dim * 0.02)
+        align_tol = max(_BBOX_ROUNDING_MM, ov_max * 0.02)
+        rec = {
             "pair": [name, named[pidx][0]],
             "size_residual_mm": _r(size_res),
             "mirror_axis": "xyz"[mirror_ax],
             "mirror_separation_mm": _r(seps[mirror_ax]),
             "align_residual_mm": _r(align_res),
-            "ok": bool(
-                size_res < max(1.0, largest_part_dim * 0.02)
-                and align_res < max(1.0, ov_max * 0.02)
-            ),
-        })
+            "ok": bool(size_res < size_tol and align_res < align_tol),
+        }
+        if seps[mirror_ax] <= align_tol:
+            # A pair sitting on top of each other has align_residual 0 on every
+            # axis, which used to read as a perfect mirror. It is the classic
+            # copy-paste typo (the side's coordinate was never negated).
+            rec["ok"] = False
+            rec["status"] = "coincident"
+            rec["note"] = "left/right parts occupy the same place — mirror offset missing"
+        symmetry.append(rec)
     if symmetry:
         report["symmetry"] = symmetry
 
@@ -2849,7 +3047,12 @@ def _compute_geometry_report(
         gap_recs: list[dict[str, Any]] = []
         spatial_recs: list[dict[str, Any]] = []
         mean_size = sum(row[5] for row in named) / len(named)
-        gap_threshold = max(mean_size, 50.0)
+        # Scale-invariant: "floating" = further from every other part than a
+        # typical part is big. The former 50 mm floor meant no detached part of
+        # a model under ~50 mm could ever be flagged, and the same geometry
+        # changed verdict when expressed 10x larger.
+        gap_threshold = mean_size
+        contact_tol = max(2 * _BBOX_ROUNDING_MM, ov_max * 1e-6)
         for i, (name, _body_id, bb1, _c1, _s1, _m1, entity1) in enumerate(named):
             min_gap = float("inf")
             nearest = None
@@ -2896,7 +3099,7 @@ def _compute_geometry_report(
                                 "or should be intentionally boolean-unioned/mated."
                             ),
                         })
-            status = "touching" if min_gap <= 0 else ("floating" if min_gap > gap_threshold else "near")
+            status = "touching" if min_gap <= contact_tol else ("floating" if min_gap > gap_threshold else "near")
             gap_recs.append({
                 "part": name,
                 "nearest": nearest,
@@ -3088,6 +3291,10 @@ def _build123d_cache_key(*, code: str, mode: str, model_kind: str) -> tuple[str,
         "mode": mode,
         "model_kind": model_kind,
         "code_sha256": hashlib.sha256(code.encode("utf-8")).hexdigest(),
+        # The injected helpers live in the runner template, so the same user code
+        # builds different geometry when a helper changes. Without this, a cache
+        # entry written by an older helper is served as current indefinitely.
+        "runner_template_sha256": _RUNNER_TEMPLATE_SHA256,
         "versions": _build123d_cache_versions(),
     }
     encoded = json.dumps(material, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -3303,7 +3510,9 @@ def _execute_build123d_cached(
             "glb_bytes": cached["glb_bytes"],
             "topo": topo,
             "feature_graph": cached["feature_graph"],
-            "geometry_report": cached.get("geometry_report") or _compute_geometry_report(topo),
+            # Recomputed, not read back: it is a cheap pure function of topo, and
+            # a stored copy is frozen at whatever the report logic was then.
+            "geometry_report": _compute_geometry_report(topo),
             "mesh_meta": mesh_meta,
             "cache_hit": True,
         }
@@ -3326,7 +3535,9 @@ def _execute_build123d_cached(
                 "glb_bytes": cached["glb_bytes"],
                 "topo": topo,
                 "feature_graph": cached["feature_graph"],
-                "geometry_report": cached.get("geometry_report") or _compute_geometry_report(topo),
+                # Recomputed, not read back: it is a cheap pure function of topo, and
+            # a stored copy is frozen at whatever the report logic was then.
+            "geometry_report": _compute_geometry_report(topo),
                 "mesh_meta": mesh_meta,
                 "cache_hit": True,
             }
@@ -3359,6 +3570,15 @@ def _execute_build123d_cached(
         "mesh_meta": mesh_meta,
         "cache_hit": False,
     }
+
+
+def _helper_adjustments_from_mesh_meta(mesh_meta: Any) -> list[dict[str, Any]]:
+    """Helper substitutions (clamped radius, skipped fillet, degraded blend) the
+    runner recorded for this build — what was built instead of what was asked."""
+    if not isinstance(mesh_meta, dict):
+        return []
+    adjustments = mesh_meta.get("helper_adjustments")
+    return [a for a in adjustments if isinstance(a, dict)] if isinstance(adjustments, list) else []
 
 
 def _finish_execute_build123d_response(
@@ -3472,6 +3692,9 @@ def _finish_execute_build123d_response(
     }
     if critique_diff is not None:
         result["critique_diff"] = critique_diff
+    adjustments = _helper_adjustments_from_mesh_meta(mesh_meta)
+    if adjustments:
+        result["helper_adjustments"] = adjustments
     if _should_render_thumbnail(payload, response_detail):
         face_colors = _build_face_colors_from_mesh_meta(mesh_meta)
         ref_aieng_file = project.get("aieng_file")
@@ -7441,6 +7664,7 @@ def execute_build123d_code(
             "new_code_sha256": new_code_hash,
             "storage_code_sha256": storage_code_hash,
             "prefix_reuse": True,
+            "runner_template_sha256": _RUNNER_TEMPLATE_SHA256,
             "versions": _build123d_cache_versions(),
         }
         encoded = json.dumps(cache_key_material, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -7466,7 +7690,7 @@ def execute_build123d_code(
                 topo=cached["topology_map"],
                 feature_graph=cached["feature_graph"],
                 mesh_meta=cached.get("mesh_meta"),
-                geometry_report_full=cached.get("geometry_report") or _compute_geometry_report(cached["topology_map"]),
+                geometry_report_full=_compute_geometry_report(cached["topology_map"]),
                 write_files=write_files,
                 response_detail=response_detail,
                 cache_hit=True,
@@ -7647,6 +7871,9 @@ def execute_build123d_code(
     # additive step worsened manufacturability vs the prior model.
     if append_critique_diff is not None:
         result["critique_diff"] = append_critique_diff
+    adjustments = _helper_adjustments_from_mesh_meta(mesh_meta)
+    if adjustments:
+        result["helper_adjustments"] = adjustments
 
     # Visual feedback loop: render a 4-view contact sheet so an agent can judge
     # silhouette and alignment, not just face/bbox numbers. When per-body
@@ -8952,6 +9179,16 @@ def _symmetry_findings(geometry_report: dict[str, Any]) -> list[dict[str, Any]]:
             residual = item.get("align_residual_mm")
             axis = item.get("mirror_axis", "?")
             residual_txt = f"{residual}mm" if residual is not None else "non-zero"
+            observation = (
+                f"{pair_label}: mirror pair is not symmetric across {axis} "
+                f"(alignment residual {residual_txt}) — likely a coordinate typo."
+            )
+            if item.get("status") == "coincident":
+                observation = (
+                    f"{pair_label}: both sides occupy the same place "
+                    f"(separation {item.get('mirror_separation_mm')}mm) — the mirror "
+                    "offset was never applied."
+                )
             out.append({
                 "id": f"sym_{counter:03d}",
                 "severity": "medium",
@@ -8959,10 +9196,7 @@ def _symmetry_findings(geometry_report: dict[str, Any]) -> list[dict[str, Any]]:
                 "rule": "broken_symmetry",
                 "feature": pair_label,
                 "feature_id": None,
-                "observation": (
-                    f"{pair_label}: mirror pair is not symmetric across {axis} "
-                    f"(alignment residual {residual_txt}) — likely a coordinate typo."
-                ),
+                "observation": observation,
                 "suggested_fix": (
                     f"Re-derive one side by mirroring the other "
                     f"(mirror(part, about=Plane.{str(axis).upper()}Z)) so the pair matches."
@@ -9889,6 +10123,11 @@ def edit_build123d_parameter(
     }
     if not thumb:
         result.pop("thumbnail_png_base64", None)
+    # An edit whose value a helper clamped reads as `identical` in the diff;
+    # this says why.
+    adjustments = _helper_adjustments_from_mesh_meta(mesh_meta)
+    if adjustments:
+        result["helper_adjustments"] = adjustments
     return result
 
 
@@ -10157,6 +10396,9 @@ def _rebuild_after_part_edit(
     }
     if not thumb:
         result.pop("thumbnail_png_base64", None)
+    adjustments = _helper_adjustments_from_mesh_meta(mesh_meta)
+    if adjustments:
+        result["helper_adjustments"] = adjustments
     return result
 
 
