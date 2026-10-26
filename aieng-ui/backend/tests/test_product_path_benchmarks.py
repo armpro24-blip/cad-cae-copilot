@@ -343,3 +343,27 @@ def test_a_force_spread_over_faces_is_shared_by_area(bench) -> None:
     loads = json.loads(_member(pkg, "simulation/cae_imports/parsed_loads.json"))["loads"]
     shares = {entry["target"].split(":", 1)[1]: entry["value_n"] for entry in loads}
     assert shares[big] == pytest.approx(800.0) and shares[small] == pytest.approx(200.0)
+    assert setup["load_share_basis"] == "area" and setup["warnings"] == []
+
+    # A face with no recorded area cannot be area-shared: the equal fallback is
+    # reported and warned about instead of passing as `status: ok` alone.
+    topo_path = "geometry/topology_map.json"
+    topology = json.loads(_member(pkg, topo_path))
+    for entity in topology["entities"]:
+        if entity.get("id") == small:
+            entity.pop("area", None)
+    members: dict[str, bytes] = {}
+    with zipfile.ZipFile(pkg) as zf:
+        for name in zf.namelist():
+            members[name] = zf.read(name)
+    members[topo_path] = json.dumps(topology).encode()
+    with zipfile.ZipFile(pkg, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, data in members.items():
+            zf.writestr(name, data)
+    fallback = bench["runtime"].invoke_tool("cae.setup_static", {
+        "project_id": pid, "material": "Al6061-T6", "fix": "left",
+        "load": {"at": f"@face:{big} @face:{small}", "force_n": 1000, "direction": "-Z"},
+    })
+    assert fallback["status"] == "ok", fallback
+    assert fallback["load_share_basis"] == "equal"
+    assert any("EQUALLY" in w for w in fallback["warnings"])

@@ -8,7 +8,9 @@ dividing by the node count. For a uniform traction on a flat triangle of area
 ``f = ∫ N^T t dA`` evaluated for the linear and quadratic triangle):
 
 - 3-node face (C3D4):  ``A/3`` at each corner;
-- 6-node face (C3D10): ``0`` at each corner, ``A/3`` at each mid-side node.
+- 6-node face (C3D10): ``0`` at each corner, ``A/3`` at each mid-side node —
+  when the face is flat; a face curved onto a hole or fillet is integrated on
+  its actual quadratic geometry instead.
 
 Dividing the total equally over every node of a quadratic face puts roughly
 four times too much force on each corner and too little on each mid-side node:
@@ -199,25 +201,78 @@ def outward_normal(facet: Facet, nodes: dict[int, Vec]) -> Vec:
     return (n[0] / mag, n[1] / mag, n[2] / mag)
 
 
+# Dunavant (1985) degree-5, 7-point rule on the unit triangle: barycentric
+# points and weights (weights sum to 1; multiply by the reference area 1/2).
+_DUNAVANT7: tuple[tuple[tuple[float, float, float], float], ...] = (
+    ((1 / 3, 1 / 3, 1 / 3), 0.225),
+    ((0.059715871789770, 0.470142064105115, 0.470142064105115), 0.132394152788506),
+    ((0.470142064105115, 0.059715871789770, 0.470142064105115), 0.132394152788506),
+    ((0.470142064105115, 0.470142064105115, 0.059715871789770), 0.132394152788506),
+    ((0.797426985353087, 0.101286507323456, 0.101286507323456), 0.125939180544827),
+    ((0.101286507323456, 0.797426985353087, 0.101286507323456), 0.125939180544827),
+    ((0.101286507323456, 0.101286507323456, 0.797426985353087), 0.125939180544827),
+)
+
+
+def _t6_nodal_integrals(facet: Facet, nodes: dict[int, Vec]) -> dict[int, float]:
+    """``∫ N_i dA`` over a 6-node face, on its ACTUAL (possibly curved) geometry.
+
+    gmsh places quadratic mid-side nodes on the CAD surface, so a face on a hole
+    or fillet is curved and the flat ``0 / A/3`` rule no longer applies. The
+    surface Jacobian ``|∂x/∂ξ × ∂x/∂η|`` is integrated with the 7-point rule;
+    on a flat, straight-sided face this reproduces ``0 / A/3`` exactly.
+    """
+    ids = list(facet.corners) + list(facet.midsides)  # mids on edges 12, 23, 31
+    xyz = [nodes[n] for n in ids]
+    # dL/dξ, dL/dη for L1 = 1 - ξ - η, L2 = ξ, L3 = η
+    dl = ((-1.0, -1.0), (1.0, 0.0), (0.0, 1.0))
+    edges = ((0, 1), (1, 2), (2, 0))
+    out = {n: 0.0 for n in ids}
+    for (l1, l2, l3), weight in _DUNAVANT7:
+        lam = (l1, l2, l3)
+        shape = [lam[k] * (2 * lam[k] - 1) for k in range(3)]
+        shape += [4 * lam[i] * lam[j] for i, j in edges]
+        grads = [
+            ((4 * lam[k] - 1) * dl[k][0], (4 * lam[k] - 1) * dl[k][1]) for k in range(3)
+        ] + [
+            (4 * (lam[j] * dl[i][0] + lam[i] * dl[j][0]),
+             4 * (lam[j] * dl[i][1] + lam[i] * dl[j][1]))
+            for i, j in edges
+        ]
+        dx_dxi = tuple(sum(g[0] * p[c] for g, p in zip(grads, xyz)) for c in range(3))
+        dx_deta = tuple(sum(g[1] * p[c] for g, p in zip(grads, xyz)) for c in range(3))
+        cx, cy, cz = _cross(dx_dxi, dx_deta)  # type: ignore[arg-type]
+        jac = (cx * cx + cy * cy + cz * cz) ** 0.5
+        for node, value in zip(ids, shape):
+            out[node] += 0.5 * weight * value * jac
+    return out
+
+
 def consistent_weights(facets: Iterable[Facet], nodes: dict[int, Vec]) -> dict[int, float]:
     """Per-node share of a uniform traction over ``facets``; shares sum to 1.
 
+    3-node faces: ``A/3`` per corner. 6-node faces: ``∫ N_i dA`` on the actual
+    quadratic surface (see :func:`_t6_nodal_integrals`) — ``0 / A/3`` when flat.
     Empty when the facets carry no area (a node set that is a point or a line
     is a concentrated load, not a traction — the caller keeps the equal split).
     """
     raw: dict[int, float] = {}
-    total = 0.0
     for facet in facets:
-        area = facet_area(facet, nodes)
-        if area <= 0.0:
+        if facet_area(facet, nodes) <= 0.0:
             continue
-        total += area
-        carriers = facet.midsides if facet.midsides else facet.corners
-        for node in carriers:
-            raw[node] = raw.get(node, 0.0) + area / 3.0
+        if facet.midsides:
+            contributions = _t6_nodal_integrals(facet, nodes)
+        else:
+            third = facet_area(facet, nodes) / 3.0
+            contributions = {n: third for n in facet.corners}
+        for node, value in contributions.items():
+            raw[node] = raw.get(node, 0.0) + value
+    total = sum(raw.values())
     if total <= 0.0:
         return {}
-    return {node: share / total for node, share in raw.items()}
+    # Tiny round-off shares on flat faces (corners of a 0 / A/3 face) are
+    # dropped so the deck does not carry 1e-17 N lines.
+    return {node: share / total for node, share in raw.items() if abs(share) > 1e-12 * total}
 
 
 def surface_area(facets: Iterable[Facet], nodes: dict[int, Vec]) -> float:

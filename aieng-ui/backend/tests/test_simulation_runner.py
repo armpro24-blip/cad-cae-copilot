@@ -1778,6 +1778,10 @@ def test_ensure_source_deck_from_mesh_synthesizes_and_is_idempotent(tmp_path: Pa
     again = ensure_source_deck_from_mesh(pkg)
     assert again["created"] is False
     assert again["status"] == "exists"
+    # A repeat call still says HOW each set was bound — `geometric_band` is an
+    # approximation, and the up-to-date return used to drop that.
+    assert result["binding_methods"]
+    assert again["binding_methods"] == result["binding_methods"]
 
 
 def test_ensure_source_deck_from_mesh_no_mesh(tmp_path: Path) -> None:

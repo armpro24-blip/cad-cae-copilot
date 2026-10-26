@@ -110,3 +110,111 @@ def test_parsed_pressure_loads_reach_the_emitter() -> None:
         [{"id": "p", "type": "pressure", "target": "S", "pressure_mpa": -10}]
     )
     assert out == [{"id": "p", "target": "S", "pressure": -10.0}]
+
+
+# ── review follow-ups (#546) ────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("raw", [None, "abc", float("nan"), float("inf"), True])
+def test_a_pressure_with_no_finite_magnitude_is_refused(raw) -> None:
+    """It used to become 0 MPa: a *DLOAD that loads nothing, invisible when any
+    other load is non-zero."""
+    load = {"id": "p_bad", "type": "pressure", "target": "S"}
+    if raw is not None:
+        load["pressure_mpa"] = raw
+    with pytest.raises(dg.DeckGenerationError, match="p_bad"):
+        dg._normalize_parsed_loads([load])
+
+
+@pytest.mark.parametrize("raw", [None, "abc", float("nan")])
+def test_the_setup_view_records_an_unusable_pressure_as_unresolved(raw) -> None:
+    import io
+    import json
+    import zipfile
+
+    from aieng.cae_setup_view import synthesize_setup_from_parsed
+
+    load = {"id": "p_bad", "type": "pressure", "target": "@face:face_001"}
+    if raw is not None:
+        load["pressure_mpa"] = raw
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zf:
+        zf.writestr("simulation/cae_imports/parsed_loads.json", json.dumps({"loads": [load]}))
+    with zipfile.ZipFile(buffer) as zf:
+        setup = synthesize_setup_from_parsed(zf)
+
+    assert setup is not None
+    assert setup["loads"] == []
+    assert any("p_bad" in item for item in setup["unresolved_targets"])
+
+
+def test_the_schema_pressure_form_requires_type_pressure() -> None:
+    import json
+    from importlib import resources
+
+    jsonschema = pytest.importorskip("jsonschema")
+    schema = json.loads(
+        resources.files("aieng.schemas").joinpath("parsed_cae_loads.schema.json").read_text()
+    )
+
+    def doc(load: dict) -> dict:
+        return {"format": "aieng.parsed_cae_loads", "format_version": "0.1.0",
+                "authored_by": "test", "loads": [load]}
+
+    jsonschema.validate(doc({"id": "p", "target": "S", "type": "pressure", "pressure_mpa": 1.0}),
+                        schema)
+    # A FORCE carrying only pressure_mpa normalises to zero force: not complete.
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(doc({"id": "p", "target": "S", "type": "force",
+                                 "pressure_mpa": 1.0}), schema)
+
+
+def test_a_curved_quadratic_face_is_integrated_on_its_real_geometry() -> None:
+    """On a face bent onto a hole the flat 0 / A/3 rule is wrong: the corners
+    carry load and the total is the CURVED area, not the chord triangle's."""
+    nodes, facets = _bottom()
+    bulged = dict(nodes)
+    for mid in (5, 6, 7):  # push the mid-side nodes off the corner plane
+        x, y, _z = bulged[mid]
+        bulged[mid] = (x, y, -0.3)
+    (facet,) = facets
+    integrals = sl._t6_nodal_integrals(facet, bulged)
+
+    # Reference: integrate |J| by brute-force subdivision of the parent triangle.
+    def position(xi: float, eta: float) -> tuple[float, float, float]:
+        l1, l2, l3 = 1 - xi - eta, xi, eta
+        shape = [l1 * (2 * l1 - 1), l2 * (2 * l2 - 1), l3 * (2 * l3 - 1),
+                 4 * l1 * l2, 4 * l2 * l3, 4 * l3 * l1]
+        ids = [1, 2, 3, 5, 6, 7]
+        return tuple(sum(s * bulged[n][c] for s, n in zip(shape, ids)) for c in range(3))
+
+    steps, area = 120, 0.0
+    h = 1.0 / steps
+    probe = sl.Facet(0, 1, (1, 2, 3), (), 4)
+    for i in range(steps):
+        for j in range(steps - i):
+            tris = [((i, j), (i + 1, j), (i, j + 1))]
+            if i + j + 1 < steps:
+                tris.append(((i + 1, j), (i + 1, j + 1), (i, j + 1)))
+            for a, b, c in tris:
+                pa, pb, pc = (position(u * h, v * h) for u, v in (a, b, c))
+                area += sl.facet_area(probe, {1: pa, 2: pb, 3: pc})
+    assert sum(integrals.values()) == pytest.approx(area, rel=1e-3)
+    assert sum(integrals.values()) > sl.facet_area(facet, bulged) * 1.01
+    assert any(abs(integrals[c]) > 1e-3 for c in (1, 2, 3))
+
+
+def test_thermal_structural_emits_heat_flux_force_and_pressure() -> None:
+    """A mechanical force used to be written as a heat flux, and a pressure was
+    refused; each now reaches the deck as itself."""
+    surfaces = dg._LoadSurfaces(_TET10)
+    block = "\n".join(dg._step_block(
+        "thermal_structural", None,
+        [{"target": "BOTTOM", "dof": 11, "value": 30.0},
+         {"target": "BOTTOM", "dof": 3, "value": -300.0},
+         {"target": "BOTTOM", "pressure": 2.5}],
+        [], surfaces,
+    ))
+    assert "*CFLUX\n5, 11, 10" in block
+    assert "*CLOAD\n5, 3, -100" in block
+    assert "*DLOAD\n1, P1, 2.5" in block

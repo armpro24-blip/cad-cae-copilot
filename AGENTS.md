@@ -957,25 +957,45 @@ follow curved boundaries by chords), and refuses with `code:
 
 **How a setup reaches the nodes.** A face's node set is the nodes of the gmsh
 mesh surfaces that make up that face (`binding_method: "mesh_surface"`), read
-from the per-CAD-surface element sets gmsh writes into `mesh.inp`; a surface
-shared by two bodies (a glued interface) is inside the material and is never
-loaded or restrained. Only when no mesh surface matches is the old tolerance
-band used (`geometric_band`, restricted to free-boundary nodes) — the band
-caught nodes up to 1.83 mm INSIDE a 10 mm bar. A total force on a face is
-applied as the **traction-consistent** nodal split over the face's element
-faces (quadratic face: corners 0, mid-sides A/3 each), not an equal share per
+from the per-CAD-surface element sets gmsh writes into `mesh.inp`; on a plane
+the matched surfaces must also add up to the face's AREA, so a flush cap of
+another solid sitting in a ring face's hole is not absorbed into it. Two
+matches are refused with NO nodes rather than approximated:
+`internal_surface` (the face is a glued interface between bodies, inside the
+material) and `ambiguous_surface` (more than one combination of surfaces fits);
+the empty set is then refused at deck generation. Only when no mesh surface
+matches at all is the old tolerance band used (`geometric_band`, restricted to
+free-boundary nodes) — the band caught nodes up to 1.83 mm INSIDE a 10 mm bar.
+`binding_methods` is returned by every source-deck synthesis, including the
+`up_to_date` one. A total force on a face is applied as the
+**traction-consistent** nodal split over the face's element faces (`∫ N_i dA`
+on the actual quadratic face: corners 0 and mid-sides A/3 when flat, the real
+integral when gmsh has curved it onto a hole or fillet), not an equal share per
 node: the equal share put the peak von Mises stress of a uniform-tension patch
 test at +295 % of the exact F/A. A **pressure** load (`type: "pressure"`,
 `pressure_mpa`, positive pushes into the face) is emitted as ccx `*DLOAD`
 face pressures and follows a curved face's normal — it is what NAFEMS LE1
-needs. `cae.setup_static` splits one force over several faces by AREA.
+needs; a pressure with no finite `pressure_mpa` is refused, never read as
+0 MPa. In a `thermal_structural` step loads are told apart by DOF: DOF 11 is a
+heat flux (`*CFLUX`), DOF 1-3 a force (`*CLOAD`), and pressure a `*DLOAD`.
+`cae.setup_static` splits one force over several faces by AREA and reports
+`load_share_basis` (`area` / `single_face` / `equal` — the last only when a
+face records no area, and then with a warning).
 `aieng-ui/backend/tests/test_product_path_benchmarks.py` gates all of this
 through the product path (patch test, cantilever, NAFEMS LE1, modal,
 conduction) in the real-ccx lane.
 
 **Not expressible yet:** a restraint or load on an EDGE or a point (NAFEMS
 LE10's `u_z = 0` on the mid-plane line of its outer edge), and a pressure in a
-thermal step.
+pure `thermal` step (refused).
+
+**Known limitation — area shares are fixed at authoring time.** The per-face
+`value_n` that `cae.setup_static` writes is each face's area share WHEN THE
+SETUP WAS AUTHORED. A later edit that resizes the faces unequally does not
+recompute it, so after an edit the split is the old one. A group with unequal
+shares is not interchangeable, so a selector rebind refuses it rather than
+shuffling the shares; re-run `cae.setup_static` after a resizing edit to
+re-split by the new areas.
 
 **Installing CalculiX.** `cae.run_solver` needs the `ccx` executable available at runtime.
 

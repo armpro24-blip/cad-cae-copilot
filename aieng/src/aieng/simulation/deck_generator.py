@@ -576,12 +576,23 @@ def _pressure_entry(load: dict[str, Any]) -> dict[str, Any]:
 
     Positive pressure pushes INTO the face (against its outward normal) — the
     CalculiX/Abaqus ``P`` convention — so a tensile edge load is negative.
+
+    A missing, non-numeric or non-finite magnitude is refused: defaulting it to
+    0 MPa emits a `*DLOAD` that loads nothing, and the all-loads-zero warning
+    cannot see it when any other load is non-zero.
     """
+    import math
+
     raw = load.get("pressure_mpa", load.get("value"))
     try:
-        pressure = float(raw)
+        pressure = float(raw) if not isinstance(raw, bool) else float("nan")
     except (TypeError, ValueError):
-        pressure = 0.0
+        pressure = float("nan")
+    if not math.isfinite(pressure):
+        raise DeckGenerationError(
+            f"Pressure load '{load.get('id', 'unknown')}' has no finite pressure_mpa "
+            f"(got {raw!r}); refusing to emit it as 0 MPa."
+        )
     return {"id": load.get("id", "unknown"), "target": load.get("target"), "pressure": pressure}
 
 
@@ -1256,11 +1267,28 @@ def _step_block(
         # the model definition; material *EXPANSION + the reference *INITIAL
         # CONDITIONS turn (T - T_ref) into thermal strain → stress. Outputs the
         # temperature (NT), displacement (U) and stress (S) fields.
+        #
+        # Both kinds of load are meaningful here, so they are told apart by DOF
+        # (AGENTS.md: a heat flux is a load on DOF 11) rather than all being
+        # read as heat: a DOF-11 load is a *CFLUX, a DOF 1-3 force a *CLOAD,
+        # and a pressure a *DLOAD. Every force used to become a heat flux.
         block = [
             f"*STEP, NAME={step_name}",
             "*UNCOUPLED TEMPERATURE-DISPLACEMENT, STEADY STATE",
         ]
-        block += _cflux_lines()
+        heat = [ld for ld in force_loads if ld.get("dof") == 11]
+        mechanical = [ld for ld in force_loads if ld.get("dof") != 11]
+        if heat:
+            block += ["*CFLUX"] + _distributed_lines(
+                heat, surfaces, warnings, dof_of=lambda _load: 11, kind="Heat flux",
+            )
+        if mechanical:
+            block += ["*CLOAD"] + _distributed_lines(
+                mechanical, surfaces, warnings,
+                dof_of=lambda load: load.get("dof", 2), kind="Load",
+            )
+        if pressure_loads:
+            block += ["*DLOAD"] + _pressure_lines(pressure_loads, surfaces)
         block += ["*NODE FILE", "NT, U", "*EL FILE", "S", "*END STEP"]
         return block
 

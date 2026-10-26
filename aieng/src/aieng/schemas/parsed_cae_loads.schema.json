@@ -84,13 +84,18 @@
             ]
           },
           {
+            "properties": {
+              "type": {
+                "const": "pressure"
+              }
+            },
             "required": [
               "type",
               "pressure_mpa"
             ]
           }
         ],
-        "$comment": "Either form is complete: `dof` + `value` is how a solver deck states a load, `value_n` + `direction` is how an engineer does, and the deck generator decomposes the latter into the former."
+        "$comment": "Each form is complete: `dof` + `value` is how a solver deck states a load, `value_n` + `direction` is how an engineer does (the deck generator decomposes it into the former), and `type: pressure` + `pressure_mpa` is a surface pressure emitted as *DLOAD."
       }
     },
     "parser": {

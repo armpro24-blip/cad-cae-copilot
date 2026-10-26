@@ -85,3 +85,73 @@ def test_inverted_quadratic_elements_are_repaired_before_the_solver_sees_them() 
     assert quality["min_scaled_jacobian"] > 0
     # Evidence the case still exercises the repair (26 inverted when measured).
     assert quality["straightened_element_count"] > 0
+
+
+# ── review follow-ups (#546) ────────────────────────────────────────────────
+
+
+def test_a_caller_without_diagnostics_cannot_receive_an_inverted_mesh(monkeypatch) -> None:
+    """The sizing and legacy solve paths pass no `quality_out`, so they could not
+    refuse on it; the mesher refuses for them instead of handing ccx the mesh."""
+    from app import simulation_runner as sr
+
+    monkeypatch.setattr(sr, "_validate_element_jacobians", lambda _gmsh: {
+        "inverted_element_count": 1, "straightened_element_count": 1,
+        "min_scaled_jacobian": -0.5, "element_count": 10,
+    })
+    box = build123d.Box(10, 10, 10)
+    with pytest.raises(sr.InvertedElementsError):
+        _mesh_without_quality(box, 5.0)
+    # A caller that asks for the diagnostics keeps the structured check.
+    _text, _nodes, quality = _mesh(box, 5.0)
+    assert quality["inverted_element_count"] == 1
+
+
+def _mesh_without_quality(part, size: float) -> None:
+    from app.simulation_runner import _mesh_with_gmsh
+
+    work = Path(tempfile.mkdtemp(prefix="aieng_binding_"))
+    step = work / "part.step"
+    build123d.export_step(part, str(step))
+    _mesh_with_gmsh(step, work, size)
+
+
+def _two_bodies(*parts) -> tuple[str, dict]:
+    compound = build123d.Compound(children=list(parts))
+    text, nodes, _ = _mesh(compound, 3.0)
+    return text, nodes
+
+
+def test_a_glued_interface_binds_nothing_rather_than_its_perimeter() -> None:
+    """Both sides of the interface are internal after the OCC fragment. The
+    band fallback used to bind the interface's PERIMETER nodes (they are also on
+    the outer boundary), so a load or restraint 'on' it looked bound."""
+    lower = build123d.Box(10, 10, 10, align=(build123d.Align.MIN,) * 3)
+    upper = build123d.Pos(0, 0, 10) * build123d.Box(10, 10, 10, align=(build123d.Align.MIN,) * 3)
+    text, nodes = _two_bodies(lower, upper)
+    interface = {"id": "f", "type": "face", "surface_type": "plane", "normal": [0, 0, 1],
+                 "center": [5, 5, 10], "bounding_box": [0, 0, 10, 10, 10, 10], "area": 100.0}
+
+    ids, method = _FaceNodeResolver(nodes, text).nodes_for_face(interface)
+
+    assert (ids, method) == ([], "internal_surface")
+
+
+def test_a_ring_face_does_not_absorb_a_flush_cap_in_its_hole() -> None:
+    """A plate's top face around a flush pin's cap: both are coplanar and inside
+    the ring's box. Their areas must add up to the face, so the cap is left out."""
+    import math
+
+    plate = build123d.Box(40, 40, 5) - build123d.Cylinder(5, 5)
+    pin = build123d.Cylinder(5, 5)
+    text, nodes = _two_bodies(plate, pin)
+    ring_area = 40 * 40 - math.pi * 25
+    ring = {"id": "f", "type": "face", "surface_type": "plane", "normal": [0, 0, 1],
+            "center": [0, 0, 2.5], "bounding_box": [-20, -20, 2.5, 20, 20, 2.5],
+            "area": round(ring_area, 4)}
+
+    ids, method = _FaceNodeResolver(nodes, text).nodes_for_face(ring)
+
+    assert method == "mesh_surface"
+    assert ids and all(abs(nodes[n][2] - 2.5) < 1e-9 for n in ids)
+    assert all(math.hypot(nodes[n][0], nodes[n][1]) > 5 - 1e-6 for n in ids)
