@@ -28,6 +28,7 @@ from aieng.converters.assembly_ir import (
     PART_REGISTRY_PATH,
 )
 from aieng.converters.topology_optimization import (
+    DEFAULT_MAX_ITERS_2D,
     build_guidance_field,
     run_topology_optimization,
     topology_result_to_shape_ir,
@@ -489,7 +490,7 @@ def derive_assembly_topopt_problem(
     volfrac: float = 0.5,
     penalty: float = 3.0,
     rmin: float = 1.5,
-    max_iters: int = 40,
+    max_iters: int = DEFAULT_MAX_ITERS_2D,
     use_result_guidance: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None]:
     """Derive assembly-aware topopt setup and optional standard optimizer problem."""
@@ -2279,7 +2280,7 @@ def write_assembly_topopt_problem(
     volfrac: float = 0.5,
     penalty: float = 3.0,
     rmin: float = 1.5,
-    max_iters: int = 40,
+    max_iters: int = DEFAULT_MAX_ITERS_2D,
     use_result_guidance: bool = False,
     emit_standard: bool = True,
 ) -> dict[str, Any]:

@@ -1549,7 +1549,7 @@ is possible).
 | `opt.sizing_sweep` | Parametric sizing sweep (approval required): vary ONE editable dimension across explicit `values` OR a `{min, max, steps/step}` range, solve each variant with real static FEA, and rank by objective. Range values are clamped to the parameter's declared min/max and the report says so (`range.clamped`, `range.requested`); a range entirely outside the bounds is refused. Each variant carries the mesh `accuracy` band; a variant that passes the constraints only on an `unreliable` mesh gets status `unreliable_mesh` and is never recommended. The report's `boundary_estimate` interpolates (log-log) where the active constraint is met between the winner and its infeasible neighbour — an estimate, not a solve; `refine_boundary=true` spends one extra solve there and that variant wins only if it solves feasible. Default is recommend-only; `apply_winner=true` applies a `safe_to_apply` winner through the audited `cad.edit_parameter` path and reports its `regression_diff`. A variant that fails to solve is reported honestly and never recommended. |
 | `opt.doe_sizing_study` | Multi-parameter DOE sizing study (approval required): jointly vary 2+ editable parameters, generate a full-factorial design (explicit values or stepped ranges) or a true Latin hypercube (`lhs`: `budget` points over each `range {min,max}`, one per stratum, seeded — the seed is reported) within a 64-point budget, solve each design point with real static FEA, and rank by objective + constraints with the same mesh-band rule as the sweep. Baseline never modified; failed points reported honestly. |
 | `opt.derive_problem_from_cae` | Derive a topology-optimization problem (grid + supports + loads + design space) from a project's CAE setup + geometry (`topology_map` faces + design-space bbox). Reads the setup **whichever path authored it** — `simulation/setup.yaml` or the key-free `simulation/cae_imports/parsed_*.json`, and in either an `@face:` pointer target, an NSET name, or a `target_feature`. Read-only; returns the problem + a `derivation` block. `dimension=2d` (default) projects supports/loads onto the plane of the two largest dims; `dimension=3d` keeps the full 3D layout (structured voxel grid, supports→boundary layers, full 3D force). **Both dimensions return `status=needs_user_input` rather than substituting a preset** when the BCs can't be mapped |
-| `opt.run_topology_optimization` | Run topology optimization (built-in self-contained SIMP, compliance-min, pure numpy — no external solver) → `analysis/topology_optimization.json`. `simp_2d` (default) or `simp_3d` (experimental structured-voxel 3D, `dimension=3d`; honest `capability` block: experimental_reference, production_ready:false). Honest coarse limitations recorded. Set `auto_derive` (or omit `problem`) to derive supports/loads/design-space from the project's CAE setup; either dimension may return `needs_user_input` instead of guessing |
+| `opt.run_topology_optimization` | Run topology optimization (built-in self-contained SIMP, compliance-min, sparse numpy/scipy — no external solver; result reports `converged` / `final_change` / `non_discreteness_percent`) → `analysis/topology_optimization.json`. `simp_2d` (default) or `simp_3d` (experimental structured-voxel 3D, `dimension=3d`; honest `capability` block: experimental_reference, production_ready:false). Honest coarse limitations recorded. Set `auto_derive` (or omit `problem`) to derive supports/loads/design-space from the project's CAE setup; either dimension may return `needs_user_input` instead of guessing |
 | `opt.writeback_to_shape_ir` | Author the optimization result back into `geometry/shape_ir.json`, then recompile through runtime routing → the optimized body meshes/views + gets verification + object_registry, linked to its `design_space_node`. 2D: `method=contour` (default) writes a marching-squares boundary as an `extruded_region` (`boundary=spline` default → closed periodic spline / CAD-friendly curve, falls back to `polygon` if it would overshoot the design-space envelope); `method=voxels` writes the blocky `density_voxels`. 3D: `method=surface` (default) writes a smooth **marching-cubes** `surface_mesh` proxy (mesh / lossy / not production CAD; falls back to `voxels` if no isosurface); `method=voxels` writes the blocky 3D `density_voxels`. Placed in the design-space frame. Default representation `brep_build123d` for 2D (analytic faces — pickable, STEP-exportable; auto-falls back to `manifold_mesh` if the B-Rep build fails); 3D defaults to `manifold_mesh` |
 | `postprocess.generate_computed_metrics` | Import metrics from CSV/JSON |
 | `postprocess.refresh_cae_summary` | Regenerate result summary + evidence markdown |
@@ -1586,6 +1586,25 @@ density field, `warnings: []`, and an `analysis/topology_optimization.json` that
 and `run_topology_optimization` itself now refuse it (`code:
 "problem_refused"`), carrying the derivation's reason forward. Ask for a preset
 problem explicitly (`bcs: {preset: "cantilever"}`) if that is what you want.
+
+The solver layer agrees: explicit `bcs.supports` / `bcs.loads` that cannot carry
+a load (no support, no load, zero force, or every loaded node also clamped) raise
+the same `problem_refused` instead of silently becoming the cantilever preset —
+reachable before by merging `problem: {bcs: {loads: []}}` over a derived problem.
+A problem with no BCs at all still solves the default preset, with a warning that
+says so.
+
+**Read `converged` before using a layout.** `simp_2d` / `simp_3d` are sparse,
+vectorized SIMP in the style of Andreassen et al. (2011) "top88" (modified SIMP,
+`Emin=1e-9`; sensitivity filter default, `filter: "density"` optional). On top88's
+own half-MBB benchmark (60x20, volfrac 0.5, penal 3, rmin 1.5) they reproduce a
+line-by-line port of `top88.m` iteration by iteration (94 iterations, c=203.19).
+That benchmark needs 94 iterations; the old cap of 40 stopped it less than halfway
+and reported the result like a finished one. The cap is now 200, and every result
+carries `converged`, `final_change`, `max_iters_reached` and
+`non_discreteness_percent` (Sigmund 2007 M_nd; 0 % = black/white). A non-converged
+run also adds a `NOT converged` warning. Measured scale: a converged 300x100 2D run
+(rmin 7.5) takes ~30 s; 3D (direct sparse solve) ~3000 voxels takes ~40 s.
 
 **`cae.setup_static` writes pointer targets, and the derivation reads them.**
 The one-call authoring path records each BC and load as

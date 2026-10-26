@@ -621,11 +621,40 @@ def test_simp_2d_explicit_bcs_solve_and_reduce_compliance():
     assert hist[-1] < hist[0] and all(h > 0 for h in hist)
 
 
-def test_simp_2d_degenerate_explicit_falls_back_to_preset():
-    # support but no load -> degenerate -> preset fallback (still solves)
-    out = simp_2d({"grid": {"nelx": 12, "nely": 6}, "volfrac": 0.5, "max_iters": 6,
-                   "bcs": {"supports": [{"cells": [[0, 0]]}], "loads": []}})
+@pytest.mark.parametrize("bcs, phrase", [
+    # support but no load
+    ({"supports": [{"cells": [[0, 0]]}], "loads": []}, "no load"),
+    # load but no support
+    ({"supports": [], "loads": [{"cells": [[5, 3]], "fy": -1.0}]}, "no support"),
+    # a zero-force load
+    ({"supports": [{"cells": [[0, 0]]}], "loads": [{"cells": [[5, 3]], "fx": 0.0, "fy": 0.0}]}, "no load"),
+    # the only loaded nodes are also clamped
+    ({"supports": [{"cells": [[5, 3]]}], "loads": [{"cells": [[5, 3]], "fy": -1.0}]}, "no load"),
+])
+def test_simp_2d_degenerate_explicit_bcs_are_refused_not_replaced(bcs, phrase):
+    """These used to fall back to the textbook cantilever preset and return a
+    density field for a problem nobody posed — the only trace was
+    ``bcs_source: preset``. A broken explicit request is refused instead."""
+    from aieng.converters.topology_optimization import TopologyProblemRefused
+    with pytest.raises(TopologyProblemRefused, match=phrase):
+        simp_2d({"grid": {"nelx": 12, "nely": 6}, "volfrac": 0.5, "max_iters": 6, "bcs": bcs})
+
+
+def test_simp_3d_degenerate_explicit_bcs_are_refused_not_replaced():
+    from aieng.converters.topology_optimization import TopologyProblemRefused
+    with pytest.raises(TopologyProblemRefused, match="no load"):
+        simp_3d({"grid": {"nx": 6, "ny": 3, "nz": 2}, "volume_fraction": 0.4, "max_iters": 4,
+                 "bcs": {"supports": [{"cells": [[0, 0, 0]]}], "loads": []}})
+
+
+def test_preset_is_visible_when_nobody_asked_for_one():
+    """No bcs at all still solves the documented default preset, but says so."""
+    out = simp_2d({"grid": {"nelx": 12, "nely": 6}, "volfrac": 0.5, "max_iters": 6})
     assert out["bcs_source"] == "preset" and out["bcs_preset"] == "cantilever"
+    assert any("textbook 'cantilever' preset" in w for w in out["warnings"])
+    asked = simp_2d({"grid": {"nelx": 12, "nely": 6}, "volfrac": 0.5, "max_iters": 6,
+                     "bcs": {"preset": "cantilever"}})
+    assert not any("preset" in w for w in asked["warnings"])
 
 
 def _write_cae_project(pkg: Path, direction: str = "[0.0, 0.0, -1.0]") -> None:
