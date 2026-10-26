@@ -176,7 +176,7 @@ def register_opt_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         _tool_opt_run_topology_optimization,
         description=(
             "Run topology optimization on a project's design space using the built-in "
-            "self-contained 2D SIMP (compliance minimization, pure numpy — no external "
+            "self-contained 2D SIMP (compliance minimization, sparse numpy/scipy — no external "
             "solver). Writes analysis/topology_optimization.json (optimizer provenance, "
             "objective history, achieved volume fraction, density grid, honest 2D/coarse "
             "limitations). Optimizer is pluggable; optimizer=precomputed accepts a density grid. "
