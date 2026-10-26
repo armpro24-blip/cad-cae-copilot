@@ -1056,47 +1056,13 @@ def generate_mesh_for_package(
             "target_size_mm": size,
         }
 
-    # Judge the mesh against the part that actually bends (the thinnest solid),
-    # not the whole-model bounding box — see thinnest_body_extent.
-    thinnest_override: tuple[float, str] | None = None
-    contradicted: _BboxContradicted | None = None
+    topology: dict[str, Any] | None = None
     try:
         topo_raw = _read_member(package_path, _TOPOLOGY_PATH)
-        if topo_raw:
-            thinnest_override = thinnest_body_extent(json.loads(topo_raw))
-    except _BboxContradicted as exc:
-        contradicted = exc
+        topology = json.loads(topo_raw) if topo_raw else None
     except Exception as exc:  # noqa: BLE001 - fall back to the bbox rule
         LOGGER.info("could not read topology for mesh accuracy: %s", exc)
-
-    if contradicted is not None:
-        through = contradicted.wall_mm / float(size) if size > 0 else 0.0
-        accuracy = {
-            "element_order": 2 if str(element_type or "").upper() in
-            {"C3D10", "C3D20", "C3D15"} else 1,
-            "element_type": element_type,
-            "band": None,
-            "reliable_for_bending": None,
-            "measured_on": "not_determined",
-            "governing_body": contradicted.body,
-            "thinnest_extent_mm": None,
-            "elements_through_thinnest": None,
-            "min_elements_required": None,
-            "wall_from_volume_mm": round(contradicted.wall_mm, 3),
-            "bbox_thinnest_mm": round(contradicted.bbox_mm, 3),
-            "reason": (
-                f"Cannot judge bending accuracy for {contradicted.body}: its "
-                f"bounding box is {contradicted.bbox_mm:.3g} mm across the thin "
-                f"direction, but its volume implies a wall of about "
-                f"{contradicted.wall_mm:.3g} mm — the box is the OUTER envelope "
-                "of a hollow or highly non-convex body, not a wall. At this mesh "
-                f"size that wall would carry roughly {through:.1f} element(s). "
-                "Treat the stress as unverified and run cae.mesh_convergence."
-            ),
-            "recommended_action": "cae.mesh_convergence",
-        }
-    else:
-        accuracy = assess_mesh_accuracy(nodes, element_type, size, thinnest_override)
+    accuracy = judge_mesh_accuracy(nodes, element_type, size, topology)
 
     metadata = {
         "schema_version": "0.1",
@@ -1147,6 +1113,62 @@ def generate_mesh_for_package(
             MESH_METADATA_PATH,
         ],
     }
+
+
+def judge_mesh_accuracy(
+    nodes: dict[int, tuple[float, float, float]],
+    element_type: str | None,
+    size: float,
+    topology: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """The ``accuracy`` block for a mesh, judged against the thinnest SOLID.
+
+    Shared by ``generate_mesh_for_package`` and ``solve_package_static`` so a
+    batch solve (sizing sweep, DOE) reports the same band ``cae.generate_mesh``
+    would — a sweep at one mesh size gives its THINNEST variant the fewest
+    elements through the thickness, so that is where the band matters most.
+    """
+    # Judge the mesh against the part that actually bends (the thinnest solid),
+    # not the whole-model bounding box — see thinnest_body_extent.
+    thinnest_override: tuple[float, str] | None = None
+    contradicted: _BboxContradicted | None = None
+    try:
+        if topology:
+            thinnest_override = thinnest_body_extent(topology)
+    except _BboxContradicted as exc:
+        contradicted = exc
+    except Exception as exc:  # noqa: BLE001 - fall back to the bbox rule
+        LOGGER.info("could not read topology for mesh accuracy: %s", exc)
+
+    if contradicted is not None:
+        through = contradicted.wall_mm / float(size) if size > 0 else 0.0
+        accuracy = {
+            "element_order": 2 if str(element_type or "").upper() in
+            {"C3D10", "C3D20", "C3D15"} else 1,
+            "element_type": element_type,
+            "band": None,
+            "reliable_for_bending": None,
+            "measured_on": "not_determined",
+            "governing_body": contradicted.body,
+            "thinnest_extent_mm": None,
+            "elements_through_thinnest": None,
+            "min_elements_required": None,
+            "wall_from_volume_mm": round(contradicted.wall_mm, 3),
+            "bbox_thinnest_mm": round(contradicted.bbox_mm, 3),
+            "reason": (
+                f"Cannot judge bending accuracy for {contradicted.body}: its "
+                f"bounding box is {contradicted.bbox_mm:.3g} mm across the thin "
+                f"direction, but its volume implies a wall of about "
+                f"{contradicted.wall_mm:.3g} mm — the box is the OUTER envelope "
+                "of a hollow or highly non-convex body, not a wall. At this mesh "
+                f"size that wall would carry roughly {through:.1f} element(s). "
+                "Treat the stress as unverified and run cae.mesh_convergence."
+            ),
+            "recommended_action": "cae.mesh_convergence",
+        }
+    else:
+        accuracy = assess_mesh_accuracy(nodes, element_type, size, thinnest_override)
+    return accuracy
 
 
 # ── Source solver deck synthesis (close the decoupled MCP solve loop) ─────────
@@ -2439,6 +2461,15 @@ def solve_package_static(
     Degrades honestly (``solver_executed=False`` + a reason) when Gmsh/ccx are
     unavailable, the setup is missing, face references are stale, or the solve
     fails — it never reports an unsolved variant as success.
+
+    The setup is normalized first (``normalize_cae_bindings``, the same step
+    deck generation runs) on a throwaway COPY, so the caller's package is still
+    never written. Without it, a setup authored by ``cae.setup_static`` — whose
+    targets are ``@face:`` pointers with no ``cae_mapping.json`` — reached
+    CalculiX as ``*CLOAD`` on an undefined set ``@FACE:FACE_002``: measured on a
+    100 x 20 mm cantilever, every variant of ``opt.sizing_sweep`` and every
+    point of ``opt.doe_sizing_study`` aborted with code 201, and the sweep then
+    blamed the MESH and suggested a finer one.
     """
     package_path = Path(package_path)
     tools = check_simulation_tools()
@@ -2450,7 +2481,33 @@ def solve_package_static(
             "warnings": [],
             "error": f"required tools unavailable: {', '.join(tools['missing'])}",
         }
+    with tempfile.TemporaryDirectory(prefix="aieng_solve_pkg_") as pkg_tmp:
+        work_pkg = Path(pkg_tmp) / "package.aieng"
+        shutil.copy2(package_path, work_pkg)
+        normalize_cae_bindings(work_pkg)
+        work_baseline: Path | None = None
+        if baseline_package_path is not None:
+            work_baseline = Path(pkg_tmp) / "baseline.aieng"
+            shutil.copy2(Path(baseline_package_path), work_baseline)
+            normalize_cae_bindings(work_baseline)
+        return _solve_package_static_normalized(
+            work_pkg,
+            mesh_size_mm=mesh_size_mm,
+            timeout=timeout,
+            rebind_faces=rebind_faces,
+            baseline_package_path=work_baseline,
+        )
 
+
+def _solve_package_static_normalized(
+    package_path: Path,
+    *,
+    mesh_size_mm: float | None,
+    timeout: int,
+    rebind_faces: bool,
+    baseline_package_path: Path | None,
+) -> dict[str, Any]:
+    """``solve_package_static`` on a package whose CAE bindings are normalized."""
     setup_raw = _read_member(package_path, "simulation/setup.yaml")
     setup = yaml.safe_load(setup_raw) if setup_raw else None
     if not setup:
@@ -2537,6 +2594,10 @@ def solve_package_static(
         try:
             mesh_inp = _mesh_with_gmsh(step_path, work, size)
             nodes = _parse_inp_nodes(mesh_inp)
+            elements = _parse_inp_elements(mesh_inp)
+            mesh_accuracy = judge_mesh_accuracy(
+                nodes, elements[0]["type"] if elements else None, size, topology
+            )
             nsets = _build_nsets(nodes, topology, cae_mapping)
             unresolved = _unresolved_bc_load_faces(setup, cae_mapping, nsets)
             if unresolved:
@@ -2556,16 +2617,20 @@ def solve_package_static(
             )
             deck_inp = work / "aieng_run.inp"
             deck_inp.write_text(deck_text)
-            returncode, _solver_log, frd_path = _run_calculix(deck_inp, work, timeout=timeout)
+            returncode, solver_log, frd_path = _run_calculix(deck_inp, work, timeout=timeout)
         except Exception as exc:  # noqa: BLE001
             return {
                 "solver_executed": False, "status": "solve_error", "metrics": {}, "warnings": [],
                 "error": f"{type(exc).__name__}: {exc}",
             }
         if returncode != 0 or not frd_path:
+            # Say WHY: the log was discarded, so an undefined-set deck error and
+            # a mesh CalculiX rejects read identically to the caller.
             return {
                 "solver_executed": False, "status": "solver_error", "metrics": {}, "warnings": [],
                 "error": f"CalculiX returned code {returncode} or produced no FRD",
+                "solver_diagnosis": _diagnose_solver_log(solver_log),
+                "mesh_accuracy": mesh_accuracy,
             }
         extracted = _extract_metrics(frd_path)
 
@@ -2578,6 +2643,9 @@ def solve_package_static(
         # Full computed_metrics doc (carries metrics_source.software=CalculiX) — used
         # by the design-study candidate solver to write candidate-local results.
         "computed_metrics": extracted,
+        # The band `cae.generate_mesh` would report for this mesh — without it a
+        # batch caller cannot tell a trustworthy stress from an under-predicted one.
+        "mesh_accuracy": mesh_accuracy,
         "warnings": deck_warnings + (extracted.get("warnings") or []),
     }
 
