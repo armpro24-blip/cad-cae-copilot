@@ -344,7 +344,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "volfrac": {"type": "number", "description": "Target volume fraction (default 0.5; 0.3 for 3d)."},
             "penalty": {"type": "number", "description": "SIMP penalization exponent (default 3.0)."},
             "rmin": {"type": "number", "description": "Sensitivity filter radius in cells (default 1.5)."},
-            "max_iters": {"type": "integer", "description": "Optimizer iteration cap (default 40; 30 for 3d)."},
+            "max_iters": {"type": "integer", "description": "Optimizer iteration cap (default 200, 2d and 3d). The result reports converged / final_change / max_iters_reached, so a truncated run is visible."},
             "design_space_node": {"type": "string", "description": "Body to optimize (default: the largest single solid). Pass 'whole_model' for the envelope spanning every body — needed when the load enters through a different part. A refusal lists the valid names in design_space_candidates."},
         },
         "additionalProperties": True,
