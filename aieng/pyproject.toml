@@ -49,6 +49,11 @@ classifiers = [
 dependencies = [
   "jsonschema>=4.0",
   "pyyaml>=6.0",
+  # numpy was imported at module level by a dozen core modules without being
+  # declared. scipy: the built-in SIMP topology optimizers assemble and solve
+  # SPARSE stiffness systems (a dense 200x100 2D grid needs ~13 GB).
+  "numpy>=1.24",
+  "scipy>=1.10",
 ]
 
 [project.urls]
