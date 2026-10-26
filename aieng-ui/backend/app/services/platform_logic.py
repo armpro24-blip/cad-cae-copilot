@@ -1133,6 +1133,7 @@ def _extract_frd_field_data(
             canonical_field_name,
             derive_displacement_value,
             derive_stress_value,
+            stress_tensor_from_frd,
         )
 
         fields = parse_frd_steps(temp_frd)
@@ -1153,10 +1154,23 @@ def _extract_frd_field_data(
         # CalculiX names the stress field "STRESS"; some exports use "S".
         stress_steps = fields.get("S") or fields.get("STRESS") or []
 
-        step_index = _frd_step_index_from_load_case_id(
-            load_case_id,
-            max(len(stress_steps), len(fields.get("DISP", [])), 1),
-        )
+        n_steps = max(len(stress_steps), len(fields.get("DISP", [])), 1)
+        step_index = _frd_step_index_from_load_case_id(load_case_id, n_steps)
+        # The id is clamped / defaulted so the viewer still gets a field, but the
+        # response echoes the REQUESTED id — so say when the step shown is not
+        # the one asked for, instead of serving another step under its name.
+        if load_case_id:
+            if not re.search(r"(\d+)\s*$", load_case_id):
+                warnings.append(
+                    f"Load case {load_case_id!r} names no step number; showing FRD step 1."
+                )
+            else:
+                requested = _frd_step_index_from_load_case_id(load_case_id, 10**9)
+                if requested != step_index:
+                    warnings.append(
+                        f"Load case {load_case_id!r} asks for FRD step {requested + 1}, "
+                        f"but the result has {n_steps}; showing step {step_index + 1}."
+                    )
 
         if meta["source"] == "stress":
             s_steps = stress_steps
@@ -1172,10 +1186,16 @@ def _extract_frd_field_data(
                         "Material yield strength unknown — safety-factor field unavailable."
                     )
                     return None
+            components = s_field.get("components")
             for nid, vals in s_field["node_data"].items():
                 if nid not in coords:
                     continue
-                v = derive_stress_value(name, tuple(vals[:6]), yield_strength=yield_strength)
+                # By component NAME: ccx writes SXY,SYZ,SZX, and reading the
+                # last two positionally as Sxz,Syz corrupts the principals.
+                tensor = stress_tensor_from_frd(components, vals)
+                if tensor is None:
+                    continue
+                v = derive_stress_value(name, tensor, yield_strength=yield_strength)
                 if v is not None:
                     values[nid] = v
         else:  # displacement
