@@ -935,13 +935,47 @@ thin-walled part, which is the shape `housing()` is for.
 
 The check is a **contradiction between two proxies**, not a shape classifier:
 `2 x volume / area` is the wall thickness of a thin shell, and when it falls
-below half the box's smallest side the box cannot be a wall. The housing lands
-at 2.92 mm against 40 mm (ratio 0.07) and is refused; a slender beam (6.32 vs
-10) and a tapered gusset (3.75 vs 6) both land at 0.63 and keep their box
-verdict, because `2V/A` conflates taper with hollowness and would mis-rule
-them. Neither proxy is trusted for the refused case — the response reports both
+below half of what the SAME box would give if it were solid
+(`1 / (1/dx + 1/dy + 1/dz)`) the box cannot be a wall. The housing lands at
+2.92 mm against 18.5 mm (ratio 0.16) and is refused; any solid box scores 1, a
+slender beam ~1 and a tapered gusset 0.84, and they keep their box verdict.
+(Comparing with the box's smallest side instead refused every chunky solid —
+a square bar's `2V/A` is half its side, a cube's a third: a 200 x 20 x 20 mm
+cantilever got `band: null`.) Neither proxy is trusted for the refused case — the response reports both
 numbers and points at `cae.mesh_convergence`. A body with no recorded volume
 keeps the old behaviour: absent evidence is not evidence of hollowness.
+
+**Inverted elements are repaired or refused at mesh time.** `setOrder(2)`
+curves boundary mid-side nodes onto the CAD surface, and next to small holes
+and fillets that can fold an element inside out — measured on a plate with M3
+holes and 1 mm fillets: 26 inverted tets at a 3 mm mesh, `cae.generate_mesh`
+reported success, and ccx aborted with `nonpositive jacobian`. The mesher now
+checks gmsh's scaled Jacobian (`quality.jacobian`), gives any inverted
+quadratic element straight edges (`straightened_element_count`; those elements
+follow curved boundaries by chords), and refuses with `code:
+"inverted_elements"` if any remain.
+
+**How a setup reaches the nodes.** A face's node set is the nodes of the gmsh
+mesh surfaces that make up that face (`binding_method: "mesh_surface"`), read
+from the per-CAD-surface element sets gmsh writes into `mesh.inp`; a surface
+shared by two bodies (a glued interface) is inside the material and is never
+loaded or restrained. Only when no mesh surface matches is the old tolerance
+band used (`geometric_band`, restricted to free-boundary nodes) — the band
+caught nodes up to 1.83 mm INSIDE a 10 mm bar. A total force on a face is
+applied as the **traction-consistent** nodal split over the face's element
+faces (quadratic face: corners 0, mid-sides A/3 each), not an equal share per
+node: the equal share put the peak von Mises stress of a uniform-tension patch
+test at +295 % of the exact F/A. A **pressure** load (`type: "pressure"`,
+`pressure_mpa`, positive pushes into the face) is emitted as ccx `*DLOAD`
+face pressures and follows a curved face's normal — it is what NAFEMS LE1
+needs. `cae.setup_static` splits one force over several faces by AREA.
+`aieng-ui/backend/tests/test_product_path_benchmarks.py` gates all of this
+through the product path (patch test, cantilever, NAFEMS LE1, modal,
+conduction) in the real-ccx lane.
+
+**Not expressible yet:** a restraint or load on an EDGE or a point (NAFEMS
+LE10's `u_z = 0` on the mid-plane line of its outer edge), and a pressure in a
+thermal step.
 
 **Installing CalculiX.** `cae.run_solver` needs the `ccx` executable available at runtime.
 
@@ -1222,11 +1256,12 @@ suitable for a fixed support, pass `"faceId": "f_top_001"` in your CAE setup cal
 (`bspline`, `bezier`, `sphere`, `cone`, `torus`, `surface_of_revolution`,
 `surface_of_extrusion`, or `freeform`) and carry `freeform: true`, `uv_bounds`
 when available, and a *proxy* normal sampled at the face midpoint. That is
-enough to pick them and bind an approximate CAE boundary condition, but the
-node-mapping is a tangent-plane band, not the exact curved surface. For accurate
-fixtures/loads prefer **planar faces** (a `rounded_box` keeps its flat faces as
-true planes with exact normals). This is also good engineering practice —
-fixture and load on flat interfaces.
+enough to pick them and bind a CAE boundary condition. The node mapping is
+exact when exactly one mesh surface spans the face's bounding box
+(`binding_method: "mesh_surface"`); otherwise it falls back to a tangent-plane
+band around the proxy normal (`geometric_band`), which is approximate — read
+`binding_methods` in the source-deck synthesis result. Planar faces remain the
+safest fixture/load interfaces.
 
 ---
 

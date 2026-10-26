@@ -48,6 +48,18 @@ TARGETS: dict[str, PytestTarget] = {
     # ordinary lanes because a skip here must not read as a pass — an
     # acceptance run that quietly does not run is the failure it exists to
     # catch.
+    # Closed-form and NAFEMS references solved through the PRODUCT path
+    # (build123d -> setup tools -> gmsh C3D10 -> deck generator -> ccx). The
+    # "nafems" target above solves hand-written decks and cannot see a defect
+    # in meshing, face binding or load distribution.
+    "benchmarks": PytestTarget(
+        label="Product-path benchmarks: patch test, cantilever, NAFEMS LE1, modal, conduction",
+        args=(
+            "aieng-ui/backend/tests/test_product_path_benchmarks.py",
+            "aieng-ui/backend/tests/test_face_binding_exact.py",
+            "-q",
+        ),
+    ),
     "acceptance": PytestTarget(
         label="Acceptance: edit -> re-solve -> compare -> export",
         args=("aieng-ui/backend/tests/test_acceptance_edit_resolve_compare.py", "-q"),
