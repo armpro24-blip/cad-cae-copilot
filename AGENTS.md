@@ -467,9 +467,16 @@ ratios far more reliably than low-res 3D renders):
 - `parts[].ratio_to_largest` — each named part's size relative to the biggest part.
 - `symmetry[]` — for left/right name pairs (`arm_L`/`arm_R`, `motor_pod_FL`/`FR`):
   `ok:false` = the pair is NOT symmetric (fix the coordinates); `align_residual_mm`
-  is how far off the mirror is; `status:missing_partner` = you named one side only.
-- `gaps[]` — `status:floating` flags a detached part (usually a coordinate typo);
-  `touching` = parts connect as intended; `floating_parts` lists all detached ones.
+  is how far off the mirror is; `status:missing_partner` = you named one side only;
+  `status:coincident` = both sides sit in the same place (the side coordinate was
+  never negated). Size and coincidence are judged at 2% of the pair's own size,
+  alignment at 2% of the model size — no absolute floor beyond the 1e-4 mm
+  rounding of the stored bounding boxes.
+- `gaps[]` — `status:floating` flags a part further from every other part than
+  the mean part size (usually a coordinate typo); `near` = detached but closer
+  than that (any visible gap — a joint you meant to close is still open);
+  `touching` = bounding boxes meet; `floating_parts` lists the floating ones.
+  All thresholds are relative, so the verdict does not depend on unit scale.
 Cite specific numbers when iterating ("arm ratio_to_largest=0.5, too short → 0.7")
 — this converts proportion judgment from eyeballing into a convergence metric.
 
@@ -631,8 +638,8 @@ failed builds. Each takes `label=` / `color=` and returns a `Part`:
 | `tapered_cylinder(r_bot, r_top, h)` | necks, nozzles, tapered legs | — |
 | `swept_tube(path_points, radius)` | pipes, handles, exhausts, cables | `path_points` = list of `(x,y,z)` |
 | `revolved_profile(profile_points)` | bottles, vases, wheels, axisymmetric | `profile_points` = list of `(r, z)`, auto-closed to Z axis |
-| `organic_blend(solids, radius)` | merge parts into ONE smooth body | fuses + fillets the joins; auto-degrades radius if infeasible |
-| `naca_airfoil(chord, thickness, span=)` | wings, fins, blades, struts | symmetric NACA00xx section extruded along Y (`span` default = chord); `loft` two for a tapered wing |
+| `organic_blend(solids, radius)` | merge parts into ONE smooth body | fuses + fillets the joins; auto-degrades radius if infeasible — reported in `helper_adjustments` |
+| `naca_airfoil(chord, thickness, span=)` | wings, fins, blades, struts | symmetric NACA 4-digit section (Abbott & von Doenhoff thickness equation, open TE), chord +X from the leading edge at X=0, extruded along **+Y** from Y=0 (`span` default = chord); `loft` two for a tapered wing |
 | `fuselage_profile(length, max_diameter, nose_frac=, tail_frac=)` | aircraft/rocket bodies, pods | revolved body: rounded nose, constant mid, tapered tail (axis = Z) |
 | `wheel(rim_radius, tire_radius, width)` | vehicle wheels, pulleys, rollers | disc with central axle bore; outer radius = `rim_radius + tire_radius`, axis = Z |
 | `ribbed_plate(length, width, thickness, rib_count=, rib_height=)` | brackets, base plates, panels | flat plate + N stiffening ribs on top; bottom at Z=0 |
@@ -640,7 +647,7 @@ failed builds. Each takes `label=` / `color=` and returns a `Part`:
 | `hex_prism(across_flats, height, axis=)` | nut blanks, hex standoffs, hex stock | hexagonal prism; `across_flats` = wrench size (flat-to-flat) |
 | `chamfered_box(length, width, height, chamfer_size, edges=)` | machined enclosures/housings with broken edges | angular counterpart to `rounded_box`; `edges="all"` or `"vertical"` |
 | `l_bracket(length, width, height, thickness, fillet_radius=)` | L-shaped mounting brackets/angles | base plate (+X) + vertical wall (+Z) joined at X=0; optional rounded interior corner; bottom at Z=0 |
-| `housing(length, width, height, wall=, fillet_radius=, open_top=, floor=)` | gearbox/pump bodies, electronics enclosures, valve bodies | designed shell (vs raw `Box−Box`): `wall`-thick walls + **broken (filleted) outer edges**, optional open top (cover mates there) + solid floor; bottom at Z=0 |
+| `housing(length, width, height, wall=, fillet_radius=, open_top=, floor=)` | gearbox/pump bodies, electronics enclosures, valve bodies | designed shell (vs raw `Box−Box`): `wall`-thick walls (corners included — the cavity corners are rounded at `fillet_radius − wall`) + **broken (filleted) outer edges**, optional open top (cover mates there) + solid floor; bottom at Z=0 |
 | `boss(diameter, height, hole_dia=, axis=)` | bearing seats, screw/insert bosses, standoffs | cylinder + optional concentric bore; base at origin along `axis`. Union onto a wall for a bearing seat (bore = bearing OD) |
 | `rib(length, height, thickness, fillet_radius=)` | stiffening gussets where a wall meets a plate | right-triangle gusset in X-Z (thickness on Y, centred); right angle at origin, legs +X / +Z |
 | `mounting_tab(length, width, thickness, hole_dia, fillet_radius=)` | mounting feet/lugs on a housing | flat plate, rounded outer corners + central bolt hole; bottom at Z=0 |
@@ -648,6 +655,20 @@ failed builds. Each takes `label=` / `color=` and returns a `Part`:
 | `offset_from(part, ref, dx=, dy=, dz=)` | place a part at a known offset | part center at `ref` center + (dx,dy,dz) |
 | `coaxial(part, ref, axis=)` | shaft-in-bore / boss-on-hole alignment | matches the two cross-axis center coords to `ref` (keeps position along `axis`); validate with a `concentric` mate |
 | `stack_on(part, ref, gap=, center=)` | cover on a housing, part on a face | part's bottom sits on `ref`'s top (+Z) + `gap`, XY-centered; validate with a `coincident` mate |
+
+**Impossible inputs are refused; substitutions are reported.** A non-positive
+or contradictory dimension (`tube(..., length=0)`, `mounting_tab` with
+`hole_dia >= min(length, width)`, `naca_airfoil` with `thickness >= chord`, …)
+raises a `ValueError` naming the parameter, instead of an anonymous OCCT
+exception or — as several did — a zero-volume, mirrored, or hole-less solid.
+When a helper builds something other than what was asked because the request
+is geometrically tight (a radius clamped below half the smallest side, a fillet
+that OCCT could not make, an `organic_blend` that fell back to a smaller radius
+or left the join unfilleted), the build still succeeds and the response carries
+`helper_adjustments: [{helper, label, parameter, requested, applied, reason}]`
+(on `cad.execute_build123d`, `cad.edit_parameter`, `cad.replace_part` and
+`cad.remove_part`). An edit whose new value a helper clamped reads as
+`identical` in `regression_diff`; this is where it says why.
 
 ```python
 # A humanoid torso + symmetric arms + blended head — no BuildSketch boilerplate:
