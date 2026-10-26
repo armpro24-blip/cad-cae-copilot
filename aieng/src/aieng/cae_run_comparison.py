@@ -388,6 +388,9 @@ def compare_runs(
                     staged,
                     source_files=[run["frd_member"]],
                     run_id=run["run_id"],
+                    # So buckling mode shapes are compared as buckling factors,
+                    # not as "mm" and "MPa" of a normalised eigenvector.
+                    analysis_type=run.get("analysis_type"),
                 )
                 for warning in metrics.get("warnings") or []:
                     warnings.append(f"{run['run_id']}: {warning}")
