@@ -21,6 +21,7 @@ the ``aieng`` core and the ``aieng-ui`` backend can use it.
 """
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from .credibility import classify_credibility
@@ -37,6 +38,41 @@ STATUS_FEASIBLE = "feasible"      # solved, objective known, all constraints sat
 STATUS_INFEASIBLE = "infeasible"  # solved but a constraint is violated
 STATUS_UNKNOWN = "unknown"        # solved but a needed metric is missing (never a false pass)
 STATUS_ERROR = "error"            # variant did not solve / errored
+# Solved and inside every constraint — but on a mesh whose accuracy band is
+# "unreliable". Such a mesh under-predicts stress and displacement (too stiff),
+# so "inside the constraint" is exactly the verdict it cannot support. In a
+# min-mass sweep at one mesh size the thinnest variant has the fewest elements
+# through its thickness, so without this status the variant most likely to be
+# wrong is also the one most likely to win.
+STATUS_UNRELIABLE_MESH = "unreliable_mesh"
+
+# Evaluator fields carried through ranking unchanged (diagnostics, not scores).
+_PASSTHROUGH_KEYS = (
+    "parameters", "likely_cause", "suggested_retry", "mesh_accuracy", "solve_status",
+    "solver_diagnosis", "origin", "solver_retry",
+)
+
+
+def _positive_finite(name: str, value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be a number, got {value!r}")
+    number = float(value)
+    if not math.isfinite(number) or number <= 0:
+        raise ValueError(f"{name} must be a positive finite number, got {value!r}")
+    return number
+
+
+def _mesh_band(variant: dict[str, Any]) -> tuple[str | None, bool | None]:
+    """(band, judged) from a variant's ``mesh_accuracy`` block; (None, None) if absent."""
+    accuracy = variant.get("mesh_accuracy")
+    if not isinstance(accuracy, dict):
+        return None, None
+    band = accuracy.get("band")
+    if band is None:
+        # `measured_on: not_determined` = the mesher recorded it could NOT judge
+        # (hollow body). That qualifies the claim; it is not a downgrade.
+        return None, False if accuracy.get("measured_on") == "not_determined" else None
+    return str(band), True
 
 
 def extract_static_metrics(computed_metrics: dict[str, Any] | None) -> dict[str, float | None]:
@@ -88,7 +124,13 @@ def _evaluate_variant(
     solver_executed = bool(variant.get("solver_executed"))
     error = variant.get("error")
 
-    credibility = classify_credibility("solver", solver_executed=solver_executed)
+    band, judged = _mesh_band(variant)
+    credibility = classify_credibility(
+        "solver",
+        solver_executed=solver_executed,
+        mesh_accuracy_band=band,
+        mesh_accuracy_judged=judged,
+    )
 
     entry: dict[str, Any] = {
         "value": value,
@@ -96,6 +138,9 @@ def _evaluate_variant(
         "solver_executed": solver_executed,
         "credibility": credibility,
     }
+    for key in _PASSTHROUGH_KEYS:
+        if variant.get(key) is not None:
+            entry[key] = variant[key]
 
     if error or not solver_executed:
         entry["status"] = STATUS_ERROR
@@ -133,6 +178,17 @@ def _evaluate_variant(
     if violations:
         entry["status"] = STATUS_INFEASIBLE
         entry["reason"] = "; ".join(violations)
+        # An unreliable mesh is too stiff: the true stress/displacement are
+        # HIGHER, so a violation it reports still holds. Only a pass is suspect.
+    elif band == "unreliable":
+        entry["status"] = STATUS_UNRELIABLE_MESH
+        action = (variant.get("mesh_accuracy") or {}).get("recommended_action")
+        entry["reason"] = (
+            "constraints satisfied on a mesh whose accuracy band is 'unreliable' — "
+            "stress and displacement are likely UNDER-predicted, so the pass is not "
+            "evidence; not recommendable"
+            + (f" ({action})" if action else "")
+        )
     else:
         entry["status"] = STATUS_FEASIBLE
         entry["reason"] = "all constraints satisfied"
@@ -167,11 +223,25 @@ def rank_sizing_sweep(
         objective ascending), ``feasible_count``, ``recommended`` value, an honest
         ``credibility`` stamp, and ``safe_to_apply`` (true only when the
         recommendation is feasible AND solver-verified). Never mutates anything.
+
+    Raises:
+        ValueError: an unknown ``objective``, a non-positive or non-finite
+            ``safety_factor``, or a non-positive / non-finite limit. These used
+            to be replaced silently (``min_mass``, ``1.0``), so a caller asking
+            for SF 0 — or a typo'd objective — got a different study than it
+            asked for, reported as the one it asked for.
     """
-    objective = objective if objective in _OBJECTIVE_METRIC else "min_mass"
+    if objective not in _OBJECTIVE_METRIC:
+        raise ValueError(
+            f"unknown objective {objective!r}; expected one of {sorted(_OBJECTIVE_METRIC)}"
+        )
     objective_metric = _OBJECTIVE_METRIC[objective]
-    sf = safety_factor if isinstance(safety_factor, (int, float)) and safety_factor > 0 else 1.0
-    allowable_stress = (stress_limit / sf) if isinstance(stress_limit, (int, float)) else None
+    sf = _positive_finite("safety_factor", safety_factor)
+    allowable_stress = (
+        _positive_finite("stress_limit", stress_limit) / sf if stress_limit is not None else None
+    )
+    if displacement_limit is not None:
+        displacement_limit = _positive_finite("displacement_limit", displacement_limit)
 
     evaluated = [
         _evaluate_variant(
@@ -183,8 +253,12 @@ def rank_sizing_sweep(
         for v in variants
     ]
 
-    # Stable ordering: feasible (by objective asc) → infeasible → unknown → error.
-    status_order = {STATUS_FEASIBLE: 0, STATUS_INFEASIBLE: 1, STATUS_UNKNOWN: 2, STATUS_ERROR: 3}
+    # Stable ordering: feasible (by objective asc) → unreliable-mesh pass →
+    # infeasible → unknown → error.
+    status_order = {
+        STATUS_FEASIBLE: 0, STATUS_UNRELIABLE_MESH: 1, STATUS_INFEASIBLE: 2,
+        STATUS_UNKNOWN: 3, STATUS_ERROR: 4,
+    }
 
     def _sort_key(e: dict[str, Any]) -> tuple[int, float]:
         primary = status_order.get(e["status"], 4)
@@ -196,6 +270,7 @@ def rank_sizing_sweep(
         e["rank"] = i + 1
 
     feasible = [e for e in ranked if e["status"] == STATUS_FEASIBLE]
+    unreliable = [e for e in ranked if e["status"] == STATUS_UNRELIABLE_MESH]
     recommended = feasible[0] if feasible else None
     all_solved = bool(evaluated) and all(e["solver_executed"] for e in evaluated)
 
@@ -205,9 +280,24 @@ def rank_sizing_sweep(
             f"({objective_metric}={recommended.get('objective_value')}) among "
             f"{len(feasible)} feasible variant(s)"
         )
+        if unreliable and any(
+            (e.get("objective_value") or 0) < (recommended.get("objective_value") or 0)
+            for e in unreliable
+        ):
+            recommendation_reason += (
+                f"; {len(unreliable)} better-scoring variant(s) passed only on an "
+                "unreliable mesh and were not considered — re-run them on a finer mesh"
+            )
         safe_to_apply = recommended["solver_executed"]
     elif not evaluated:
         recommendation_reason = "no variants supplied"
+        safe_to_apply = False
+    elif unreliable:
+        recommendation_reason = (
+            f"no recommendable variant — {len(unreliable)} variant(s) satisfied the "
+            "constraints only on a mesh whose accuracy band is 'unreliable' (stress "
+            "likely under-predicted); re-run the sweep with a smaller mesh_size_mm"
+        )
         safe_to_apply = False
     elif any(e["status"] in (STATUS_INFEASIBLE, STATUS_FEASIBLE) for e in evaluated):
         recommendation_reason = (
@@ -222,10 +312,20 @@ def rank_sizing_sweep(
         )
         safe_to_apply = False
 
-    # Overall credibility: executed only when every variant actually solved.
+    # Overall credibility: executed only when every variant actually solved, and
+    # no better than the mesh the recommendation stands on (or, with no
+    # recommendation, than the unreliable pass that blocked one).
+    if recommended is not None:
+        band, judged = _mesh_band(recommended)
+    elif unreliable:
+        band, judged = "unreliable", True
+    else:
+        band, judged = None, None
     overall_credibility = classify_credibility(
         "solver",
         solver_executed=all_solved,
+        mesh_accuracy_band=band,
+        mesh_accuracy_judged=judged,
         notes=None if all_solved else "one or more variants did not produce solver metrics",
     )
 
@@ -242,6 +342,7 @@ def rank_sizing_sweep(
         "variants": ranked,
         "variant_count": len(ranked),
         "feasible_count": len(feasible),
+        "unreliable_mesh_count": len(unreliable),
         "recommended": recommended,
         "recommendation_reason": recommendation_reason,
         "safe_to_apply": safe_to_apply,
@@ -251,4 +352,110 @@ def rank_sizing_sweep(
             "baseline_modified": False,
             "production_ready": False,
         },
+    }
+
+
+def estimate_constraint_boundary(report: dict[str, Any]) -> dict[str, Any]:
+    """Where between two swept values the active constraint is met — an ESTIMATE.
+
+    A grid sweep can only recommend a grid point; the optimum of a monotone
+    sizing problem lies on the constraint boundary, usually between the
+    recommended (lightest feasible) value and its infeasible neighbour. This
+    interpolates each violated constraint metric across that bracket and returns
+    the value where it reaches its limit.
+
+    Interpolation is linear in ``log(metric)`` vs ``log(value)``, i.e. it
+    assumes a local power law ``metric ~ value**k``. That is exact for the
+    sizing laws of slender members — Euler-Bernoulli bending stress
+    ``6FL/(b t**2)`` (``k = -2`` in thickness) and tip deflection
+    ``4FL**3/(E b t**3)`` (``k = -3``) — and the exponent is fitted from the two
+    solved points, never assumed. Linear interpolation in ``value`` would
+    overshoot a convex power law.
+
+    Returns ``{status: "estimated", value, interpolated: True, solved: False,
+    ...}`` or ``{status: "not_applicable", reason}``. Pure; never fabricates: a
+    bracket whose ends are not both solved on a trustworthy mesh, or a metric
+    that does not decrease across it, yields ``not_applicable``.
+    """
+    recommended = report.get("recommended")
+    constraint = report.get("constraint") or {}
+    limits = {
+        "max_von_mises_stress": constraint.get("allowable_stress"),
+        "max_displacement": constraint.get("displacement_limit"),
+    }
+    limits = {k: float(v) for k, v in limits.items() if isinstance(v, (int, float))}
+    if recommended is None:
+        return {"status": "not_applicable", "reason": "no recommended variant to bracket"}
+    if not limits:
+        return {"status": "not_applicable", "reason": "no stress or displacement constraint is set"}
+
+    def _num(v: Any) -> float | None:
+        return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+    rec_value = _num(recommended.get("value"))
+    if rec_value is None or rec_value <= 0:
+        return {"status": "not_applicable", "reason": "swept values are not positive numbers"}
+    solved = sorted(
+        (e for e in report.get("variants") or []
+         if e.get("status") in (STATUS_FEASIBLE, STATUS_INFEASIBLE) and _num(e.get("value"))),
+        key=lambda e: float(e["value"]),
+    )
+    index = next((i for i, e in enumerate(solved) if e is recommended), None)
+    if index is None:
+        return {"status": "not_applicable", "reason": "recommended variant is not among the solved ones"}
+    neighbours = [solved[j] for j in (index - 1, index + 1) if 0 <= j < len(solved)]
+    infeasible = [e for e in neighbours if e["status"] == STATUS_INFEASIBLE]
+    if not infeasible:
+        return {
+            "status": "not_applicable",
+            "reason": (
+                "no infeasible variant next to the recommended one — the constraint is "
+                "not active inside the swept range; extend the range past the "
+                "recommended value to find the boundary"
+            ),
+        }
+    if len(infeasible) > 1:
+        return {"status": "not_applicable",
+                "reason": "both neighbours are infeasible — feasibility is not monotone here"}
+    outer = infeasible[0]
+    v_in, v_out = rec_value, float(outer["value"])
+    if v_out <= 0:
+        return {"status": "not_applicable", "reason": "swept values are not positive numbers"}
+    if _mesh_band(outer)[0] == "unreliable":
+        # Its violation stands, but its NUMBERS are under-predicted: fitting the
+        # exponent through them pulls the estimate toward the infeasible end.
+        return {"status": "not_applicable",
+                "reason": "the infeasible neighbour was solved on an unreliable mesh, so its "
+                          "metrics are under-predicted; re-run it on a finer mesh"}
+
+    estimates: list[tuple[float, str, float]] = []
+    for metric, limit in limits.items():
+        m_in = _num((recommended.get("metrics") or {}).get(metric))
+        m_out = _num((outer.get("metrics") or {}).get(metric))
+        if m_in is None or m_out is None or m_out <= limit:
+            continue  # this constraint is not the one violated across the bracket
+        if not (m_in <= limit < m_out) or m_in <= 0:
+            return {"status": "not_applicable",
+                    "reason": f"{metric} does not cross its limit monotonically across the bracket"}
+        exponent = math.log(m_in / m_out) / math.log(v_in / v_out)
+        value = v_out * (limit / m_out) ** (1.0 / exponent)
+        estimates.append((value, metric, exponent))
+    if not estimates:
+        return {"status": "not_applicable", "reason": "no constraint metric crosses its limit"}
+    # Every violated constraint must be met: take the estimate nearest the feasible end.
+    value, metric, exponent = min(estimates, key=lambda e: abs(e[0] - v_in))
+    return {
+        "status": "estimated",
+        "value": value,
+        "interpolated": True,
+        "solved": False,
+        "governing_constraint": metric,
+        "limit": limits[metric],
+        "fitted_exponent": exponent,
+        "bracket": {"feasible_value": v_in, "infeasible_value": v_out},
+        "method": "log-log (local power-law) interpolation between the bracketing solved variants",
+        "note": (
+            "An interpolation, not a solve: it carries no solver credibility. Solve it "
+            "(refine_boundary=true) before relying on it; at the boundary there is no margin."
+        ),
     }

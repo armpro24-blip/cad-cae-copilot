@@ -54,8 +54,9 @@ def test_parsed_artifacts_become_a_deck_ready_setup(tmp_path: Path) -> None:
     assert setup["materials"]["Al6061-T6"]["poisson_ratio"] == 0.33
 
     # NSET targets are mapped back to the feature ids the deck builder resolves.
+    # The DOF range travels with it: dropping it turned a roller into a clamp.
     assert setup["boundary_conditions"] == [
-        {"target_feature": "bc_001", "type": "fixed"}
+        {"target_feature": "bc_001", "type": "fixed", "dof_start": 1, "dof_end": 3, "value": 0}
     ]
     assert setup["loads"][0]["target_feature"] == "load_001"
     assert setup["loads"][0]["value_n"] == 500

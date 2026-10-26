@@ -175,3 +175,24 @@ def test_default_evaluator_rebinds_faces_against_the_same_package(tmp_path: Path
     assert captured["rebind_faces"] is True
     assert captured["baseline_package_path"] == pkg
     assert captured["package_path"] == pkg
+
+
+def test_realized_element_counts_drive_the_refinement_ratio(fake_project) -> None:
+    # Gmsh was asked for 4, 2, 1 mm (nominal r = 2) but delivered meshes whose
+    # realized r = (N_fine/N_coarse)^(1/3) is 1.5 and 2.0 (measured on real
+    # packages: 1.45-2.06 for a nominal 2). phi = 10 + h^2 on the REALIZED h.
+    h = {1.0: 1.0, 2.0: 1.5, 4.0: 3.0}
+
+    def _ev(size):
+        return {"size": size, "solver_executed": True,
+                "metrics": {"max_von_mises_stress": 10.0 + h[size] ** 2},
+                "element_count": 1e6 / h[size] ** 3, "node_count": 2e6 / h[size] ** 3}
+
+    report = run_mesh_convergence(
+        None, "proj1", mesh_sizes=[4.0, 2.0, 1.0],
+        metrics=["max_von_mises_stress"], evaluate_value=_ev,
+    )
+    stress = report["convergence"]["max_von_mises_stress"]
+    assert stress["h_basis"] == "element_count"
+    assert stress["apparent_order"] == pytest.approx(2.0, abs=1e-3)
+    assert stress["extrapolated_value"] == pytest.approx(10.0, abs=1e-3)

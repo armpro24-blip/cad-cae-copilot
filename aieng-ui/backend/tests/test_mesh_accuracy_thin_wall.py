@@ -154,6 +154,29 @@ def test_a_solid_body_keeps_its_bounding_box_verdict() -> None:
     assert found == (10.0, "beam")
 
 
+@pytest.mark.parametrize(
+    "dims",
+    [(200.0, 20.0, 20.0), (30.0, 30.0, 30.0)],
+    ids=["square_bar", "cube"],
+)
+def test_a_chunky_solid_box_is_not_mistaken_for_a_hollow_one(dims) -> None:
+    """`2V/A` of a SOLID square bar is half its side, of a cube a third.
+
+    Compared with the smallest side, every such body read as "hollow": measured,
+    a 200 x 20 x 20 mm cantilever got `band: null`. Compared with the solid box's
+    own `2V/A`, a solid box scores exactly 1.
+    """
+    a, b, c = dims
+    body = {
+        "entities": [
+            {"id": "body_001", "type": "solid", "name": "bar",
+             "bounding_box": [0, 0, 0, a, b, c],
+             "volume": a * b * c, "area": 2 * (a * b + b * c + a * c)},
+        ]
+    }
+    assert thinnest_body_extent(body) == (min(dims), "bar")
+
+
 def test_a_body_with_no_volume_recorded_keeps_the_old_behaviour() -> None:
     """Absent evidence is not evidence of hollowness — same discipline as face_signatures."""
     assert thinnest_body_extent(_BRACKET) == (5.0, "rib_main")

@@ -1021,6 +1021,7 @@ def register_opt_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 timeout=int(inp.get("timeout", 180)),
                 density=inp.get("density"),
                 apply_winner=bool(inp.get("apply_winner", False)),
+                refine_boundary=bool(inp.get("refine_boundary", False)),
             )
         except Exception as exc:  # noqa: BLE001
             return {"status": "error", "code": "sweep_failed", "message": f"{type(exc).__name__}: {exc}"}
