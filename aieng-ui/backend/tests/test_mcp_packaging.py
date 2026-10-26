@@ -32,8 +32,9 @@ def test_pyproject_exposes_branded_mcp_entrypoints() -> None:
         f"backend must depend on the sibling aieng-format {core_version}; "
         f"declared: {sorted(d for d in dependencies if d.startswith('aieng-format'))}"
     )
-    assert "build123d>=0.10.0" not in dependencies
-    assert "build123d>=0.10.0" in cad_extra
+    # Same here: the invariant is "the CAD kernel is optional", not the pin.
+    assert not any(d.startswith("build123d") for d in dependencies)
+    assert any(d.startswith("build123d>=0.10.0") for d in cad_extra)
 
 
 def test_python_module_entrypoint_uses_existing_mcp_server_main() -> None:
