@@ -55,6 +55,15 @@ from ..schema_versions import FIELD_REGIONS_SCHEMA
 
 FIELD_REGIONS_PATH = "results/field_regions.json"
 
+# A percentile cut ALWAYS selects nodes, so "high-magnitude clusters" exist on
+# every field — including a uniform one, where the "high" nodes sit within
+# rounding of the median. Below this peak/median ratio the field is reported as
+# having no concentration, so the clusters are not presented as hot spots.
+NEAR_UNIFORM_PEAK_TO_MEDIAN = 1.1
+
+_STRESS_FIELDS = ("S", "STRESS")
+_DISP_FIELDS = ("DISP", "DISPLACEMENT")
+
 
 class FieldRegionError(Exception):
     """Raised when field region extraction cannot proceed."""
@@ -119,14 +128,32 @@ def extract_field_regions_package(
 
     # Threshold: keep nodes above percentile
     threshold = _percentile_threshold(list(node_values.values()), threshold_percentile)
-    high_nodes = {nid for nid, val in node_values.items() if val >= threshold}
+    statistics = _field_statistics(list(node_values.values()), threshold, threshold_percentile)
+    if statistics["near_uniform"]:
+        warnings.append(
+            f"The field is near-uniform: peak {statistics['max']:.4g} is "
+            f"{statistics['peak_to_median_ratio']} x the median {statistics['median']:.4g} "
+            f"(< {NEAR_UNIFORM_PEAK_TO_MEDIAN}). The clusters below are the top "
+            f"{100 - threshold_percentile:g}% of a flat field, not stress/displacement "
+            "concentrations."
+        )
+    # With ties the percentile value can be the field's FLOOR (e.g. 90% of a
+    # plate at one stress), and ">= threshold" then selected every node in the
+    # field as "high". A node at the minimum is not high, whatever the
+    # percentile says.
+    floor = min(node_values.values())
+    high_nodes = {
+        nid for nid, val in node_values.items()
+        if val >= threshold and (threshold > floor or val > floor)
+    }
     if not high_nodes:
         warnings.append(
             f"No nodes exceeded the {threshold_percentile}th percentile "
             f"threshold ({threshold:.4f}). Returning empty clusters."
         )
         return _write_regions_package(
-            pkg, [], frd.name, field, metric, warnings, overwrite=overwrite
+            pkg, [], frd.name, field, metric, warnings, overwrite=overwrite,
+            statistics=statistics,
         )
 
     # Spatial clustering
@@ -147,21 +174,26 @@ def extract_field_regions_package(
         cx = sum(coords[nid][0] for nid in node_ids) / len(node_ids)
         cy = sum(coords[nid][1] for nid in node_ids) / len(node_ids)
         cz = sum(coords[nid][2] for nid in node_ids) / len(node_ids)
+        median = statistics["median"]
         clusters.append(
             {
                 "id": f"cluster_{idx:03d}",
                 "location": {"x": round(cx, 6), "y": round(cy, 6), "z": round(cz, 6)},
                 "magnitude": {
                     "value": round(peak_val, 4),
-                    "unit": "MPa" if field == "S" else "mm",
+                    "unit": "MPa" if field.upper() in _STRESS_FIELDS else "mm",
                 },
                 "node_count": len(node_ids),
                 "feature_ref": feature_resolver(peak_node),
+                "peak_to_median_ratio": (
+                    round(peak_val / median, 4) if median > 0 else None
+                ),
             }
         )
 
     return _write_regions_package(
-        pkg, clusters, frd.name, field, metric, warnings, overwrite=overwrite
+        pkg, clusters, frd.name, field, metric, warnings, overwrite=overwrite,
+        statistics=statistics,
     )
 
 
@@ -198,25 +230,19 @@ def _compute_node_values(
 
     node_data = field_data.get("node_data", {})
 
-    if metric == "von_mises" and field.upper() == "S":
+    if metric == "von_mises" and field.upper() in _STRESS_FIELDS:
+        from .field_derivation import stress_tensor_from_frd, von_mises
+
+        components = field_data.get("components")
         for nid, vals in node_data.items():
             if nid not in coords:
                 continue
-            if len(vals) < 6 or any(v is None for v in vals[:6]):
+            tensor = stress_tensor_from_frd(components, vals)
+            if tensor is None or any(v is None for v in tensor):
                 continue
-            sxx, syy, szz = float(vals[0]), float(vals[1]), float(vals[2])
-            sxy, sxz, syz = float(vals[3]), float(vals[4]), float(vals[5])
-            vm = math.sqrt(
-                0.5 * (
-                    (sxx - syy) ** 2
-                    + (syy - szz) ** 2
-                    + (szz - sxx) ** 2
-                    + 6.0 * (sxy ** 2 + sxz ** 2 + syz ** 2)
-                )
-            )
-            node_values[nid] = vm
+            node_values[nid] = von_mises(tensor)
 
-    elif metric == "magnitude" and field.upper() == "DISP":
+    elif metric == "magnitude" and field.upper() in _DISP_FIELDS:
         components = field_data.get("components", [])
         all_idx = next((i for i, c in enumerate(components) if c == "ALL"), None)
         d1_idx = next((i for i, c in enumerate(components) if c == "D1"), None)
@@ -339,6 +365,30 @@ def _percentile_threshold(values: list[float], percentile: float) -> float:
     sorted_vals = sorted(values)
     idx = int((percentile / 100.0) * (len(sorted_vals) - 1))
     return sorted_vals[max(0, min(idx, len(sorted_vals) - 1))]
+
+
+def _field_statistics(
+    values: list[float], threshold: float, percentile: float
+) -> dict[str, Any]:
+    """Context a reader needs to judge whether a "high" cluster is high at all."""
+    ordered = sorted(values)
+    n = len(ordered)
+    median = (
+        ordered[n // 2] if n % 2 else 0.5 * (ordered[n // 2 - 1] + ordered[n // 2])
+    ) if n else 0.0
+    peak = ordered[-1] if n else 0.0
+    ratio = round(peak / median, 4) if median > 0 else None
+    return {
+        "node_count": n,
+        "min": round(ordered[0], 6) if n else None,
+        "median": round(median, 6),
+        "max": round(peak, 6),
+        "threshold_percentile": percentile,
+        "threshold_value": round(threshold, 6),
+        "peak_to_median_ratio": ratio,
+        # A zero median with a positive peak is a concentration by any measure.
+        "near_uniform": ratio is not None and ratio < NEAR_UNIFORM_PEAK_TO_MEDIAN,
+    }
 
 
 def _auto_threshold(coords: dict[int, tuple[float, float, float]]) -> float:
@@ -543,6 +593,7 @@ def _write_regions_package(
     metric: str,
     warnings: list[str],
     overwrite: bool,
+    statistics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Atomically write ``results/field_regions.json`` into the .aieng package."""
     try:
@@ -566,6 +617,7 @@ def _write_regions_package(
         "cluster_count": len(clusters),
         "clusters": clusters,
         "warnings": warnings,
+        **({"field_statistics": statistics} if statistics is not None else {}),
         "claim_policy": {
             "observational_only": True,
             "physical_correctness_not_claimed": True,
@@ -602,6 +654,7 @@ def _write_regions_package(
         "out_path": FIELD_REGIONS_PATH,
         "cluster_count": len(clusters),
         "clusters": clusters,
+        "field_statistics": statistics,
         "warnings": warnings,
     }
 
