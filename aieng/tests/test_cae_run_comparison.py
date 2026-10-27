@@ -477,5 +477,9 @@ def test_a_target_only_a_pre_upgrade_deck_lists_is_not_a_change(tmp_path: Path) 
 
     result = compare_runs(pkg)
 
-    assert result["binding_count_changed"] is False, result["warnings"]
+    # Not True (a stale entry is no dropped restraint), and not False either:
+    # four bolt holes re-authored to two look exactly like this, so the old
+    # record cannot say which it was.
+    assert result["binding_count_changed"] is None, result["warnings"]
     assert any("predates per-deck NSET records" in w for w in result["warnings"])
+    assert any("bc_stale" in w and "cannot be told" in w for w in result["warnings"])

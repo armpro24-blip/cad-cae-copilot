@@ -348,14 +348,17 @@ def _compare_setups(
             "entry, applied or not; targets only it lists are not counted as a change."
         )
     warnings: list[str] = []
+    unknowable: list[str] = []
     for target in sorted(set(before) | set(after)):
         was, now = before.get(target), after.get(target)
         if was is None:
             if mixed and current_lists_all:
+                unknowable.append(target)
                 continue
             warnings.append(f"{target} is bound in {current['run_id']} only.")
         elif now is None:
             if mixed and baseline_lists_all:
+                unknowable.append(target)
                 continue
             warnings.append(f"{target} is bound in {baseline['run_id']} only.")
         elif len(was) != len(now):
@@ -370,6 +373,14 @@ def _compare_setups(
             "below may compare different restraints rather than a design change:",
         )
         return True, warnings + notes
+    if unknowable:
+        # "Listed but never applied" and "applied, then dropped" read the same
+        # in a pre-upgrade record: losing two of four bolt holes must not come
+        # back as `false`. Cannot tell is the honest answer.
+        return None, notes + [
+            "Whether these were applied in the earlier run cannot be told from its "
+            f"record: {', '.join(unknowable)}. If they were, the later run dropped them."
+        ]
     return False, notes
 
 
