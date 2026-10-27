@@ -351,8 +351,9 @@ def _analysis_html(facts: dict[str, Any]) -> str:
         source = (
             html.escape(str(regions["source_frd"]))
             if regions.get("traceable")
-            else "an FRD this package cannot tie to a run (extracted before regions "
-                 "recorded their source) — re-run cae.extract_field_regions to trace it"
+            else "an FRD this package cannot tie to a run (an external file, or an "
+                 "extraction from before regions recorded their run) — extracting from a "
+                 "run's FRD in the package records which run it is"
         )
         parts.append(
             f"<p class=\"muted\">From {source}. "
