@@ -1015,7 +1015,13 @@ Celik, Ghia, Roache & Freitas (J. Fluids Eng. 130(7):078001, 2008), Table 1:
   the run the FRD belongs to, and are used only when that deck's node
   coordinates match the FRD's: the source deck is re-synthesised from the
   CURRENT mesh, so after a remesh an earlier run's FRD attributed two different
-  bolt holes to `bc_001`. `source_frd` records the package path of the FRD.
+  bolt holes to `bc_001`. A run's sets are read through what the run recorded
+  (`deck_provenance.json` `setup_nsets` + `setup_bindings`), not the current
+  `cae_mapping.json`; a run recorded before `setup_nsets` existed uses the
+  current mapping only if it still reaches exactly the run's recorded targets.
+  `source_frd` is the FRD's package path when it came from the package
+  (`simulation/runs/<id>/outputs/result.frd`), and the supplied file's name for
+  an external FRD — not always an archive member.
   `location` is the cluster centroid; `peak_location` is the node carrying the
   peak. Measured on the bracket trial, the max stress before an 8 -> 12 mm edit
   sat at the rib root and after it at a corner of the loaded rib-top face, so a

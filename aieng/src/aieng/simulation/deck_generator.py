@@ -313,6 +313,11 @@ def generate_solver_input_package(
         # no indication. A delta across different setups is not a comparison of
         # a design change, so each deck records what it actually solved.
         "setup_bindings": _setup_bindings(cae_mapping),
+        # ...and which NSET of THIS deck served which entity. The mapping file
+        # is rewritten as the setup moves on, so reading an earlier run's NSETs
+        # through the current mapping could attribute its results to a target
+        # the run never had.
+        "setup_nsets": _setup_nsets(cae_mapping),
         "generated_at_utc": datetime.now(timezone.utc)
         .replace(microsecond=0)
         .isoformat()
@@ -1356,6 +1361,19 @@ def _setup_bindings(cae_mapping: Any) -> dict[str, list[str]]:
         if faces:
             out[target] = faces
     return out
+
+
+def _setup_nsets(cae_mapping: Any) -> dict[str, list[str]]:
+    """`{NSET name: sorted setup entity ids}` for the sets this deck defines."""
+    if not isinstance(cae_mapping, dict):
+        return {}
+    out: dict[str, set[str]] = {}
+    for mapping in cae_mapping.get("mappings") or []:
+        entity = mapping.get("cae_entity") if isinstance(mapping, dict) else None
+        target = mapping_target_id(mapping)
+        if isinstance(entity, str) and entity and target:
+            out.setdefault(entity, set()).add(target)
+    return {name: sorted(targets) for name, targets in sorted(out.items())}
 
 
 def _current_geometry_revision(zf: zipfile.ZipFile) -> int:

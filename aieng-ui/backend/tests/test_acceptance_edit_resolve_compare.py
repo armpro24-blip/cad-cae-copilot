@@ -327,6 +327,11 @@ class TestTheExportedPackageCanExplainItself:
             assert all(
                 isinstance(faces, list) and faces for faces in bindings.values()
             ), bindings
+            # Which NSET of the deck served which entity: what lets field regions
+            # read THIS run's sets without trusting the current mapping file.
+            nsets = provenance.get("setup_nsets")
+            assert isinstance(nsets, dict) and nsets, f"{run}: {provenance}"
+            assert {t for targets in nsets.values() for t in targets} == set(bindings)
 
     def test_the_comparison_confirms_both_runs_bound_the_same_count(self, acceptance) -> None:
         comparison = acceptance["comparison"]

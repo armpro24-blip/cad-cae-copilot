@@ -519,12 +519,27 @@ def _build_feature_resolver(
     different bolt holes both attributed to ``bc_001``. A run's own deck is used
     when the FRD came from that run, and in every case the deck's node
     coordinates must match the FRD's or no attribution is made.
+
+    A run's node sets are read through that run's own record of what each set
+    served (`deck_provenance.json` `setup_nsets` + `setup_bindings`), because
+    the mapping file is rewritten as the setup moves on. A run recorded before
+    `setup_nsets` existed falls back to the current mapping only when the
+    targets it reaches through the run's sets are exactly the targets the run
+    recorded; otherwise its binding cannot be re-established and nothing is
+    attributed.
     """
     deck_member = _run_deck_member(source_member)
+    run_provenance: Any = None
     try:
         with zipfile.ZipFile(pkg, "r") as zf:
             names = set(zf.namelist())
-            if deck_member not in names:
+            if deck_member in names:
+                provenance_member = deck_member.rsplit("/", 1)[0] + "/deck_provenance.json"
+                if provenance_member in names:
+                    run_provenance = json.loads(zf.read(provenance_member))
+                if not isinstance(run_provenance, dict):
+                    run_provenance = {}
+            else:
                 deck_member = _SOURCE_DECK_PATH
             deck_text = (
                 zf.read(deck_member).decode("utf-8", errors="replace")
@@ -551,10 +566,20 @@ def _build_feature_resolver(
                 "(cae_target_ref is unaffected)."
             )
 
-    if deck_text is None or not isinstance(mapping_raw, dict):
+    if deck_text is None:
         return lambda _node_id: _NO_REFS
-
-    nset_to_target, target_faces = _build_nset_to_target(mapping_raw)
+    recorded_nsets = (run_provenance or {}).get("setup_nsets")
+    if isinstance(recorded_nsets, dict):
+        # The run's own record: authoritative for this deck's sets.
+        nset_to_target = {
+            str(name): {str(t) for t in targets}
+            for name, targets in recorded_nsets.items() if isinstance(targets, list)
+        }
+        target_faces = _recorded_target_faces(run_provenance)
+    elif isinstance(mapping_raw, dict):
+        nset_to_target, target_faces = _build_nset_to_target(mapping_raw)
+    else:
+        return lambda _node_id: _NO_REFS
     if not nset_to_target:
         return lambda _node_id: _NO_REFS
 
@@ -574,6 +599,21 @@ def _build_feature_resolver(
             "target: cae_target_ref and feature_ref stay null."
         )
         return lambda _node_id: _NO_REFS
+    if run_provenance is not None and not isinstance(recorded_nsets, dict):
+        # An earlier run read through the CURRENT mapping: only sound if that
+        # mapping still reaches exactly the targets the run recorded.
+        recorded = run_provenance.get("setup_bindings")
+        deck_sets = set().union(*node_to_nsets.values())
+        reached = set().union(*(nset_to_target.get(n, set()) for n in deck_sets))
+        if not isinstance(recorded, dict) or reached != {str(t) for t in recorded}:
+            warnings.append(
+                f"{deck_member} predates recorded NSET bindings and the current "
+                "simulation/cae_mapping.json no longer reaches the targets this run "
+                "recorded, so its clusters are not attributed: cae_target_ref and "
+                "feature_ref stay null."
+            )
+            return lambda _node_id: _NO_REFS
+        target_faces = _recorded_target_faces(run_provenance)
 
     part_faces = _named_part_faces(feature_graph)
 
@@ -590,6 +630,17 @@ def _build_feature_resolver(
     return _resolve
 
 
+def _recorded_target_faces(run_provenance: dict[str, Any]) -> dict[str, set[str]]:
+    """`{target id: face ids}` as the run recorded them (`setup_bindings`)."""
+    recorded = run_provenance.get("setup_bindings")
+    if not isinstance(recorded, dict):
+        return {}
+    return {
+        str(target): {str(f) for f in faces}
+        for target, faces in recorded.items() if isinstance(faces, list)
+    }
+
+
 _NODE_OUTPUT_CARDS = ("*NODE FILE", "*NODE PRINT", "*NODE OUTPUT")
 
 
@@ -600,15 +651,22 @@ def _deck_matches_frd_mesh(
 ) -> bool:
     """Do the deck's coordinates for ``node_ids`` agree with the FRD's?
 
-    The FRD writes coordinates to ~5 significant digits, so the tolerance is
-    relative to the model size; a different mesh puts the same node id
-    somewhere else entirely.
+    Tolerance = 1e-4 of the model's bounding-box diagonal (a different mesh
+    puts the same node id somewhere else entirely) plus the FRD's own rounding:
+    it writes coordinates as ``E12.5``, a RELATIVE precision of 1e-5 of the
+    coordinate's magnitude, which for a small part far from the origin exceeds
+    any model-size bound.
     """
     deck_coords = _parse_deck_node_coords(deck_text, node_ids)
-    if not deck_coords or len(deck_coords) != len(node_ids):
+    if not deck_coords or len(deck_coords) != len(node_ids) or not frd_coords:
         return False
-    values = [c for xyz in frd_coords.values() for c in xyz]
-    tolerance = max(1e-3, 1e-4 * (max(values) - min(values))) if values else 1e-3
+    spans = [
+        max(c[axis] for c in frd_coords.values()) - min(c[axis] for c in frd_coords.values())
+        for axis in range(3)
+    ]
+    diagonal = math.sqrt(sum(span * span for span in spans))
+    magnitude = max(abs(v) for c in frd_coords.values() for v in c)
+    tolerance = 1e-4 * diagonal + 1e-5 * magnitude
     for nid, (x, y, z) in deck_coords.items():
         other = frd_coords.get(nid)
         if other is None:
