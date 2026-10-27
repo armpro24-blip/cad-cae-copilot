@@ -298,7 +298,29 @@ def test_report_generate_runtime_tool_returns_html_without_claim_advancement(tmp
     assert output["tool"] == "report.generate"
     assert output["claim_advancement"] == "none"
     assert output["credibility_summary"]["result_evidence"] == "present"
+    # Written to the project's reports/ folder, not returned inline: ~60 KB of
+    # HTML overflowed Claude Code's MCP output cap.
+    assert "html" not in output
+    report = Path(output["report_path"])
+    assert report.parent == pkg_path.parent / "reports"
+    assert "Engineering Report" in report.read_text(encoding="utf-8")
+    assert output["summary"]["claim_tier"] == "executed_solver_result"
+
+
+def test_report_generate_returns_the_html_inline_when_asked(tmp_path: Path) -> None:
+    from app import runtime as _rt
+
+    settings = _make_settings(tmp_path)
+    create_app(settings)
+    project_id, pkg_path = _make_project(settings)
+    _write_report_package(pkg_path)
+    before = _digest(pkg_path)
+
+    output = _rt.invoke_tool("report.generate", {"project_id": project_id, "include_html": True})
+
     assert "Engineering Report" in output["html"]
+    assert Path(output["report_path"]).is_file()
+    assert _digest(pkg_path) == before   # never written into the package
 
 
 def test_report_generate_tool_is_registered() -> None:
@@ -306,7 +328,9 @@ def test_report_generate_tool_is_registered() -> None:
 
     tools = {tool["name"]: tool for tool in registered_tools_info()}
     assert "report.generate" in tools
-    assert "Read-only" in tools["report.generate"]["description"]
+    # It writes the report file into the project's reports/ folder, so it is no
+    # longer "read-only" — but it never touches the .aieng package.
+    assert "never writes into the .aieng package" in tools["report.generate"]["description"]
 
 
 def test_the_report_states_what_a_reviewer_needs_to_judge_the_numbers(tmp_path: Path) -> None:

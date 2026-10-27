@@ -776,12 +776,20 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                 "enum": ["html"],
                 "description": "Report format. Currently only self-contained HTML is supported.",
             },
+            "include_html": {
+                "type": "boolean",
+                "description": (
+                    "Also return the HTML inline (~60 KB). Default false: the report is "
+                    "written to <project>/reports/ and its path returned."
+                ),
+            },
         },
         "additionalProperties": True,
         "description": (
-            "Read-only engineering report export. Assembles existing project/package "
-            "evidence into self-contained HTML without running CAD, meshers, solvers, "
-            "post-processing tools, or writing artifacts."
+            "Engineering report export. Assembles existing project/package evidence "
+            "into self-contained HTML, writes it to the project's reports/ folder "
+            "(never into the .aieng package) and returns the path plus a summary, "
+            "without running CAD, meshers, solvers or post-processing tools."
         ),
     },
     "aieng.value_demo_check": {
