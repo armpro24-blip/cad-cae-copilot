@@ -16,6 +16,28 @@ from ..logging_utils import log_exception
 LOGGER = logging.getLogger("app.app_factory")
 
 
+def _convergence_scope(analysis: dict[str, Any]) -> dict[str, Any] | None:
+    """Whether the report's convergence study describes the current geometry.
+
+    Same comparison the report's HTML applies: `current` when the study's
+    revision equals the design's, `stale` when it differs, `unknown` when the
+    study records none. The design's revision is 0 when the package records no
+    geometry edit — the convention every revision reader here shares (see
+    `cae_result_summary._package_geometry_revision`): each edit writes
+    `state/revalidation_status.json`, so its absence IS "no edit recorded".
+    """
+    convergence = analysis.get("convergence")
+    if not isinstance(convergence, dict):
+        return None
+    study = convergence.get("geometry_revision")
+    current = analysis.get("current_revision")
+    if not isinstance(study, int):
+        status = "unknown"
+    else:
+        status = "current" if study == current else "stale"
+    return {"study_revision": study, "current_revision": current, "status": status}
+
+
 def register_aieng_tools(rt: Any, active_settings: Any, app_context: Any, _schema: Any) -> dict[str, Any]:
     """Register aieng runtime tools."""
     sync_main_symbols(globals())
@@ -668,19 +690,73 @@ def register_aieng_tools(rt: Any, active_settings: Any, app_context: Any, _schem
                 "code": "missing_package" if exc.status_code == 404 else "report_error",
                 "message": str(exc.detail),
             }
-        return {
+        # The HTML runs to ~60 KB, over Claude Code's MCP output cap: a
+        # cold-agent trial had to fish it out of a spill file. It is written to
+        # the project's reports/ folder (never into the package) and the
+        # response carries the path and what a reader needs at a glance.
+        from datetime import datetime, timezone
+
+        from ..project_io import project_dir
+
+        html_text = str(result.get("html") or "")
+        import uuid
+
+        # Unique per call: two calls in one second must not overwrite each
+        # other's report ("x" mode refuses an existing file outright).
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        reports_dir = project_dir(active_settings, project_id) / "reports"
+        report_file = reports_dir / f"engineering_report_{stamp}_{uuid.uuid4().hex[:8]}.html"
+        try:
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            with report_file.open("x", encoding="utf-8") as handle:
+                handle.write(html_text)
+            written: str | None = str(report_file)
+            write_error: str | None = None
+        except OSError as exc:
+            written, write_error = None, f"{type(exc).__name__}: {exc}"
+        include_html = bool(inp.get("include_html") or inp.get("includeHtml")) or written is None
+        analysis = result.get("analysis") if isinstance(result.get("analysis"), dict) else {}
+        margin = analysis.get("margin") if isinstance(analysis.get("margin"), dict) else None
+        response: dict[str, Any] = {
             "ok": True,
             "tool": "report.generate",
             "status": "completed",
             "project_id": project_id,
             "format": "html",
-            "html": result.get("html"),
+            "report_path": written,
+            "report_relpath": f"reports/{report_file.name}" if written else None,
+            "html_bytes": len(html_text.encode("utf-8")),
+            "summary": {
+                "claim_tier": analysis.get("claim_tier"),
+                "qualifications": analysis.get("qualifications") or [],
+                "setup": analysis.get("setup_lines") or [],
+                "mesh": analysis.get("mesh"),
+                "convergence_verdict": (analysis.get("convergence") or {}).get("verdict"),
+                # Which geometry the verdict is about; the HTML states it, and
+                # the summary is what a caller reads by default.
+                "convergence_scope": _convergence_scope(analysis),
+                # Unrounded: 0.9996 rounded to 1.0 would read as passing a
+                # yield threshold it fails. Rounding is presentation's job.
+                "yield_margin": margin["ratio"] if margin else None,
+                "key_results": (result.get("credibility", {}).get("result_evidence") or {}).get(
+                    "key_results"
+                ),
+            },
             "claim_advancement": result.get("report", {}).get("claim_advancement"),
             "claim_boundary": result.get("report", {}).get("claim_boundary"),
             "credibility_summary": result.get("credibility", {}).get("summary"),
             "thumbnail_embedded": result.get("report", {}).get("thumbnail_embedded"),
             "warnings": result.get("report", {}).get("warnings") or [],
         }
+        if write_error:
+            response["warnings"] = [
+                f"The report could not be written to the project folder ({write_error}); "
+                "it is returned inline instead.",
+                *response["warnings"],
+            ]
+        if include_html:
+            response["html"] = html_text
+        return response
 
     def _tool_value_demo_check(inp: dict[str, Any], _ctx: dict[str, Any]) -> dict[str, Any]:
         import importlib.util
@@ -1316,10 +1392,12 @@ def register_aieng_tools(rt: Any, active_settings: Any, app_context: Any, _schem
         "report.generate",
         _tool_report_generate,
         description=(
-            "Read-only: assemble a self-contained HTML engineering report from "
-            "existing project evidence (BOM, design targets, computed metrics, "
-            "solver evidence, credibility stamp, and limitations). Runs no CAD, "
-            "mesh, solver, post-processing, or package writes."
+            "Assemble a self-contained HTML engineering report from existing project "
+            "evidence (claim tier, setup, mesh, convergence, peaks, margin, BOM, "
+            "computed metrics, before/after, limitations), write it to the project's "
+            "reports/ folder and return its path plus a summary; pass include_html=true "
+            "to also get the HTML inline. Runs no CAD, mesh, solver or post-processing "
+            "and never writes into the .aieng package."
         ),
         input_schema=_schema("report.generate"),
     )
