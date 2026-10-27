@@ -1057,13 +1057,21 @@ conduction) in the real-ccx lane.
 LE10's `u_z = 0` on the mid-plane line of its outer edge), and a pressure in a
 pure `thermal` step (refused).
 
-**Known limitation — area shares are fixed at authoring time.** The per-face
-`value_n` that `cae.setup_static` writes is each face's area share WHEN THE
-SETUP WAS AUTHORED. A later edit that resizes the faces unequally does not
-recompute it, so after an edit the split is the old one. A group with unequal
-shares is not interchangeable, so a selector rebind refuses it rather than
-shuffling the shares; re-run `cae.setup_static` after a resizing edit to
-re-split by the new areas.
+**An area split follows the faces after an edit.** Each entry of a force
+`cae.setup_static` divided over several faces records `load_share_basis:
+"area"` and the group's `total_force_n`, so its `value_n` is a derived quantity:
+deck-time binding re-splits the total by the faces' CURRENT areas, after any
+selector rebind. Measured on a 40 mm block lengthened to 80 mm (top face 800 ->
+1600 mm², end face 200 mm²), 1000 N went from 800/200 N to 888.9/111.1 N; it
+used to keep 800/200, a load distribution matching no geometry. Every change is
+reported as `area_shares` in the source-deck synthesis and as a top-level
+warning of `cae.generate_solver_input`; a face with no recorded area is
+reported `not_recomputed` and keeps the authored share. Because the share is
+derived, an area-split group is interchangeable for a selector rebind even when
+its shares differ. A group whose phrase now picks ONE face is refused like any
+other change of count (it used to bind every entry to that face). A setup
+written before these fields existed has no recorded total and is used as
+written; re-run `cae.setup_static` to give it one.
 
 **Installing CalculiX.** `cae.run_solver` needs the `ccx` executable available at runtime.
 
@@ -1308,6 +1316,13 @@ entries differ physically (guessing which hole restrained which DOF would be
 inventing a boundary condition). Measured after the fix at a 3 mm mesh, the
 bolted plate completes at **-80.1% displacement / -65.4% stress** for a doubled
 plate thickness.
+
+When only PART of a group retired (one hole moved, the other kept its id), the
+entries still bound keep their faces and the retired ones take the free faces,
+in id order. Handing them out by index over every recovered face could give a
+retired entry a face another entry still held: two restraints on one hole, none
+on the other. A group whose phrase now picks a single face is a change of
+count and refuses too.
 
 To recover:
 1. For parametric variants / design-study candidates, enable adaptive rebind by

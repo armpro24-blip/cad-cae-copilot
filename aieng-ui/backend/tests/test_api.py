@@ -4958,8 +4958,9 @@ def test_prepare_solver_run_blocked_reason_codes_are_stable(tmp_path: Path, monk
     """cae.prepare_solver_run exposes stable blocked_reason_codes and preserves prose fields."""
     # ccx resolution auto-discovers a sibling conda env, so a configured dev
     # machine really does have a solver. Clear the conda hints to assert the
-    # 'solver unavailable' preflight deterministically.
-    for _var in ("CONDA_EXE", "CONDA_PREFIX", "CONDA_ROOT"):
+    # 'solver unavailable' preflight deterministically — and the explicit
+    # override, which the real-ccx lane exports for the whole run.
+    for _var in ("CONDA_EXE", "CONDA_PREFIX", "CONDA_ROOT", "AIENG_CCX_CMD"):
         monkeypatch.delenv(_var, raising=False)
     from unittest.mock import patch
     from app.main import create_app, default_project, project_dir, save_project
@@ -5021,8 +5022,9 @@ def test_prepare_solver_run_next_actions_resolve_blocker_codes(tmp_path: Path, m
     """Repair recommendations identify which stable blocked_reason_codes they address."""
     # ccx resolution auto-discovers a sibling conda env, so a configured dev
     # machine really does have a solver. Clear the conda hints to assert the
-    # 'solver unavailable' preflight deterministically.
-    for _var in ("CONDA_EXE", "CONDA_PREFIX", "CONDA_ROOT"):
+    # 'solver unavailable' preflight deterministically — and the explicit
+    # override, which the real-ccx lane exports for the whole run.
+    for _var in ("CONDA_EXE", "CONDA_PREFIX", "CONDA_ROOT", "AIENG_CCX_CMD"):
         monkeypatch.delenv(_var, raising=False)
     from unittest.mock import patch
     from app.main import create_app, default_project, project_dir, save_project
@@ -5263,8 +5265,9 @@ def test_prepare_solver_run_recommended_next_calls(tmp_path: Path, monkeypatch) 
     """cae.prepare_solver_run returns actionable next-call recommendations for missing artifacts."""
     # ccx resolution auto-discovers a sibling conda env, so a configured dev
     # machine really does have a solver. Clear the conda hints to assert the
-    # 'solver unavailable' preflight deterministically.
-    for _var in ("CONDA_EXE", "CONDA_PREFIX", "CONDA_ROOT"):
+    # 'solver unavailable' preflight deterministically — and the explicit
+    # override, which the real-ccx lane exports for the whole run.
+    for _var in ("CONDA_EXE", "CONDA_PREFIX", "CONDA_ROOT", "AIENG_CCX_CMD"):
         monkeypatch.delenv(_var, raising=False)
     from app.main import create_app, default_project, project_dir, save_project
     from starlette.testclient import TestClient
@@ -6186,8 +6189,11 @@ def test_runtime_capabilities_treats_malformed_ccx_cmd_as_unavailable(tmp_path: 
     assert response.json()["environment"]["ccx_available"] is False
 
 
-def test_run_solver_mocked_subprocess_success(tmp_path: Path) -> None:
+def test_run_solver_mocked_subprocess_success(tmp_path: Path, monkeypatch) -> None:
     """cae.run_solver invokes ccx with shell=False and writes solver_run.json + solver_log.txt."""
+    # The fake `which` result is the solver under test; an exported
+    # AIENG_CCX_CMD would take precedence over it.
+    monkeypatch.delenv("AIENG_CCX_CMD", raising=False)
     from unittest.mock import patch, MagicMock
     from app.main import create_app, default_project, project_dir, save_project
     from starlette.testclient import TestClient
@@ -6822,8 +6828,11 @@ def test_run_solver_registered_in_introspection(tmp_path: Path) -> None:
     assert solver_tool["requires_approval"] is True
 
 
-def test_run_solver_no_mesh_generation(tmp_path: Path) -> None:
+def test_run_solver_no_mesh_generation(tmp_path: Path, monkeypatch) -> None:
     """cae.run_solver does not attempt mesh generation or input deck generation."""
+    # The fake `which` result is the solver under test; an exported
+    # AIENG_CCX_CMD would take precedence over it.
+    monkeypatch.delenv("AIENG_CCX_CMD", raising=False)
     from unittest.mock import patch, MagicMock
     from app.main import create_app, default_project, project_dir, save_project
     from starlette.testclient import TestClient

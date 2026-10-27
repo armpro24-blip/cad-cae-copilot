@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import shutil
 import subprocess
@@ -1701,6 +1702,11 @@ def normalize_cae_bindings(package_path: Path) -> dict[str, Any]:
             return None
         recovered = [str(f) for f in (hit.get("face_ids") or []) if str(f) in face_ids]
         if len(recovered) == 1:
+            # One face for a GROUP is the count changing (two holes became one),
+            # refused below for any other count; returning it here bound every
+            # entry of the group to the same face.
+            if len(_interchangeable_siblings(item)) > 1:
+                return None
             return recovered[0]
         # A MULTI-face selector — `fix: "bolt holes"` is the canonical one, and
         # `cae.setup_static` splits it into one entry per hole, every entry
@@ -1727,11 +1733,7 @@ def normalize_cae_bindings(package_path: Path) -> dict[str, Any]:
     def _recover_group(item: dict[str, Any], recovered: list[str]) -> str | None:
         """One face from a multi-face selector, if the group can take them all."""
         selector = item.get("target_selector")
-        siblings = [
-            sibling
-            for sibling in _selector_group(selector)
-            if _binding_shape(sibling) == _binding_shape(item)
-        ]
+        siblings = _interchangeable_siblings(item)
         if len(siblings) != len(_selector_group(selector)):
             # Entries sharing the phrase but not the physics: a per-entry
             # identity would be needed and cannot be had. Refuse.
@@ -1740,22 +1742,56 @@ def normalize_cae_bindings(package_path: Path) -> dict[str, Any]:
             # Four holes became three: the restraint genuinely changed, which is
             # not something to paper over with a rebind.
             return None
-        order = sorted(siblings, key=lambda s: str(s.get("id") or ""))
+        # A face a sibling still holds stays with it; only the free faces go to
+        # the siblings whose face retired, in id order. Indexing over every
+        # recovered face could hand a retired entry a face another entry still
+        # holds — two restraints on one hole, none on the other.
+        held = {f for sibling in siblings for f in _held_faces(sibling)}
+        free = [f for f in sorted(recovered) if f not in held]
+        retired = sorted(
+            (s for s in siblings if not _held_faces(s)), key=lambda s: str(s.get("id") or "")
+        )
         try:
-            index = order.index(item)
+            index = retired.index(item)
         except ValueError:
             return None
-        return sorted(recovered)[index]
+        return free[index] if index < len(free) else None
+
+    def _held_faces(item: dict[str, Any]) -> list[str]:
+        """The live faces `item` is bound to right now (empty if retired)."""
+        fid = _face_ref_from_target(item.get("target"), face_ids)
+        if fid is not None:
+            return [fid]
+        if _entity_still_bound(item.get("target")):
+            for mapping in mappings:
+                if mapping.get("cae_entity") == item.get("target"):
+                    return [str(f) for f in (mapping.get("face_ids") or [])]
+        return []
+
+    def _interchangeable_siblings(item: dict[str, Any]) -> list[dict[str, Any]]:
+        """Entries resolved from the same phrase with the same physics as `item`."""
+        return [
+            sibling
+            for sibling in _selector_group(item.get("target_selector"))
+            if _binding_shape(sibling) == _binding_shape(item)
+        ]
 
     def _binding_shape(item: dict[str, Any]) -> tuple:
         """What makes two entries interchangeable — everything but the face."""
         direction = item.get("direction")
+        value_n = item.get("value_n")
+        total = _area_share_total(item)
+        if total is not None:
+            # An area share is DERIVED from the face it lands on and is re-split
+            # after binding (`_reshare_area_loads`), so it is no part of the
+            # entry's identity: what the group shares is the total force.
+            value_n = ("area_share", total)
         return (
             str(item.get("type") or ""),
             item.get("dof_start"),
             item.get("dof_end"),
             item.get("value"),
-            item.get("value_n"),
+            value_n,
             item.get("pressure_mpa"),
             tuple(direction) if isinstance(direction, list) else None,
         )
@@ -1843,6 +1879,12 @@ def normalize_cae_bindings(package_path: Path) -> dict[str, Any]:
         if isinstance(item, dict) and _bind(item, "load"):
             loads_changed = True
 
+    # 3. Re-split a force shared by area over the faces as they are NOW, after
+    # any rebind above moved an entry to a different face.
+    area_shares = _reshare_area_loads(loads or [], mappings, topology)
+    if any(entry["status"] == "recomputed" for entry in area_shares):
+        loads_changed = True
+
     # Material normalization: coerce documented SI/flat materials into the
     # canonical mm-MPa-tonne form with an `elastic` block the deck generator reads.
     mats_raw = _read_member(package_path, _PARSED_MATERIALS_PATH)
@@ -1909,9 +1951,114 @@ def normalize_cae_bindings(package_path: Path) -> dict[str, Any]:
         # gone and another one is carrying the load now. It is the right answer
         # and the user still has to be able to see that it happened.
         "rebound_from_selector": rebound,
+        # A force split by area whose per-face shares changed with the geometry
+        # (`recomputed`), or could not be re-checked (`not_recomputed`, shares
+        # left as authored) — never applied quietly either way.
+        "area_shares": area_shares,
         "loads_promoted": loads_promoted,
         "materials_normalized": materials_normalized,
     }
+
+
+def _area_share_total(item: dict[str, Any]) -> float | None:
+    """The group total of a load entry that `cae.setup_static` split by area."""
+    total = item.get("total_force_n")
+    if item.get("load_share_basis") != "area" or isinstance(total, bool):
+        return None
+    if not isinstance(total, (int, float)) or not math.isfinite(total):
+        return None
+    return float(total)
+
+
+def _reshare_area_loads(
+    loads: list[Any], mappings: list[dict[str, Any]], topology: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Re-split each area-shared force by the CURRENT areas of its faces.
+
+    `cae.setup_static` divides one force over several faces by area, but froze
+    each share at authoring time: an edit that resized the faces unequally kept
+    the old split, so the deck applied a load distribution that matched no
+    geometry. Each entry records its group's `total_force_n`, so the split is a
+    derived quantity and is recomputed here. Mutates `loads` in place and
+    reports every group whose shares changed or could not be re-checked; a
+    setup written before the total was recorded carries no basis and is left
+    alone.
+    """
+    face_area = {
+        str(e.get("id")): float(e.get("area") or 0.0)
+        for e in (topology.get("entities") or [])
+        if isinstance(e, dict) and e.get("type") == "face"
+    }
+    entity_faces = {
+        str(m.get("cae_entity")): [str(f) for f in (m.get("face_ids") or [])]
+        for m in mappings
+        if isinstance(m, dict) and m.get("cae_entity")
+    }
+    groups: dict[tuple, list[dict[str, Any]]] = {}
+    for item in loads:
+        if not isinstance(item, dict):
+            continue
+        total = _area_share_total(item)
+        if total is None:
+            continue
+        direction = item.get("direction")
+        key = (
+            item.get("target_selector"),
+            total,
+            tuple(direction) if isinstance(direction, list) else None,
+        )
+        groups.setdefault(key, []).append(item)
+
+    report: list[dict[str, Any]] = []
+    for (selector, total, _direction), members in groups.items():
+        # The entries of ONE split add up to its total. If they do not, the
+        # bucket holds more than one authored group (same phrase, total and
+        # direction) or a hand-edited share; re-splitting would spread a single
+        # total over all of them, so leave them as written and say so.
+        authored = [item.get("value_n") for item in members]
+        if not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in authored) \
+                or abs(sum(authored) - total) > 1e-6 * abs(total):
+            report.append({
+                "selector": selector,
+                "total_force_n": total,
+                "status": "not_recomputed",
+                "reason": "the entries of this load group do not add up to its recorded "
+                          "total (more than one group shares the phrase, or a share was "
+                          "edited), so the shares were left as authored",
+            })
+            continue
+        faces: list[str | None] = []
+        for item in members:
+            target = str(item.get("target") or "")
+            bound = entity_faces.get(target)
+            if bound is None and target.startswith("@face:"):
+                bound = [target.split(":", 1)[1]]
+            faces.append(bound[0] if bound and len(bound) == 1 else None)
+        areas = [face_area.get(f, 0.0) if f else 0.0 for f in faces]
+        if not all(a > 0.0 for a in areas):
+            report.append({
+                "selector": selector,
+                "total_force_n": total,
+                "status": "not_recomputed",
+                "reason": "a face of this load group has no bound face or no recorded "
+                          "area, so the shares were left as authored and may not match "
+                          "the current geometry",
+            })
+            continue
+        total_area = sum(areas)
+        changes = []
+        for item, fid, area in zip(members, faces, areas, strict=True):
+            share = total * area / total_area
+            previous = item.get("value_n")
+            if isinstance(previous, (int, float)) and abs(previous - share) <= 1e-9 * abs(total):
+                continue
+            item["value_n"] = share
+            changes.append({"id": item.get("id"), "face_id": fid,
+                            "previous_n": previous, "value_n": share})
+        if changes:
+            report.append({"selector": selector, "total_force_n": total,
+                           "status": "recomputed", "entries": changes})
+    return report
 
 
 def _source_deck_input_hash(package_path: Path) -> str:
@@ -2039,6 +2186,7 @@ def ensure_source_deck_from_mesh(package_path: Path) -> dict[str, Any]:
         "binding_methods": binding_methods,
         "derived_entities": normalization["derived_entities"],
         "rebound_from_selector": normalization.get("rebound_from_selector") or [],
+        "area_shares": normalization.get("area_shares") or [],
         "loads_promoted": normalization["loads_promoted"],
         "input_hash": input_hash,
     }

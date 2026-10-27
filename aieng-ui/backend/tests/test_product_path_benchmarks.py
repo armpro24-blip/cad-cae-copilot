@@ -373,3 +373,56 @@ def test_a_force_spread_over_faces_is_shared_by_area(bench) -> None:
     assert fallback["status"] == "ok", fallback
     assert fallback["load_share_basis"] == "equal"
     assert any("EQUALLY" in w for w in fallback["warnings"])
+
+
+def test_an_area_split_follows_the_faces_after_an_edit(bench) -> None:
+    """The split is re-derived from the faces' areas at deck time.
+
+    It used to be frozen when `cae.setup_static` ran: lengthening the block
+    doubles the top face (800 -> 1600 mm²) and leaves the end face at 200 mm²,
+    yet the deck kept 800 N / 200 N instead of 888.9 N / 111.1 N.
+    """
+    def block(length: float) -> str:
+        return (
+            "from build123d import *\n"
+            f"blk = Box({length}, 20, 10, align=(Align.MIN, Align.MIN, Align.MIN))\n"
+            "blk.label = 'blk'\nresult = Compound(children=[blk])\n"
+        )
+
+    pid, pkg = _build(bench, block(40), "area_share_edit")
+    top, end = _plane(pkg, 2, 10.0), _plane(pkg, 0, 40.0)
+    setup = bench["runtime"].invoke_tool("cae.setup_static", {
+        "project_id": pid, "material": "Al6061-T6", "fix": "left",
+        "load": {"at": f"@face:{top} @face:{end}", "force_n": 1000, "direction": "-Z"},
+    })
+    assert setup["status"] == "ok", setup
+    loads = json.loads(_member(pkg, "simulation/cae_imports/parsed_loads.json"))["loads"]
+    assert {(e["load_share_basis"], e["total_force_n"]) for e in loads} == {("area", 1000)}
+
+    rebuilt = bench["runtime"].invoke_tool(
+        "cad.execute_build123d",
+        {"project_id": pid, "code": block(80), "timeout": 300, "thumbnail": False},
+    )
+    assert rebuilt["status"] == "ok", rebuilt
+    assert (_plane(pkg, 2, 10.0), _plane(pkg, 0, 80.0)) == (top, end)  # ids kept
+
+    tool = bench["runtime"].invoke_tool
+    assert tool("cae.generate_mesh", {"project_id": pid, "mesh_size_mm": 5.0})["status"] == "completed"
+    deck = tool("cae.generate_solver_input", {"project_id": pid, "run_id": "run_001"})
+    assert deck["status"] == "completed", deck
+    assert any("re-split" in w for w in deck["warnings"]), deck["warnings"]
+
+    loads = json.loads(_member(pkg, "simulation/cae_imports/parsed_loads.json"))["loads"]
+    shares = {entry["id"]: entry["value_n"] for entry in loads}
+    on_face = {
+        m["face_ids"][0]: shares[m["maps_to"]["cae_target_id"]]
+        for m in json.loads(_member(pkg, "simulation/cae_mapping.json"))["mappings"]
+        if m["maps_to"]["cae_target_id"] in shares
+    }
+    assert on_face[top] == pytest.approx(1000 * 1600 / 1800)
+    assert on_face[end] == pytest.approx(1000 * 200 / 1800)
+
+    deck_text = _member(pkg, "simulation/runs/run_001/solver_input.inp").decode()
+    cload = deck_text.split("*CLOAD", 1)[1].split("*", 1)[0]
+    total = sum(float(line.split(",")[2]) for line in cload.strip().splitlines() if line.strip())
+    assert total == pytest.approx(-1000.0, rel=1e-6)
