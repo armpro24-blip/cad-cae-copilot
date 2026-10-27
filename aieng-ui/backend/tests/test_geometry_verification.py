@@ -277,8 +277,16 @@ def test_a_failed_face_id_prediction_reports_unknown_not_preserved(monkeypatch) 
     before = _make_topo([_plane("face_001", 8.0, 9600.0)])
     after = _make_topo([_plane("face_001", 12.0, 9600.0)])
 
-    result = _geometry_verification(before, after, step_bytes=b"s", stl_bytes=b"s")
+    result = _geometry_verification(
+        before, after, step_bytes=b"s", stl_bytes=b"s", referenced_face_ids=["face_001"],
+    )
 
     assert result["stale_reference_risk"] is None
     assert result["topology_preserved"] is None
+    assert result["topology_change"]["topology_changed"] is None
     assert result["topology_change"]["face_ids_verified"] is False
+    # No face verdict survives on raw ids: not the counts, not the referenced face.
+    assert result["topology_change"]["entity_id_changes"]["face"]["status"] == "unknown"
+    face = result["face_edge_survival"]["face"]
+    assert face["status"] == "unknown" and "survived_count" not in face
+    assert face["referenced"] == [{"id": "face_001", "status": "unknown"}]

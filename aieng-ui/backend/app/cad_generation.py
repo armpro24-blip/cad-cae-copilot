@@ -3950,6 +3950,22 @@ def _with_persisted_face_ids(
         return None
 
 
+def _unknown_face_survival(
+    before_topo: dict[str, Any],
+    after_topo: dict[str, Any],
+    referenced_ids: list[str] | None,
+) -> dict[str, Any]:
+    """Face survival when the persisted ids could not be predicted: unknown, per face."""
+    out: dict[str, Any] = {
+        "status": "unknown",
+        "before_count": len(_topology_entity_ids(before_topo, "face")),
+        "after_count": len(_topology_entity_ids(after_topo, "face")),
+    }
+    if referenced_ids is not None:
+        out["referenced"] = [{"id": str(rid), "status": "unknown"} for rid in referenced_ids]
+    return out
+
+
 def _topology_entity_ids(topology_map: dict[str, Any], entity_type: str) -> set[str]:
     """Return the set of string ids for a given entity type in a topology map."""
     return {
@@ -4070,8 +4086,20 @@ def _geometry_verification(
     topology_change = _topology_change_summary(before_topo, after_topo)
     if not face_ids_known:
         # Raw enumeration ids match by name whatever they denote, so a fallback
-        # comparison could again report "preserved". Say "unknown" instead.
-        topology_change["stale_reference_risk"] = None
+        # comparison could again report "preserved". Every face verdict says
+        # "unknown" instead; a solid/edge change still counts as a change.
+        changes = topology_change["entity_id_changes"]
+        changes["face"] = {
+            "status": "unknown",
+            "before_count": changes["face"]["before_count"],
+            "after_count": changes["face"]["after_count"],
+        }
+        other_changed = any(
+            changes[kind]["added_count"] or changes[kind]["removed_count"]
+            for kind in ("solid", "edge")
+        )
+        topology_change["topology_changed"] = True if other_changed else None
+        topology_change["stale_reference_risk"] = True if other_changed else None
         topology_change["face_ids_verified"] = False
         topology_change["message"] = (
             "Face-id survival is unknown: the ids the package write will persist "
@@ -4094,14 +4122,19 @@ def _geometry_verification(
 
     return {
         "topology_preserved": (
-            not topology_change["topology_changed"] if face_ids_known else None
+            None if topology_change["topology_changed"] is None
+            else not topology_change["topology_changed"]
         ),
         "stale_reference_risk": topology_change["stale_reference_risk"],
         "topology_change": topology_change,
         "face_edge_survival": {
             "solid": _entity_survival_summary(before_topo, after_topo, "solid"),
-            "face": _entity_survival_summary(
-                before_topo, after_topo, "face", referenced_ids=referenced_face_ids
+            "face": (
+                _entity_survival_summary(
+                    before_topo, after_topo, "face", referenced_ids=referenced_face_ids
+                )
+                if face_ids_known
+                else _unknown_face_survival(before_topo, after_topo, referenced_face_ids)
             ),
             "edge": _entity_survival_summary(
                 before_topo, after_topo, "edge", referenced_ids=referenced_edge_ids
