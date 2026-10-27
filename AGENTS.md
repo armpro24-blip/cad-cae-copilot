@@ -1011,7 +1011,16 @@ Celik, Ghia, Roache & Freitas (J. Fluids Eng. 130(7):078001, 2008), Table 1:
   `feature_ref` only when that target's mapped faces all lie on one named part
   in the feature graph. The mapping's target id was once reported as the
   `feature_ref` itself ("near feature bc_001"), which the recommendation chain
-  then passed on as a `featureId` to edit.
+  then passed on as a `featureId` to edit. The node sets come from the deck of
+  the run the FRD belongs to, and are used only when that deck's node
+  coordinates match the FRD's: the source deck is re-synthesised from the
+  CURRENT mesh, so after a remesh an earlier run's FRD attributed two different
+  bolt holes to `bc_001`. `source_frd` records the package path of the FRD.
+  `location` is the cluster centroid; `peak_location` is the node carrying the
+  peak. Measured on the bracket trial, the max stress before an 8 -> 12 mm edit
+  sat at the rib root and after it at a corner of the loaded rib-top face, so a
+  max-to-max percentage compares two different places. Read `peak_location`
+  before quoting one.
 
 **Inverted elements are repaired or refused at mesh time.** `setOrder(2)`
 curves boundary mid-side nodes onto the CAD surface, and next to small holes

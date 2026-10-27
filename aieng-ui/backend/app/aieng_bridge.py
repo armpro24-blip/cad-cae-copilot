@@ -807,6 +807,7 @@ def extract_field_regions(
     max_clusters: int = 3,
     threshold_percentile: float = 90.0,
     overwrite: bool = False,
+    source_member: str | None = None,
 ) -> dict[str, Any]:
     """Extract high-magnitude field regions from a CalculiX FRD file.
 
@@ -856,6 +857,7 @@ def extract_field_regions(
             max_clusters=max_clusters,
             threshold_percentile=threshold_percentile,
             overwrite=overwrite,
+            source_member=source_member,
         )
         return {
             "status": "ok",

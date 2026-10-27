@@ -562,3 +562,76 @@ def test_ccx_field_name_stress_is_accepted(tmp_path: Path) -> None:
                              {1: 100, 2: 99, 3: 1}), encoding="utf-8")
     result = extract_field_regions_package(pkg, frd, field="STRESS", threshold_percentile=80)
     assert result["clusters"][0]["magnitude"] == {"value": 100.0, "unit": "MPa"}
+
+
+# The CURRENT mesh after a remesh: the same node ids sit elsewhere, so by id the
+# earlier run's peak nodes 1 & 2 would read as members of N_LOAD.
+_REMESHED_DECK = (
+    "*NODE\n"
+    "1, 10.0, 0.0, 0.0\n"
+    "2, 9.9, 0.0, 0.0\n"
+    "3, 0.0, 0.0, 0.0\n"
+    "*ELEMENT, TYPE=C3D4, ELSET=E_ALL\n"
+    "1, 1, 2, 3\n"
+    "*NSET, NSET=N_FIX\n"
+    "3\n"
+    "*NSET, NSET=N_LOAD\n"
+    "1, 2\n"
+)
+_TARGET_MAPPINGS = [
+    {"cae_entity": "N_FIX", "maps_to": {"cae_target_id": "bc_001"}, "face_ids": ["face_001"]},
+    {"cae_entity": "N_LOAD", "maps_to": {"cae_target_id": "load_001"}, "face_ids": ["face_010"]},
+]
+
+
+def _remeshed_package_with_run(tmp_path: Path) -> tuple[Path, Path]:
+    """Source deck from the current mesh; run_001's own deck from the old one."""
+    pkg = _package_with_cae_mapping(
+        tmp_path, source_deck=_REMESHED_DECK, mappings=_TARGET_MAPPINGS,
+        feature_graph=_PART_GRAPH,
+    )
+    with zipfile.ZipFile(pkg, "a") as zf:
+        zf.writestr("simulation/runs/run_001/solver_input.inp", _TWO_SET_DECK)
+    frd = tmp_path / "tmp_extracted.frd"   # what the tool hands over: a temp file
+    coords = {1: (0, 0, 0), 2: (0.1, 0, 0), 3: (10, 0, 0)}
+    frd.write_text(_make_frd(coords, {1: 100.0, 2: 99.0, 3: 1.0}), encoding="utf-8")
+    return pkg, frd
+
+
+def _regions(pkg: Path) -> dict:
+    import jsonschema
+    from importlib.resources import files
+
+    with zipfile.ZipFile(pkg) as zf:
+        regions = json.loads(zf.read("results/field_regions.json"))
+    schema = json.loads(files("aieng.schemas").joinpath("field_regions.schema.json").read_text())
+    jsonschema.validate(regions, schema)
+    return regions
+
+
+def test_an_earlier_runs_frd_is_attributed_with_that_runs_node_sets(tmp_path: Path) -> None:
+    """Found by a cold-agent trial: after a remesh, run_001's FRD was read against
+    the source deck re-synthesised from the NEW mesh, and two different bolt holes
+    were both attributed to bc_001."""
+    pkg, frd = _remeshed_package_with_run(tmp_path)
+    member = "simulation/runs/run_001/outputs/result.frd"
+
+    extract_field_regions_package(pkg, frd, threshold_percentile=80, source_member=member)
+
+    regions = _regions(pkg)
+    [cluster] = regions["clusters"]
+    assert cluster["cae_target_ref"] == "bc_001"      # by id the new mesh says load_001
+    assert cluster["peak_location"] == {"node_id": 1, "x": 0.0, "y": 0.0, "z": 0.0}
+    assert regions["source_frd"] == member            # not the temp file's name
+
+
+def test_node_sets_from_another_mesh_attribute_nothing(tmp_path: Path) -> None:
+    """With no run to tie the FRD to, the source deck is checked against the FRD's
+    node coordinates; a different mesh gives no attribution rather than a wrong one."""
+    pkg, frd = _remeshed_package_with_run(tmp_path)
+
+    result = extract_field_regions_package(pkg, frd, threshold_percentile=80)
+
+    [cluster] = _regions(pkg)["clusters"]
+    assert cluster["cae_target_ref"] is None and cluster["feature_ref"] is None
+    assert any("different mesh" in w for w in result["warnings"]), result["warnings"]

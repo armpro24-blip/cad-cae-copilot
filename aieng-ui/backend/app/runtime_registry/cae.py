@@ -1672,6 +1672,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         # solver-run FRD inside the package. Package members are extracted to
         # a temp file for the parser.
         temp_frd_path: str | None = None
+        member: str | None = None
         if not frd_path or not _Path(frd_path).exists():
             import tempfile as _tempfile
             import zipfile as _zipfile
@@ -1733,6 +1734,9 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 max_clusters=max_clusters,
                 threshold_percentile=threshold_percentile,
                 overwrite=overwrite,
+                # Which run this FRD belongs to: selects that run's deck for
+                # attribution and is recorded as `source_frd`.
+                source_member=member if temp_frd_path is not None else None,
             )
         except (FileNotFoundError, ValueError) as exc:
             return {
