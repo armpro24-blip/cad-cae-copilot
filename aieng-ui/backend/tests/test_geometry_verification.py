@@ -21,13 +21,24 @@ def _make_topo(entities: list[dict[str, str]]) -> dict[str, list[dict[str, str]]
     return {"entities": entities}
 
 
+# Faces carry the geometry a real topology map records: the write re-identifies
+# faces by it, and the verification reports the ids the write will persist. A
+# face with no geometry cannot be re-identified and would be given a fresh id.
+_BOTTOM = {"surface_type": "plane", "normal": [0.0, 0.0, -1.0], "area": 100.0,
+           "bounding_box": [0.0, 0.0, 0.0, 10.0, 10.0, 0.0]}
+_TOP = {"surface_type": "plane", "normal": [0.0, 0.0, 1.0], "area": 100.0,
+        "bounding_box": [0.0, 0.0, 10.0, 10.0, 10.0, 10.0]}
+_BORE = {"surface_type": "cylinder", "axis": [0.0, 0.0, 1.0], "area": 157.1,
+         "bounding_box": [4.5, 4.5, 0.0, 5.5, 5.5, 10.0]}
+
+
 @pytest.fixture
 def unchanged_topology() -> dict[str, list[dict[str, str]]]:
     """A topology where all entity ids survive unchanged."""
     return _make_topo([
         {"id": "solid_001", "type": "solid"},
-        {"id": "face_001", "type": "face"},
-        {"id": "face_002", "type": "face"},
+        {"id": "face_001", "type": "face", **_BOTTOM},
+        {"id": "face_002", "type": "face", **_TOP},
         {"id": "edge_001", "type": "edge"},
     ])
 
@@ -37,8 +48,8 @@ def changed_topology() -> dict[str, list[dict[str, str]]]:
     """A topology where face_002 and edge_001 are replaced by new ids."""
     return _make_topo([
         {"id": "solid_001", "type": "solid"},
-        {"id": "face_001", "type": "face"},
-        {"id": "face_003", "type": "face"},
+        {"id": "face_001", "type": "face", **_BOTTOM},
+        {"id": "face_003", "type": "face", **_BORE},
         {"id": "edge_002", "type": "edge"},
     ])
 
@@ -207,3 +218,49 @@ def test_feature_reference_ids_reads_entities_face_fallback() -> None:
     }
 
     assert _feature_reference_ids(feature, "face") == ["face_010", "face_011"]
+
+
+def _plane(fid: str, z: float, area: float) -> dict:
+    return {"id": fid, "type": "face", "surface_type": "plane", "normal": [0.0, 0.0, 1.0],
+            "area": area, "bounding_box": [0.0, 0.0, z, 10.0, 10.0, z]}
+
+
+def test_a_thickness_edit_that_keeps_the_face_count_is_not_called_preserved() -> None:
+    """Same ids by enumeration, different faces: what the write persists decides.
+
+    Measured in a cold-agent trial: a plate-thickness edit returned "face 16/16
+    survived, stale_reference_risk: false", then the package write re-identified
+    the faces and retired every bound id (rib top face_016 -> face_030). Two
+    look-alike +Z planes that both moved cannot be told apart, so the write
+    gives them fresh ids; the receipt must say so.
+    """
+    before = _make_topo([
+        {"id": "solid_001", "type": "solid"},
+        _plane("face_001", 8.0, 9600.0),    # plate top
+        _plane("face_002", 33.0, 300.0),    # rib top
+    ])
+    after = _make_topo([
+        {"id": "solid_001", "type": "solid"},
+        _plane("face_001", 12.0, 9600.0),   # same enumeration ids, moved faces
+        _plane("face_002", 37.0, 300.0),
+    ])
+
+    result = _geometry_verification(
+        before, after, step_bytes=b"step", stl_bytes=b"stl", glb_bytes=b"glb",
+        referenced_face_ids=["face_002"],
+    )
+
+    assert result["stale_reference_risk"] is True
+    faces = result["topology_change"]["entity_id_changes"]["face"]
+    assert faces["survived_count"] == 0 and faces["removed_count"] == 2
+    # The prediction works on a copy: the caller's topology is untouched.
+    assert [e["id"] for e in after["entities"]] == ["solid_001", "face_001", "face_002"]
+
+
+def test_a_face_that_did_not_move_keeps_its_id_in_the_report() -> None:
+    before = _make_topo([_plane("face_001", 0.0, 100.0)])
+    after = _make_topo([_plane("face_001", 0.0, 100.0)])
+
+    result = _geometry_verification(before, after, step_bytes=b"s", stl_bytes=b"s")
+
+    assert result["stale_reference_risk"] is False

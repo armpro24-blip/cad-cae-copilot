@@ -9,6 +9,7 @@ into the project's .aieng package.
 from __future__ import annotations
 
 import ast
+import copy
 import hashlib
 import importlib.metadata as importlib_metadata
 import json
@@ -3923,6 +3924,31 @@ def _topology_change_summary(before: dict[str, Any], after: dict[str, Any]) -> d
     }
 
 
+def _with_persisted_face_ids(
+    before_topo: dict[str, Any], after_topo: dict[str, Any]
+) -> dict[str, Any]:
+    """A copy of ``after_topo`` carrying the face ids the package write will persist.
+
+    A rebuild comes back with faces numbered by OCCT enumeration order, so an
+    edit that keeps the face COUNT returns the same id set ``face_001..N`` even
+    when those ids now denote different faces. ``_write_cad_artifacts`` then
+    re-identifies faces against the package and renames the ones that moved.
+    Comparing the raw enumeration reported "face 16/16 survived,
+    stale_reference_risk: false" on a plate-thickness edit whose write retired
+    every bound face id. The re-identification is deterministic, so applying it
+    to a copy here predicts exactly what will be persisted.
+    """
+    try:
+        from .topology_identity import stabilize_topology_face_ids
+
+        predicted = copy.deepcopy(after_topo)
+        stabilize_topology_face_ids(before_topo, predicted)
+        return predicted
+    except Exception as exc:  # noqa: BLE001 - a report must never block an edit
+        LOGGER.warning("face-id prediction failed; reporting raw ids: %s", exc)
+        return after_topo
+
+
 def _topology_entity_ids(topology_map: dict[str, Any], entity_type: str) -> set[str]:
     """Return the set of string ids for a given entity type in a topology map."""
     return {
@@ -4036,6 +4062,7 @@ def _geometry_verification(
     ``unknown`` because the current execution pipeline only checks build
     success, non-empty solids, and export sanity.
     """
+    after_topo = _with_persisted_face_ids(before_topo, after_topo)
     topology_change = _topology_change_summary(before_topo, after_topo)
     step_ok = bool(step_bytes)
     stl_ok = bool(stl_bytes)
@@ -9719,7 +9746,6 @@ def _compute_parameter_edit_preview(
     else:
         expected_parts = None
     regression_diff = _diff_topology(before_topo, topo, expected_parts=expected_parts)
-    topology_change = _topology_change_summary(before_topo, topo)
     critique_diff = _diff_critique(before_topo, before_fg, topo, feature_graph)
 
     referenced_face_ids = (
@@ -9739,6 +9765,9 @@ def _compute_parameter_edit_preview(
         referenced_face_ids=referenced_face_ids,
         referenced_edge_ids=referenced_edge_ids,
     )
+    # The same summary, on the ids the write will persist (see
+    # `_with_persisted_face_ids`), so preview and receipt cannot disagree.
+    topology_change = geometry_verification["topology_change"]
 
     return {
         "status": "ok",
