@@ -236,7 +236,13 @@ def _is_solver_abort(solve: dict[str, Any]) -> bool:
 
 # What CalculiX says when the MESH is what it rejects. Anything else it reports
 # is not evidence about the mesh, and "use a finer mesh" is then a guess.
-_MESH_EVIDENCE = ("JACOBIAN", "DISTORT", "NEGATIVE VOLUME", "INCONSISTENT ORIENTATION", "ERROR IN FACE")
+# `solver_diagnosis` holds `_diagnose_solver_log`'s rewritten messages, not the
+# raw log: "ERROR IN FACE" / "INCONSISTENT ORIENTATION" arrive as "Mesh has
+# inconsistently oriented faces", so match that wording too.
+_MESH_EVIDENCE = (
+    "JACOBIAN", "DISTORT", "NEGATIVE VOLUME", "INCONSISTENT ORIENTATION",
+    "ERROR IN FACE", "INCONSISTENTLY ORIENTED",
+)
 # ccx's own array-sizing errors ("*ERROR in bounadd: increase nboun_"): its
 # counting pass under-sized an internal array. Measured on ccx 2.23 / Windows,
 # the identical deck also solved on other runs (#549).
@@ -305,8 +311,9 @@ def record_from_solve(
                 "reason": (
                     "CalculiX hit one of its own internal array limits (see "
                     "solver_diagnosis). That is not evidence about the mesh or the "
-                    "design; measured, the identical deck also solved on other runs. "
-                    "Re-run at the SAME mesh size; if it reproduces, it is a solver issue."
+                    "design; it has been observed on ccx 2.23 for other decks that then "
+                    "solved unchanged on a re-run (#549). Re-run at the SAME mesh size; "
+                    "if it reproduces, it is a solver issue."
                 ),
             }
         else:
