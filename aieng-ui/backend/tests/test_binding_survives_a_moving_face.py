@@ -590,3 +590,72 @@ def test_two_groups_sharing_phrase_and_total_are_not_merged(tmp_path: Path) -> N
     [group] = result["area_shares"]
     assert group["status"] == "not_recomputed"
     assert sum(entry["value_n"] for entry in _loads(pkg)) == pytest.approx(2000.0)
+
+
+# --- The preflight's rebind preview claims only what the rebind repairs ---
+
+
+def _moved_rib_package(tmp_path: Path) -> Path:
+    return _package(
+        tmp_path / "preview.aieng",
+        topology=_topology("face_022", 49.0),
+        load_target="LOAD_001",
+        selector="rib_main top",
+        mapping_face="face_012",
+    )
+
+
+def test_the_preview_recovers_a_moved_face_on_a_copy(tmp_path: Path) -> None:
+    from app.runtime_registry.cae import _selector_rebind_preview
+
+    pkg = _moved_rib_package(tmp_path)
+    before = pkg.read_bytes()
+
+    preview = _selector_rebind_preview(pkg, {"face_character_mismatches": []})
+
+    assert preview["recovers_all"] is True, preview
+    assert [r["face_id"] for r in preview["rebound"]] == ["face_022"]
+    assert pkg.read_bytes() == before   # measured on a copy
+
+
+def test_a_face_that_changed_character_is_not_claimed_recovered(tmp_path: Path) -> None:
+    """A rebind repairs missing ids only; normalisation re-records signatures, so
+    the copy cannot show a character change afterwards — the original verdict must."""
+    from app.runtime_registry.cae import _selector_rebind_preview
+
+    pkg = _moved_rib_package(tmp_path)
+
+    preview = _selector_rebind_preview(
+        pkg, {"face_character_mismatches": [{"face_id": "face_005"}]}
+    )
+
+    assert preview["recovers_all"] is False
+    assert preview["character_changed"] == ["face_005"]
+
+
+def test_an_unrelated_empty_nset_stays_broken_in_the_preview(tmp_path: Path) -> None:
+    """The moved load face recovers; a BC whose set has no faces does not."""
+    from app.runtime_registry.cae import _selector_rebind_preview
+
+    pkg = _moved_rib_package(tmp_path)
+    with zipfile.ZipFile(pkg) as zf:
+        members = {n: zf.read(n) for n in zf.namelist()}
+    bcs = json.loads(members["simulation/cae_imports/parsed_boundary_conditions.json"])
+    bcs["boundary_conditions"].append(
+        {"id": "bc_002", "type": "fixed", "target": "BC_EMPTY", "dof_start": 1, "dof_end": 3, "value": 0}
+    )
+    mapping = json.loads(members["simulation/cae_mapping.json"])
+    mapping["mappings"].append(
+        {"cae_entity": "BC_EMPTY", "face_ids": [],
+         "maps_to": {"cae_target_id": "bc_002", "role": "fixed_support"}}
+    )
+    members["simulation/cae_imports/parsed_boundary_conditions.json"] = json.dumps(bcs).encode()
+    members["simulation/cae_mapping.json"] = json.dumps(mapping).encode()
+    with zipfile.ZipFile(pkg, "w") as zf:
+        for name, data in members.items():
+            zf.writestr(name, data)
+
+    preview = _selector_rebind_preview(pkg, {"face_character_mismatches": []})
+
+    assert preview["recovers_all"] is True, preview     # the moved face is recovered
+    assert preview["nset_valid_after"] is False         # the empty set is not

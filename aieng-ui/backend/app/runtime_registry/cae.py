@@ -656,7 +656,9 @@ def _stale_mesh_revisions(package_path: Path) -> tuple[int, int] | None:
     return (mesh_revision, current) if mesh_revision != current else None
 
 
-def _selector_rebind_preview(package_path: Path) -> dict[str, Any]:
+def _selector_rebind_preview(
+    package_path: Path, original_validation: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """What deck-time binding would recover, measured on a throwaway copy.
 
     After an edit that moves the bound faces, their ids retire and the
@@ -666,6 +668,13 @@ def _selector_rebind_preview(package_path: Path) -> dict[str, Any]:
     recommended `ai_preprocessing` (an API key) and a hand-written
     `cae_mapping.json` instead. Running the same normalisation on a copy turns
     "would the rebind work?" into evidence rather than a guess.
+
+    A rebind repairs MISSING face ids only. A retained face whose character
+    changed (`face_character_mismatches` in the original check) is not repaired
+    by it — and normalisation re-records signatures from the current faces, so
+    the copy cannot show that mismatch afterwards; the original verdict decides.
+    The NSET check is re-run on the copy: a broken set unrelated to the moved
+    faces stays broken and keeps its own repair advice.
     """
     import shutil as _shutil
     import tempfile as _tempfile
@@ -680,14 +689,21 @@ def _selector_rebind_preview(package_path: Path) -> dict[str, Any]:
             _shutil.copy2(package_path, trial)
             report = simulation_runner.normalize_cae_bindings(trial)
             after = validate_cae_topology_references(trial)
+            nset_valid_after = bool(_validate_cae_mapping_for_solver(trial).get("valid"))
     except Exception as exc:  # noqa: BLE001 - a preview must never break the preflight
-        return {"recovers_all": False, "rebound": [], "error": f"{type(exc).__name__}: {exc}"}
+        return {
+            "recovers_all": False, "rebound": [], "nset_valid_after": False,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
     rebound = report.get("rebound_from_selector") or []
     still_missing = after.get("missing_face_ids") or []
+    character_changed = (original_validation or {}).get("face_character_mismatches") or []
     return {
-        "recovers_all": bool(rebound) and not still_missing,
+        "recovers_all": bool(rebound) and not still_missing and not character_changed,
         "rebound": rebound,
         "still_missing": still_missing,
+        "character_changed": [m.get("face_id") for m in character_changed if isinstance(m, dict)],
+        "nset_valid_after": nset_valid_after,
     }
 
 
@@ -1954,7 +1970,10 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 "resolves_blocked_reason_codes": [_blocked_reason_codes.MISSING_LOADS],
             })
         rebind_recovers = bool(preflight.get("selector_rebind_recovers"))
-        if not preflight.get("nset_binding_valid", True) and not rebind_recovers:
+        # Only sets the rebind actually repairs (measured on the copy) lose the
+        # hand-written-mapping advice; an unrelated broken set keeps it.
+        nsets_repaired = rebind_recovers and bool(preflight.get("selector_rebind_nsets_valid"))
+        if not preflight.get("nset_binding_valid", True) and not nsets_repaired:
             recs.append({
                 "tool": "cae.apply_setup_patch",
                 "input": {
@@ -1997,10 +2016,9 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             if rebind_recovers:
                 # Deck generation re-resolves the retired faces from the
                 # setup's recorded phrases (measured on a copy by the preflight).
-                resolves += [
-                    _blocked_reason_codes.STALE_TOPOLOGY_REFERENCE,
-                    _blocked_reason_codes.NSET_BINDING_INVALID,
-                ]
+                resolves.append(_blocked_reason_codes.STALE_TOPOLOGY_REFERENCE)
+                if nsets_repaired:
+                    resolves.append(_blocked_reason_codes.NSET_BINDING_INVALID)
             recs.append({
                 "tool": "cae.generate_solver_input",
                 # A free run id, and NO overwrite: AGENTS.md calls
@@ -2205,7 +2223,8 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         # Stale references are not the end of the story: a setup authored in
         # engineering words recovers moved faces at deck time. Measure it.
         selector_rebind = (
-            _selector_rebind_preview(package_path) if not topology_refs_ok else None
+            _selector_rebind_preview(package_path, topology_validation)
+            if not topology_refs_ok else None
         )
         rebind_recovers = bool(selector_rebind and selector_rebind["recovers_all"])
 
@@ -2330,6 +2349,9 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 "stale_mesh": stale_mesh,
                 "stale_deck": stale_deck,
                 "selector_rebind_recovers": rebind_recovers,
+                "selector_rebind_nsets_valid": bool(
+                    selector_rebind and selector_rebind.get("nset_valid_after")
+                ),
             },
             ready_to_run,
             free_run_id=free_run_id,
