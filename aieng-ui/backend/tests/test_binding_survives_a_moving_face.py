@@ -405,3 +405,169 @@ def test_a_pressure_group_is_interchangeable_only_at_equal_pressure(
     result = normalize_cae_bindings(pkg)
 
     assert bool(result["rebound_from_selector"]) is recovered, result
+
+
+# --- A force split by area follows the faces' areas, not the authored split ---
+
+
+def _area_package(
+    path: Path,
+    *,
+    faces: dict[str, float],
+    mapped: list[str],
+    shares: list[float],
+    total: float | None,
+    selector: str = "top",
+) -> Path:
+    """Two load entries from one phrase; `faces` is the CURRENT id -> area."""
+    entities: list[dict] = [{"id": "body_001", "type": "solid", "name": "blk"}]
+    for index, (fid, area) in enumerate(faces.items()):
+        entity = {"id": fid, "type": "face", "surface_type": "plane",
+                  "normal": [0.0, 0.0, 1.0], "centroid": [10.0 * index, 0.0, 10.0],
+                  "body_id": "body_001"}
+        if area:
+            entity["area"] = area
+        entities.append(entity)
+    loads = []
+    for i, share in enumerate(shares):
+        entry = {"id": f"load_{i + 1:03d}", "type": "force", "target": f"LOAD_{i + 1:03d}",
+                 "target_selector": selector, "value_n": share, "direction": [0.0, 0.0, -1.0]}
+        if total is not None:
+            entry.update(load_share_basis="area", total_force_n=total)
+        loads.append(entry)
+    mappings = [
+        {"cae_entity": f"LOAD_{i + 1:03d}", "face_ids": [face],
+         "maps_to": {"cae_target_id": f"load_{i + 1:03d}", "role": "load_application"}}
+        for i, face in enumerate(mapped)
+    ]
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("manifest.json", json.dumps({"model_id": "blk"}))
+        zf.writestr("geometry/topology_map.json", json.dumps({"entities": entities}))
+        zf.writestr("simulation/cae_imports/parsed_boundary_conditions.json",
+                    json.dumps({"boundary_conditions": []}))
+        zf.writestr("simulation/cae_imports/parsed_loads.json", json.dumps({"loads": loads}))
+        zf.writestr("simulation/cae_mapping.json", json.dumps({"mappings": mappings}))
+    return path
+
+
+def test_a_resized_face_gets_its_new_area_share(tmp_path: Path) -> None:
+    """Authored 800/200 over 800+200 mm²; one face grew to 1600 mm² since."""
+    pkg = _area_package(tmp_path / "grown.aieng",
+                        faces={"face_001": 1600.0, "face_002": 200.0},
+                        mapped=["face_001", "face_002"], shares=[800.0, 200.0], total=1000.0)
+
+    result = normalize_cae_bindings(pkg)
+
+    written = {entry["id"]: entry["value_n"] for entry in _loads(pkg)}
+    assert written["load_001"] == pytest.approx(1000.0 * 1600 / 1800)
+    assert written["load_002"] == pytest.approx(1000.0 * 200 / 1800)
+    assert sum(written.values()) == pytest.approx(1000.0)
+    [group] = result["area_shares"]
+    assert group["status"] == "recomputed" and group["selector"] == "top"
+    assert {e["id"]: e["previous_n"] for e in group["entries"]} == {
+        "load_001": 800.0, "load_002": 200.0}
+
+    from app.runtime_registry.cae import rebind_warnings_for
+
+    [warning] = rebind_warnings_for(result)
+    assert "re-split" in warning and "800 -> 888.889 N" in warning
+
+
+def test_unchanged_areas_change_nothing(tmp_path: Path) -> None:
+    pkg = _area_package(tmp_path / "same.aieng",
+                        faces={"face_001": 800.0, "face_002": 200.0},
+                        mapped=["face_001", "face_002"], shares=[800.0, 200.0], total=1000.0)
+
+    result = normalize_cae_bindings(pkg)
+
+    assert result["area_shares"] == []
+
+
+def test_an_area_shared_group_is_rebound_and_re_split(tmp_path: Path) -> None:
+    """Unequal authored shares used to make the group non-interchangeable.
+
+    The share is derived from the face it lands on, so the entries ARE
+    interchangeable once it is re-split after the rebind: the hole faces
+    retired, "bolt holes" still picks two, each gets its own area share.
+    """
+    topology = _holes_topology(["face_011", "face_012"])
+    topology["entities"][2]["area"] = 3 * topology["entities"][1]["area"]  # deeper hole
+    pkg = _area_package(tmp_path / "moved.aieng", faces={}, mapped=["face_001", "face_002"],
+                        shares=[800.0, 200.0], total=1000.0, selector="bolt holes")
+    _replace_member(pkg, "geometry/topology_map.json", json.dumps(topology))
+
+    result = normalize_cae_bindings(pkg)
+
+    assert len(result["rebound_from_selector"]) == 2, result
+    mapping = {m["cae_entity"]: m["face_ids"][0] for m in _mapping(pkg)}
+    by_face = {mapping[entry["target"]]: entry["value_n"] for entry in _loads(pkg)}
+    assert by_face == pytest.approx({"face_011": 250.0, "face_012": 750.0})
+
+
+def test_a_group_whose_phrase_now_picks_one_face_is_refused(tmp_path: Path) -> None:
+    """Two entries, one face left: the count changed, as in four holes -> three.
+
+    The single-face branch returned that face to EVERY entry of the group, so
+    both loads were bound to the same face with nothing reported.
+    """
+    pkg = _area_package(tmp_path / "shrunk.aieng",
+                        faces={"face_011": 300.0, "face_012": 900.0},
+                        mapped=["face_001", "face_002"], shares=[800.0, 200.0], total=1000.0)
+
+    result = normalize_cae_bindings(pkg)   # "top" resolves to the larger face only
+
+    assert result["rebound_from_selector"] == []
+
+
+def test_a_split_without_a_recorded_total_is_left_as_written(tmp_path: Path) -> None:
+    """A setup written before the total was recorded has no basis to re-split on."""
+    pkg = _area_package(tmp_path / "legacy.aieng",
+                        faces={"face_001": 1600.0, "face_002": 200.0},
+                        mapped=["face_001", "face_002"], shares=[800.0, 200.0], total=None)
+
+    result = normalize_cae_bindings(pkg)
+
+    assert result["area_shares"] == []
+    assert [entry["value_n"] for entry in _loads(pkg)] == [800.0, 200.0]
+
+
+def test_a_face_without_an_area_is_reported_not_guessed(tmp_path: Path) -> None:
+    pkg = _area_package(tmp_path / "noarea.aieng",
+                        faces={"face_001": 1600.0, "face_002": 0.0},
+                        mapped=["face_001", "face_002"], shares=[800.0, 200.0], total=1000.0)
+
+    result = normalize_cae_bindings(pkg)
+
+    [group] = result["area_shares"]
+    assert group["status"] == "not_recomputed"
+    assert [entry["value_n"] for entry in _loads(pkg)] == [800.0, 200.0]
+
+
+def _replace_member(pkg: Path, name: str, data: str) -> None:
+    with zipfile.ZipFile(pkg) as zf:
+        members = {n: zf.read(n) for n in zf.namelist()}
+    members[name] = data.encode()
+    with zipfile.ZipFile(pkg, "w") as zf:
+        for n, d in members.items():
+            zf.writestr(n, d)
+
+
+def test_a_partly_retired_group_fills_the_free_faces(tmp_path: Path) -> None:
+    """One hole kept its id, the other retired: the moved entry takes the FREE face.
+
+    Assigning by index over every recovered face could give bc_001 (retired)
+    face_011 — the face bc_002 still holds — so two restraints sat on one hole
+    and the other hole carried none.
+    """
+    pkg = _bolted_package(
+        tmp_path / "partial.aieng",
+        hole_ids=["face_011", "face_013"],
+        mapped_faces=["face_007", "face_011"],   # bc_001 retired, bc_002 still bound
+    )
+
+    result = normalize_cae_bindings(pkg)
+
+    assert {r["id"]: r["face_id"] for r in result["rebound_from_selector"]} == {
+        "bc_001": "face_013"}
+    bound = sorted(f for m in _mapping(pkg) for f in m["face_ids"])
+    assert bound == ["face_011", "face_013"]

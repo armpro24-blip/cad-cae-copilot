@@ -67,9 +67,22 @@
             "$comment": "The engineering-language phrase that CHOSE this target face, e.g. \"rib_main top\", recorded beside the `@face:` pointer it resolved to. A resolved pointer cannot survive an edit that MOVES the face: the id retires and the binding resolves to nothing. Deck-time binding re-runs the same deterministic resolver over this phrase to recover the face, and refuses ambiguity exactly as the authoring path does. Absent on a document written before this field existed, which keeps the conservative refusal rather than guessing.",
             "type": "string",
             "minLength": 1
+          },
+          "load_share_basis": {
+            "$comment": "How this entry's `value_n` was derived from a force spread over several faces. `area`: it is this face's area share of `total_force_n`, and deck-time binding re-splits the total by the faces' CURRENT areas, so an edit that resizes the faces unequally does not keep the authored split. Absent on a single-face load and on documents written before this field existed, whose `value_n` is used as written.",
+            "type": "string",
+            "const": "area"
+          },
+          "total_force_n": {
+            "$comment": "The total force (N) of the group this entry belongs to (entries sharing `target_selector`, `direction` and this value); required alongside `load_share_basis`.",
+            "type": "number"
           }
         },
         "additionalProperties": false,
+        "dependentRequired": {
+          "load_share_basis": ["total_force_n"],
+          "total_force_n": ["load_share_basis"]
+        },
         "anyOf": [
           {
             "required": [

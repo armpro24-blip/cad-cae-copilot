@@ -45,6 +45,29 @@ def rebind_warnings_for(source_deck_synthesis: Any) -> list[str]:
             f"@face:{entry.get('face_id')} and the binding was moved to it. "
             "Confirm that is the face you intend."
         )
+    # Re-split area shares are the same kind of signal: the newtons on each face
+    # are no longer the ones the setup recorded.
+    for group in (source_deck_synthesis or {}).get("area_shares") or []:
+        if not isinstance(group, dict):
+            continue
+        if group.get("status") == "recomputed":
+            parts = ", ".join(
+                f"{e.get('id')} {e.get('previous_n'):.6g} -> {e.get('value_n'):.6g} N"
+                if isinstance(e.get("previous_n"), (int, float))
+                else f"{e.get('id')} -> {e.get('value_n'):.6g} N"
+                for e in group.get("entries") or []
+            )
+            warnings.append(
+                f"the {group.get('total_force_n'):.6g} N load on "
+                f"{str(group.get('selector'))!r} was re-split by the faces' current "
+                f"areas: {parts}."
+            )
+        elif group.get("status") == "not_recomputed":
+            warnings.append(
+                f"the {group.get('total_force_n'):.6g} N load on "
+                f"{str(group.get('selector'))!r} could not be re-split by area: "
+                f"{group.get('reason')}."
+            )
     return warnings
 
 
@@ -1164,6 +1187,13 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                  "value_n": share, "direction": direction}
                 for i, (fid, share) in enumerate(zip(load_hit["face_ids"], shares))
             ]
+            if share_basis == "area":
+                # The share is derived from the faces' areas, so record what it
+                # was derived FROM: deck-time binding re-splits the total by the
+                # areas the faces have after an edit instead of keeping this split.
+                for entry in loads:
+                    entry["load_share_basis"] = "area"
+                    entry["total_force_n"] = force_n
             patches.append({
                 "action_type": "create_file",
                 "path": "simulation/cae_imports/parsed_loads.json",
