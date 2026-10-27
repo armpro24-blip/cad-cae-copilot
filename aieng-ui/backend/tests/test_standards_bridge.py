@@ -436,3 +436,44 @@ def test_generate_bom_empty_warnings_when_nothing_skipped_or_merged(tmp_path: Pa
     result = generate_bom(settings, project_id=None, package_path=str(pkg_path))
     assert result["status"] == "ok"
     assert result["warnings"] == []
+
+
+def test_features_of_named_parts_are_not_listed_as_parts(tmp_path: Path) -> None:
+    """A bracket's BOM read "base_plate, rib_main, Hole pattern ..., Base face"."""
+    from app.standards_bridge import generate_bom
+
+    settings = _make_patch_settings(tmp_path)
+    pkg_path = tmp_path / "bracket.aieng"
+    _make_bom_package(pkg_path, [
+        {"id": "p1", "type": "named_part", "name": "base_plate", "parameters": {}},
+        {"id": "p2", "type": "named_part", "name": "rib_main", "parameters": {}},
+        {"id": "h1", "type": "mounting_hole_pattern", "name": "Hole pattern r=5.0mm (4 holes)"},
+        {"id": "b1", "type": "base_plate", "name": "Base face"},
+    ])
+    with zipfile.ZipFile(pkg_path, "a") as zf:
+        zf.writestr("simulation/cae_imports/parsed_materials.json",
+                    json.dumps({"materials": [{"name": "Al6061-T6"}]}))
+
+    result = generate_bom(settings, project_id=None, package_path=str(pkg_path), fmt="markdown")
+
+    assert [i["part_name"] for i in result["items"]] == ["base_plate", "rib_main"]
+    # Not the part's declared material: CSV/JSON/XLSX and the UI read `material`
+    # without provenance, so the analysis material travels separately.
+    assert {i["material"] for i in result["items"]} == {""}
+    assert {i["analysis_material"] for i in result["items"]} == {"Al6061-T6"}
+    assert "- (CAE setup: Al6061-T6)" in result["markdown"]
+
+
+def test_an_imported_shape_without_named_parts_still_lists_its_features(tmp_path: Path) -> None:
+    from app.standards_bridge import generate_bom
+
+    settings = _make_patch_settings(tmp_path)
+    pkg_path = tmp_path / "imported.aieng"
+    _make_bom_package(pkg_path, [
+        {"id": "h1", "type": "mounting_hole_pattern", "name": "Hole pattern r=5.0mm (4 holes)"},
+    ])
+
+    result = generate_bom(settings, project_id=None, package_path=str(pkg_path), fmt="markdown")
+
+    assert [i["part_name"] for i in result["items"]] == ["Hole pattern r=5.0mm (4 holes)"]
+    assert "analysis_material" not in result["items"][0]

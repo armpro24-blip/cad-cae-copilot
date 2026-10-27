@@ -16,6 +16,20 @@ from ..computed_metrics import get_computed_metrics
 from ..config import now_iso
 from ..legacy_app_symbols import sync_main_symbols
 from ..logging_utils import log_exception
+
+# Imported explicitly, not left to `_sync_main_symbols`: that sync runs only when
+# `create_app` registers these routes, and `_build_credibility_report` /
+# `_build_evidence_lifecycle_summary` are also called directly (the engineering
+# report, the review packet). Measured on a cold-agent trial project, the report
+# built outside an app raised NameError and fell back to a degraded lifecycle
+# summary, saying only "failed: NameError".
+from ..project_io import (
+    _build_revalidation_response,
+    _generate_artifact_manifest,
+    _read_claim_proposals_from_package,
+    _read_revalidation_status,
+    _resolve_evidence_reference,
+)
 from ..target_comparison import compare_package_targets
 
 LOGGER = logging.getLogger("app.app_factory")

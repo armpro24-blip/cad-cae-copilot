@@ -1162,6 +1162,10 @@ def _packet_response(
                 "id": sec["id"],
                 "title": sec["title"],
                 "status": sec["status"],
+                # The section's content. Omitted, the engineering report — which
+                # renders `body_md` — showed "No data available" in every
+                # Evidence Coverage card, including those marked "included".
+                "body_md": sec.get("body_md") or "",
                 "warnings": sec.get("warnings") or [],
                 "artifact_paths": sec.get("artifact_paths") or [],
             }

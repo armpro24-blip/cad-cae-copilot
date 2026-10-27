@@ -7,10 +7,12 @@ import json
 import zipfile
 from pathlib import Path
 
+import pytest
 import yaml
 from fastapi.testclient import TestClient
 
 from app.config import Settings
+from app.engineering_report import generate_engineering_report
 from app.main import create_app, default_project, project_dir, save_project
 
 _WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
@@ -135,7 +137,7 @@ def test_engineering_report_endpoint_returns_self_contained_html_read_only(tmp_p
     assert "Engineering Report" in html
     assert "Honesty Boundary" in html
     assert "does not certify design safety" in html
-    assert "Credibility Stamp" in html
+    assert "Evidence Status" in html  # the roll-up, no longer labelled a credibility stamp
     assert "Provenance" in html
     assert "<table>" in html
     assert "status-chip" in html
@@ -305,3 +307,90 @@ def test_report_generate_tool_is_registered() -> None:
     tools = {tool["name"]: tool for tool in registered_tools_info()}
     assert "report.generate" in tools
     assert "Read-only" in tools["report.generate"]["description"]
+
+
+def test_the_report_states_what_a_reviewer_needs_to_judge_the_numbers(tmp_path: Path) -> None:
+    """Found by a cold-agent trial: the report said "Credibility: unknown" for an
+    executed solver result, called the solver's metrics a user import, listed a
+    hole pattern as a part, and omitted the setup, mesh, convergence, peaks and
+    margin. Every one of those is read from the package."""
+    settings = _make_settings(tmp_path)
+    project_id, pkg_path = _make_project(settings)
+    _write_report_package(pkg_path)
+    with zipfile.ZipFile(pkg_path, "a") as zf:
+        zf.writestr("simulation/mesh/mesh_metadata.json", json.dumps({
+            "element_type": "C3D10", "element_count": 1234, "target_size_mm": 2.5,
+            "accuracy": {"band": "reliable", "reason": "2 elements through the wall"},
+        }))
+        zf.writestr("analysis/mesh_convergence_report.json", json.dumps({
+            "overall_verdict": "not_converged", "mesh_sizes": [4.0, 2.8, 2.0],
+            "verdicts": {"max_von_mises_stress": "oscillatory_not_converged"},
+        }))
+        zf.writestr("simulation/cae_imports/parsed_materials.json", json.dumps(
+            {"materials": [{"name": "Al6061-T6", "yield_strength": 276.0}]}))
+        zf.writestr("results/field_regions.json", json.dumps({
+            "source_frd": "simulation/runs/run_001/outputs/result.frd",
+            "clusters": [{"id": "cluster_001", "magnitude": {"value": 87.4, "unit": "MPa"},
+                          "location": {"x": 0, "y": 0, "z": 0},
+                          "peak_location": {"node_id": 7, "x": 30.0, "y": 2.5, "z": 37.0},
+                          "node_count": 3, "feature_ref": None, "cae_target_ref": "load_001"}],
+        }))
+
+    out = generate_engineering_report(settings, project_id)
+
+    html = out["html"]
+    assert "<strong>Claim tier</strong> executed_solver_result" in html
+    assert out["provenance"]["metrics_source"] == {"tool": "frd_parser_v1", "software": "CalculiX"}
+    assert "Analysis Setup and Result Quality" in html
+    assert "oscillatory_not_converged" in html and "1234 elements" in html
+    assert "(30.0, 2.5, 37.0)" in html and "load_001" in html
+    assert out["analysis"]["margin"]["ratio"] == pytest.approx(276.0 / 87.4)
+    assert "No data available" not in html
+    assert len(out["report"]["warnings"]) == len(set(out["report"]["warnings"]))
+    assert str(pkg_path) not in " ".join(out["report"]["warnings"])
+
+
+def test_the_report_checks_each_fact_against_the_current_geometry(tmp_path: Path) -> None:
+    """Independent review of #559: facts were shown without checking that they
+    describe the current geometry, and a local temp path reached Provenance."""
+    settings = _make_settings(tmp_path)
+    project_id, pkg_path = _make_project(settings)
+    _write_report_package(pkg_path)
+    metrics = {
+        "schema_version": "0.1",
+        "metrics_source": {"tool": "frd_parser_v1",
+                           "source_files": ["C:/Users/someone/AppData/Local/Temp/x/solver_input.frd"]},
+        "load_cases": [{"load_case_id": "lc1",
+                        "metrics": {"max_von_mises_stress": {"value": 87.4, "unit": "MPa"}}}],
+    }
+    members = {}
+    with zipfile.ZipFile(pkg_path) as zf:
+        members = {n: zf.read(n) for n in zf.namelist()}
+    members["results/computed_metrics.json"] = json.dumps(metrics).encode()
+    members["state/revalidation_status.json"] = json.dumps({"current_geometry_revision": 2}).encode()
+    members["simulation/runs/run_001/deck_provenance.json"] = json.dumps(
+        {"run_id": "run_001", "geometry_revision": 0}).encode()
+    members["simulation/mesh/mesh_metadata.json"] = json.dumps(
+        {"element_type": "C3D4", "element_count": 10, "geometry_revision": 1}).encode()
+    members["analysis/mesh_convergence_report.json"] = json.dumps(
+        {"overall_verdict": "converged", "verdicts": {}, "geometry_revision": 0}).encode()
+    members["simulation/cae_imports/parsed_materials.json"] = json.dumps(
+        {"materials": [{"name": "Al6061-T6", "yield_strength": 276.0}]}).encode()
+    members["results/field_regions.json"] = json.dumps({"source_frd": "tmp5qds4fh3.frd", "clusters": [
+        {"id": "c1", "magnitude": {"value": 87.4, "unit": "MPa"}, "location": {"x": 0, "y": 0, "z": 0},
+         "node_count": 2, "feature_ref": None}]}).encode()
+    with zipfile.ZipFile(pkg_path, "w") as zf:
+        for name, data in members.items():
+            zf.writestr(name, data)
+
+    out = generate_engineering_report(settings, project_id)
+    html = out["html"]
+
+    assert "someone" not in html and "AppData" not in html
+    assert "solver_input.frd (local path, not a package member)" in html
+    assert "built for geometry revision 1" in html                 # stale mesh flagged
+    assert "not recorded (mesh predates accuracy bands)" in html   # not "not judged"
+    assert "studied geometry revision 0" in html                   # old study not applied
+    assert "cannot tie to a run" in html                            # temp-name regions
+    assert out["analysis"]["margin"] is None                       # solved before the edit
+    assert "claim tier is <code>stale_geometry</code>" in html
