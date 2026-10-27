@@ -4954,14 +4954,28 @@ def test_prepare_solver_run_reports_missing_artifacts(tmp_path: Path) -> None:
     assert len(preflight["missing_items"]) >= 4
 
 
+def _hide_calculix(monkeypatch) -> None:
+    """Make every ccx discovery route come up empty, so "solver unavailable" is real.
+
+    The resolver tries AIENG_CCX_CMD, a sibling conda env (CONDA_* hints) and
+    PATH; a configured dev machine or the real-ccx lane satisfies at least one.
+    """
+    for var in ("CONDA_EXE", "CONDA_PREFIX", "CONDA_ROOT", "AIENG_CCX_CMD"):
+        monkeypatch.delenv(var, raising=False)
+    real_which = shutil.which
+    monkeypatch.setattr(
+        shutil, "which",
+        lambda name, *a, **k: None if "ccx" in str(name).lower() else real_which(name, *a, **k),
+    )
+
+
 def test_prepare_solver_run_blocked_reason_codes_are_stable(tmp_path: Path, monkeypatch) -> None:
     """cae.prepare_solver_run exposes stable blocked_reason_codes and preserves prose fields."""
     # ccx resolution auto-discovers a sibling conda env, so a configured dev
     # machine really does have a solver. Clear the conda hints to assert the
     # 'solver unavailable' preflight deterministically — and the explicit
     # override, which the real-ccx lane exports for the whole run.
-    for _var in ("CONDA_EXE", "CONDA_PREFIX", "CONDA_ROOT", "AIENG_CCX_CMD"):
-        monkeypatch.delenv(_var, raising=False)
+    _hide_calculix(monkeypatch)
     from unittest.mock import patch
     from app.main import create_app, default_project, project_dir, save_project
     from starlette.testclient import TestClient
@@ -5024,8 +5038,7 @@ def test_prepare_solver_run_next_actions_resolve_blocker_codes(tmp_path: Path, m
     # machine really does have a solver. Clear the conda hints to assert the
     # 'solver unavailable' preflight deterministically — and the explicit
     # override, which the real-ccx lane exports for the whole run.
-    for _var in ("CONDA_EXE", "CONDA_PREFIX", "CONDA_ROOT", "AIENG_CCX_CMD"):
-        monkeypatch.delenv(_var, raising=False)
+    _hide_calculix(monkeypatch)
     from unittest.mock import patch
     from app.main import create_app, default_project, project_dir, save_project
     from starlette.testclient import TestClient
@@ -5267,8 +5280,7 @@ def test_prepare_solver_run_recommended_next_calls(tmp_path: Path, monkeypatch) 
     # machine really does have a solver. Clear the conda hints to assert the
     # 'solver unavailable' preflight deterministically — and the explicit
     # override, which the real-ccx lane exports for the whole run.
-    for _var in ("CONDA_EXE", "CONDA_PREFIX", "CONDA_ROOT", "AIENG_CCX_CMD"):
-        monkeypatch.delenv(_var, raising=False)
+    _hide_calculix(monkeypatch)
     from app.main import create_app, default_project, project_dir, save_project
     from starlette.testclient import TestClient
 

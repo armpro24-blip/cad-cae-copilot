@@ -1752,6 +1752,33 @@ def _build_meshed_setup_package(pkg_path: Path) -> None:
         zf.writestr(CANONICAL_MESH_INP_PATH, _MINIMAL_MESH_INP)
 
 
+def test_an_unsplittable_area_group_keeps_warning_on_a_cached_deck(tmp_path: Path) -> None:
+    """The up-to-date return dropped `area_shares`, so the warning vanished.
+
+    A group whose shares cannot be re-split keeps its authored values on every
+    deck; the second call must say so as plainly as the first.
+    """
+    from app.simulation_runner import ensure_source_deck_from_mesh
+
+    pkg = tmp_path / "meshed.aieng"
+    _build_meshed_setup_package(pkg)
+    loads = [
+        {"id": f"load_{i}", "type": "force", "target": target, "target_selector": "top",
+         "value_n": 300.0, "direction": [0.0, 0.0, -1.0],
+         "load_share_basis": "area", "total_force_n": 1000.0}   # 600 != 1000
+        for i, target in enumerate(["FEAT_HOLE_001", "FEAT_BASE_001_L"], start=1)
+    ]
+    with zipfile.ZipFile(pkg, "a") as zf:
+        zf.writestr("simulation/cae_imports/parsed_loads.json", json.dumps({"loads": loads}))
+
+    first = ensure_source_deck_from_mesh(pkg)
+    again = ensure_source_deck_from_mesh(pkg)
+
+    assert again["reason"] == "up_to_date", again
+    for result in (first, again):
+        assert [g["status"] for g in result["area_shares"]] == ["not_recomputed"], result
+
+
 def test_ensure_source_deck_from_mesh_synthesizes_and_is_idempotent(tmp_path: Path) -> None:
     from app.simulation_runner import (
         CANONICAL_MESH_INP_PATH,
