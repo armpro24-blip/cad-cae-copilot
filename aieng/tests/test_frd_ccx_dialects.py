@@ -130,6 +130,10 @@ def test_package_extraction_reads_the_analysis_type_it_records(
     cases = _metrics(result)
     assert cases["buckling_001"]["lowest_buckling_factor"] == pytest.approx(155.8898, rel=1e-6)
     assert len(cases) == 2  # the reference-load state + the factors, no mode shapes
+    # The run's own record is authoritative; the current settings are only a
+    # fallback, and that fallback is said out loud (they may postdate the run).
+    from_settings = [w for w in result["warnings"] if "may have changed since that run" in w]
+    assert bool(from_settings) == (member == "simulation/solver_settings.json")
 
 
 def test_an_external_frd_is_not_described_by_the_current_settings(tmp_path: Path) -> None:

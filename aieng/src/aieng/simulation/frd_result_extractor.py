@@ -645,17 +645,22 @@ def extract_computed_metrics(
 # Package write-back
 # ---------------------------------------------------------------------------
 
-def _package_analysis_type(package_path: Path, run_id: str | None) -> str | None:
-    """The analysis type the package records for the run ``run_id`` produced.
+_SETTINGS_PATH = "simulation/solver_settings.json"
+
+
+def _package_analysis_type(package_path: Path, run_id: str | None) -> tuple[str | None, str | None]:
+    """``(analysis type, member it was read from)`` for the run ``run_id`` produced.
 
     Only for a run-bound FRD: an external FRD (no ``run_id``) is not described
     by the CURRENT settings — a buckling result read under ``static`` settings
     would turn mode shapes back into physical numbers and silence the
-    unknown-analysis warning — so it stays unknown.
+    unknown-analysis warning — so it stays unknown. The run's own record is
+    preferred; the current settings are a fallback for runs that recorded no
+    type, and the source is returned so that fallback can be made visible.
     """
     if not run_id:
-        return None
-    candidates = [f"simulation/runs/{run_id}/solver_run.json", "simulation/solver_settings.json"]
+        return None, None
+    candidates = [f"simulation/runs/{run_id}/solver_run.json", _SETTINGS_PATH]
     try:
         with zipfile.ZipFile(package_path, "r") as zf:
             names = set(zf.namelist())
@@ -665,10 +670,10 @@ def _package_analysis_type(package_path: Path, run_id: str | None) -> str | None
                 data = json.loads(zf.read(member))
                 value = data.get("analysis_type") if isinstance(data, dict) else None
                 if isinstance(value, str) and value.strip():
-                    return value.strip()
+                    return value.strip(), member
     except (zipfile.BadZipFile, OSError, json.JSONDecodeError):
-        return None
-    return None
+        return None, None
+    return None, None
 
 
 def write_computed_metrics_package(
@@ -700,12 +705,19 @@ def write_computed_metrics_package(
     Returns:
         The computed metrics dict (same as :func:`extract_computed_metrics`).
     """
+    type_source: str | None = None
     if analysis_type is None:
-        analysis_type = _package_analysis_type(package_path, run_id)
+        analysis_type, type_source = _package_analysis_type(package_path, run_id)
     metrics = extract_computed_metrics(
         frd_path, load_case_id=load_case_id, software=software,
         source_files=source_files, run_id=run_id, analysis_type=analysis_type,
     )
+    if type_source == _SETTINGS_PATH:
+        # The run recorded no type; the CURRENT settings may postdate it.
+        metrics.setdefault("warnings", []).append(
+            f"run {run_id} recorded no analysis_type; read as {analysis_type!r} from the "
+            f"current {_SETTINGS_PATH}, which may have changed since that run"
+        )
     metrics_bytes = (json.dumps(metrics, indent=2, sort_keys=True) + "\n").encode()
 
     with zipfile.ZipFile(package_path, "r") as zf:
