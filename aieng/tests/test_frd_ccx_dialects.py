@@ -105,6 +105,55 @@ def test_real_buckling_frd_without_analysis_type_is_qualified() -> None:
     assert sum("ICTYPE 4" in w for w in result["warnings"]) == 3
 
 
+@pytest.mark.parametrize(
+    "member, payload",
+    [
+        ("simulation/runs/run_001/solver_run.json", {"state": "completed", "analysis_type": "buckling"}),
+        ("simulation/solver_settings.json", {"analysis_type": "buckling"}),
+    ],
+)
+def test_package_extraction_reads_the_analysis_type_it_records(
+    tmp_path: Path, member: str, payload: dict
+) -> None:
+    """`cae.extract_solver_results` passes no analysis_type; the package records one.
+    Without reading it, a buckling FRD's mode shapes became a static result."""
+    import json
+    import zipfile
+
+    from aieng.simulation.frd_result_extractor import write_computed_metrics_package
+
+    pkg = tmp_path / "buckle.aieng"
+    with zipfile.ZipFile(pkg, "w") as zf:
+        zf.writestr("manifest.json", json.dumps({"resources": {}}))
+        zf.writestr(member, json.dumps(payload))
+    result = write_computed_metrics_package(pkg, CCX / "buckling.frd", run_id="run_001")
+    cases = _metrics(result)
+    assert cases["buckling_001"]["lowest_buckling_factor"] == pytest.approx(155.8898, rel=1e-6)
+    assert len(cases) == 2  # the reference-load state + the factors, no mode shapes
+    # The run's own record is authoritative; the current settings are only a
+    # fallback, and that fallback is said out loud (they may postdate the run).
+    from_settings = [w for w in result["warnings"] if "may have changed since that run" in w]
+    assert bool(from_settings) == (member == "simulation/solver_settings.json")
+
+
+def test_an_external_frd_is_not_described_by_the_current_settings(tmp_path: Path) -> None:
+    """No run_id = an FRD from outside the package's runs. Its analysis is not
+    whatever solver_settings.json says NOW, so it stays unknown — and keeps the
+    warning that says so — rather than being read under a guessed type."""
+    import json
+    import zipfile
+
+    from aieng.simulation.frd_result_extractor import write_computed_metrics_package
+
+    pkg = tmp_path / "ext.aieng"
+    with zipfile.ZipFile(pkg, "w") as zf:
+        zf.writestr("manifest.json", json.dumps({"resources": {}}))
+        zf.writestr("simulation/solver_settings.json", json.dumps({"analysis_type": "buckling"}))
+    result = write_computed_metrics_package(pkg, CCX / "buckling.frd")
+    assert len(result["load_cases"]) == 4
+    assert sum("ICTYPE 4" in w for w in result["warnings"]) == 3
+
+
 def test_real_thermal_frd() -> None:
     cases = _metrics(extract_computed_metrics(CCX / "thermal.frd"))
     # the deck fixes 100 at the root face and 20 at the tip face

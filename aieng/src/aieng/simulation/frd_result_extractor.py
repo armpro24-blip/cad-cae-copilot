@@ -37,6 +37,14 @@ _STRESS_BASIS = (
     "(integration-point values extrapolated to nodes and averaged over adjacent elements)"
 )
 _DISP_BASIS = "max over nodes of the nodal displacement magnitude sqrt(D1^2+D2^2+D3^2)"
+# CalculiX has no temperature unit: NDTEMP is in whatever scale the applied
+# temperature boundary conditions used. Stamping "K" invented one — a setup
+# written in degrees Celsius (100 at the root) was reported as 100 K.
+_TEMP_UNIT = "as_applied"
+_TEMP_BASIS = (
+    "max/min over nodes of NDTEMP, in the same scale (degC or K) as the applied "
+    "temperature boundary conditions; CalculiX carries no temperature unit"
+)
 _BINARY_FRD_UNSUPPORTED = (
     "binary or non-UTF-8 FRD files are unsupported by frd_parser_v1; "
     "provide a CalculiX text FRD export before extracting computed metrics"
@@ -403,8 +411,12 @@ def _extract_step_metrics(
             if vals and vals[0] is not None
         ]
         if temps:
-            metrics["max_temperature"] = {"value": round(max(temps), 4), "unit": "K"}
-            metrics["min_temperature"] = {"value": round(min(temps), 4), "unit": "K"}
+            metrics["max_temperature"] = {
+                "value": round(max(temps), 4), "unit": _TEMP_UNIT, "basis": _TEMP_BASIS,
+            }
+            metrics["min_temperature"] = {
+                "value": round(min(temps), 4), "unit": _TEMP_UNIT, "basis": _TEMP_BASIS,
+            }
         else:
             warnings.append(
                 "NDTEMP field present but no valid temperature values could be extracted"
@@ -633,6 +645,37 @@ def extract_computed_metrics(
 # Package write-back
 # ---------------------------------------------------------------------------
 
+_SETTINGS_PATH = "simulation/solver_settings.json"
+
+
+def _package_analysis_type(package_path: Path, run_id: str | None) -> tuple[str | None, str | None]:
+    """``(analysis type, member it was read from)`` for the run ``run_id`` produced.
+
+    Only for a run-bound FRD: an external FRD (no ``run_id``) is not described
+    by the CURRENT settings — a buckling result read under ``static`` settings
+    would turn mode shapes back into physical numbers and silence the
+    unknown-analysis warning — so it stays unknown. The run's own record is
+    preferred; the current settings are a fallback for runs that recorded no
+    type, and the source is returned so that fallback can be made visible.
+    """
+    if not run_id:
+        return None, None
+    candidates = [f"simulation/runs/{run_id}/solver_run.json", _SETTINGS_PATH]
+    try:
+        with zipfile.ZipFile(package_path, "r") as zf:
+            names = set(zf.namelist())
+            for member in candidates:
+                if member not in names:
+                    continue
+                data = json.loads(zf.read(member))
+                value = data.get("analysis_type") if isinstance(data, dict) else None
+                if isinstance(value, str) and value.strip():
+                    return value.strip(), member
+    except (zipfile.BadZipFile, OSError, json.JSONDecodeError):
+        return None, None
+    return None, None
+
+
 def write_computed_metrics_package(
     package_path: Path,
     frd_path: Path,
@@ -653,14 +696,28 @@ def write_computed_metrics_package(
         load_case_id: Load case ID for the metrics.
         software: Solver software name.
         overwrite: Replace existing ``computed_metrics.json`` if present.
+        analysis_type: The analysis the FRD came from. When omitted for a
+            run-bound FRD (``run_id`` given) it is read from the package — the
+            run's own ``solver_run.json`` first (what was actually solved), then
+            ``simulation/solver_settings.json`` — because ccx writes ``*BUCKLE``
+            modes as a generic step type. An external FRD stays unknown.
 
     Returns:
         The computed metrics dict (same as :func:`extract_computed_metrics`).
     """
+    type_source: str | None = None
+    if analysis_type is None:
+        analysis_type, type_source = _package_analysis_type(package_path, run_id)
     metrics = extract_computed_metrics(
         frd_path, load_case_id=load_case_id, software=software,
         source_files=source_files, run_id=run_id, analysis_type=analysis_type,
     )
+    if type_source == _SETTINGS_PATH:
+        # The run recorded no type; the CURRENT settings may postdate it.
+        metrics.setdefault("warnings", []).append(
+            f"run {run_id} recorded no analysis_type; read as {analysis_type!r} from the "
+            f"current {_SETTINGS_PATH}, which may have changed since that run"
+        )
     metrics_bytes = (json.dumps(metrics, indent=2, sort_keys=True) + "\n").encode()
 
     with zipfile.ZipFile(package_path, "r") as zf:
