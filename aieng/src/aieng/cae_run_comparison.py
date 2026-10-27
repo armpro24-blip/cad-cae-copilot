@@ -135,6 +135,10 @@ def list_runs(package_path: str | Path) -> list[dict[str, Any]]:
                             str(k): sorted(str(f) for f in (v or []))
                             for k, v in bindings.items()
                         }
+                    # Decks that also record `setup_nsets` list only the
+                    # entities they APPLIED; earlier ones listed every mapping
+                    # entry, stale ones included.
+                    record["bindings_applied_only"] = isinstance(data.get("setup_nsets"), dict)
     return [runs[key] for key in sorted(runs, key=_sort_key)]
 
 
@@ -331,12 +335,28 @@ def _compare_setups(
             "cannot be established from the package."
         ]
 
+    # A deck recorded before `setup_nsets` listed every mapping entry, so a
+    # target only IT lists may never have been applied — not a change.
+    baseline_lists_all = baseline.get("bindings_applied_only") is False
+    current_lists_all = current.get("bindings_applied_only") is False
+    mixed = baseline_lists_all != current_lists_all
+    notes: list[str] = []
+    if mixed:
+        legacy = baseline if baseline_lists_all else current
+        notes.append(
+            f"{legacy['run_id']} predates per-deck NSET records and listed every mapping "
+            "entry, applied or not; targets only it lists are not counted as a change."
+        )
     warnings: list[str] = []
     for target in sorted(set(before) | set(after)):
         was, now = before.get(target), after.get(target)
         if was is None:
+            if mixed and current_lists_all:
+                continue
             warnings.append(f"{target} is bound in {current['run_id']} only.")
         elif now is None:
+            if mixed and baseline_lists_all:
+                continue
             warnings.append(f"{target} is bound in {baseline['run_id']} only.")
         elif len(was) != len(now):
             warnings.append(
@@ -349,8 +369,8 @@ def _compare_setups(
             "THE TWO RUNS DID NOT BIND THE SAME NUMBER OF FACES, so the deltas "
             "below may compare different restraints rather than a design change:",
         )
-        return True, warnings
-    return False, []
+        return True, warnings + notes
+    return False, notes
 
 
 def compare_runs(
