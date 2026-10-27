@@ -61,7 +61,12 @@ _CODE_DETAILS: dict[str, dict[str, str]] = {
     STALE_TOPOLOGY_REFERENCE: {
         "label": "Stale topology reference",
         "description": "CAE face references no longer match the current geometry topology.",
-        "recommended_action": "Re-run AI preprocessing to rebind loads and boundary conditions, or patch face IDs manually.",
+        "recommended_action": (
+            "Regenerate the mesh and deck: a setup authored by cae.setup_static rebinds "
+            "moved faces from its recorded phrases (the preflight's selector_rebind says "
+            "whether that recovers every one). Otherwise re-run cae.setup_static with the "
+            "same words, or AI preprocessing (needs an API key)."
+        ),
     },
     TARGET_NOT_FOUND: {
         "label": "Target not found",

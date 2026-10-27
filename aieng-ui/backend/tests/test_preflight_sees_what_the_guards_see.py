@@ -233,3 +233,34 @@ def test_a_missing_deck_still_recommends_generating_one(preflight, tmp_path) -> 
     deck = _rec(result, "cae.generate_solver_input")
     assert deck["input"]["run_id"] == "run_001", "nothing to preserve yet"
     assert "overwrite" not in deck["input"], deck
+
+
+def test_a_package_path_caller_gets_calls_it_can_make(preflight, tmp_path) -> None:
+    """With no project_id, every recommended call used to carry `project_id: ""`,
+    which resolves to nothing; following it returned `missing_package_path`."""
+    pkg = _package(tmp_path / "by_path.aieng", mesh_revision=1, deck_revision=0,
+                   current_revision=1)
+    result = preflight(pkg)
+
+    deck = _rec(result, "cae.generate_solver_input")
+    assert deck["input"].get("package_path") == str(pkg), deck
+    assert "project_id" not in deck["input"]
+    for action in result["next_actions"]:
+        call_input = action.get("input") or {}
+        assert call_input.get("project_id") != "", action
+
+
+def test_a_project_id_only_recommendation_says_it_cannot_be_called(preflight, tmp_path) -> None:
+    """ai_preprocessing requires project_id; a package_path caller cannot follow it,
+    so it is marked unavailable instead of being rewritten into a failing call."""
+    pkg = _package(tmp_path / "stale_refs.aieng", current_revision=0)
+    with zipfile.ZipFile(pkg, "a") as zf:   # a binding to a face the topology lacks
+        zf.writestr("simulation/cae_mapping.json", json.dumps({"mappings": [
+            {"cae_entity": "LOAD_001", "face_ids": ["face_999"],
+             "maps_to": {"cae_target_id": "load_001"}}]}))
+    result = preflight(pkg)
+
+    action = _rec(result, "ai_preprocessing.run_ai_preprocessing")
+    assert action.get("available_now") is False, action
+    assert "project_id" in action["blocked_reason"]
+    assert "package_path" not in action["input"]

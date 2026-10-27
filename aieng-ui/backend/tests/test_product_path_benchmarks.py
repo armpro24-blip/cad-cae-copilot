@@ -428,6 +428,70 @@ def test_an_area_split_follows_the_faces_after_an_edit(bench) -> None:
     assert total == pytest.approx(-1000.0, rel=1e-6)
 
 
+def test_the_preflight_after_an_edit_points_at_the_rebind_that_works(bench) -> None:
+    """The cold-agent trial's path: words-authored setup, thickness edit, preflight.
+
+    The preflight's first recommendation was `ai_preprocessing` (an API key) and
+    the second a hand-written cae_mapping.json, while deck generation recovered
+    every moved face from the setup's recorded phrases on its own. It now
+    measures that recovery on a copy and recommends the path that works. It also
+    reported `mesh_geometry_revision: null` for a fresh mesh.
+    """
+    pid, pkg = _build(bench, (
+        "from build123d import *\n"
+        "PLATE_THICKNESS = 8.0\n"
+        "with BuildPart() as bp:\n"
+        "    Box(120, 80, PLATE_THICKNESS, align=(Align.CENTER, Align.CENTER, Align.MIN))\n"
+        "    with Locations((45, 25, 0), (-45, 25, 0), (45, -25, 0), (-45, -25, 0)):\n"
+        "        Cylinder(5, PLATE_THICKNESS, align=(Align.CENTER, Align.CENTER, Align.MIN),\n"
+        "                 mode=Mode.SUBTRACT)\n"
+        "plate = bp.part; plate.label = 'base_plate'\n"
+        "rib = Box(60, 5, 25, align=(Align.CENTER, Align.CENTER, Align.MIN))\n"
+        "rib = rib.moved(Location((0, 0, PLATE_THICKNESS))); rib.label = 'rib_main'\n"
+        "result = Compound(children=[plate, rib])\n"
+    ), "preflight_rebind")
+    tool = bench["runtime"].invoke_tool
+    setup = tool("cae.setup_static", {
+        "project_id": pid, "material": "Al6061-T6", "fix": "bolt holes",
+        "load": {"at": "rib_main top", "force_n": 500, "direction": "-Z"},
+    })
+    assert setup["status"] == "ok", setup
+    assert tool("cae.generate_mesh", {"project_id": pid, "mesh_size_mm": 6.0})["status"] == "completed"
+    fresh = tool("cae.prepare_solver_run", {"project_id": pid})
+    assert fresh["preflight"]["mesh_geometry_revision"] == 0, fresh["preflight"]
+    first = tool("cae.generate_solver_input", {"project_id": pid, "run_id": "run_001"})
+    assert first["status"] == "completed", first
+
+    params = tool("cad.list_editable_parameters", {"project_id": pid})["parameters"]
+    entry = next(p for p in params if p.get("cad_parameter_name") == "PLATE_THICKNESS")
+    edit = tool("cad.edit_parameter", {
+        "project_id": pid, "featureId": entry["featureId"],
+        "parameterName": entry["parameterName"], "newValue": 12.0, "confirmScopeRisk": True,
+    })
+    assert edit["status"] == "ok", edit
+    mapping_before = _member(pkg, "simulation/cae_mapping.json")
+
+    pre = tool("cae.prepare_solver_run", {"project_id": pid})
+
+    rebind = pre["preflight"]["selector_rebind"]
+    assert rebind and rebind["recovers_all"], rebind
+    tools = [r.get("tool") for r in pre["recommended_next_calls"]]
+    assert "ai_preprocessing.run_ai_preprocessing" not in tools, tools
+    assert "cae.apply_setup_patch" not in tools, tools
+    assert tools.index("cae.generate_mesh") < tools.index("cae.generate_solver_input")
+    assert any("rebinds them" in w for w in pre["warnings"]), pre["warnings"]
+    # The preview ran on a copy: the package still holds the authored binding.
+    assert _member(pkg, "simulation/cae_mapping.json") == mapping_before
+
+    # ...and following the recommendation works.
+    deck_rec = next(r for r in pre["recommended_next_calls"]
+                    if r.get("tool") == "cae.generate_solver_input")
+    assert tool("cae.generate_mesh", {"project_id": pid, "mesh_size_mm": 6.0})["status"] == "completed"
+    deck = tool("cae.generate_solver_input", deck_rec["input"])
+    assert deck["status"] == "completed", deck
+    assert {r["id"] for r in deck["rebound_from_selector"]} == {r["id"] for r in rebind["rebound"]}
+
+
 def test_an_edit_receipt_reports_the_face_ids_the_package_kept(bench) -> None:
     """The edit receipt described OCCT enumeration ids; the write re-identified them.
 
