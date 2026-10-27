@@ -15,7 +15,14 @@ The cases are **not** official NAFEMS certification benchmarks and are **not**
 ASME V&V-10 certified. The only claim made is:
 
 > Computed results agree with the documented analytical reference value within
-documented tolerance band.
+documented tolerance band — for the metrics marked as gating.
+
+A metric with `"gate": false` is reported for evidence but does not decide the
+case verdict. On these coarse C3D8 fixtures every peak von Mises stress is
+non-gating: a fully clamped end puts a triaxial concentration at the support
+(tension rod ~2x the nominal stress) and coarse bending under-predicts the root
+stress by 10-20%. The `reference.json` metrics are copied verbatim from
+`aieng.nafems_verification.REFERENCE_CASES`, and a test compares every field.
 
 ## Layout
 

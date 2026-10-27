@@ -9,8 +9,8 @@
       "value": 0.09523807619048
     },
     "max_von_mises_stress": {
-      "gating": false,
-      "note": "Mesh-sensitive peak stress is reported for evidence but does not determine the case verdict.",
+      "gate": false,
+      "note": "Informational max stress: coarse weak-axis bending stress is mesh-sensitive; displacement is the gating metric.",
       "tolerance_percent": 10.0,
       "unit": "MPa",
       "value": 29.9999940000012

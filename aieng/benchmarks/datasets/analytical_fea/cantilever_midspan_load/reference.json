@@ -9,6 +9,8 @@
       "value": 0.0074404758184524
     },
     "max_von_mises_stress": {
+      "gate": false,
+      "note": "Informational max stress: point-load and root-stress values are mesh-sensitive; displacement is the gating metric.",
       "tolerance_percent": 10.0,
       "unit": "MPa",
       "value": 7.499999625000019

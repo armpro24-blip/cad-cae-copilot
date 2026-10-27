@@ -9,6 +9,8 @@
       "value": 0.008928571428571428
     },
     "max_von_mises_stress": {
+      "gate": false,
+      "note": "Informational max stress: coarse C3D8 bending stress is mesh-sensitive; displacement is the gating metric.",
       "tolerance_percent": 10.0,
       "unit": "MPa",
       "value": 7.5

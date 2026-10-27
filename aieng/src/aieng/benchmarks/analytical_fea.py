@@ -329,7 +329,12 @@ def score_corpus(
             "asme_vv_10_certified": False,
             "nafems_certified": False,
             "reference_basis": "closed-form beam/rod/column theory",
-            "mesh_note": "Coarse C3D8 meshes for fast CI; tolerance bands absorb discretisation error.",
+            "mesh_note": (
+                "Coarse C3D8 meshes for fast CI. Only metrics with gating=true decide a "
+                "case verdict; peak stresses on these meshes are informational and may "
+                "deviate far outside their band (clamped-end concentration, bending "
+                "under-prediction)."
+            ),
         },
     }
 

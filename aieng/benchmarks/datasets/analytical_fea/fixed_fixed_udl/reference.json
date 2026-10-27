@@ -10,8 +10,8 @@
       "value": 0.000263
     },
     "max_von_mises_stress": {
-      "gating": false,
-      "note": "Mesh-sensitive peak stress is reported for evidence but does not determine the case verdict.",
+      "gate": false,
+      "note": "Informational max stress: fixed-end peak stress is mesh-sensitive in this coarse 3D fixture.",
       "tolerance_percent": 10.0,
       "unit": "MPa",
       "value": 1.25
