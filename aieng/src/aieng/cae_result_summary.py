@@ -1335,6 +1335,12 @@ def _read_mesh_convergence(zf: zipfile.ZipFile) -> dict[str, Any] | None:
     return {
         "verdict": report.get("overall_verdict"),
         "verdicts": report.get("verdicts") if isinstance(report.get("verdicts"), dict) else {},
+        # Each metric's own `converged: false`, not a pattern on its verdict
+        # name: a failing two-grid metric is `two_grid_relative_change_only`.
+        "unconverged_metrics": sorted(
+            metric for metric, detail in (report.get("convergence") or {}).items()
+            if isinstance(detail, dict) and detail.get("converged") is False
+        ) if isinstance(report.get("convergence"), dict) else [],
         "geometry_revision": revision if isinstance(revision, int) else None,
         "applies": applies,
     }

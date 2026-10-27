@@ -497,3 +497,24 @@ def test_a_study_of_another_revision_leaves_no_verdict_signal() -> None:
     assert "mesh_convergence_verdict" not in stamp["signals"]
     current = classify_credibility("solver", solver_executed=True, mesh_convergence=_UNCONVERGED)
     assert current["signals"]["mesh_convergence_applies"] is True
+
+
+def test_a_failing_two_grid_metric_qualifies_by_its_converged_flag(tmp_path: Path) -> None:
+    """`two_grid_relative_change_only` carries no "not_converged" in its name; the
+    metric's own `converged: false` must decide (independent review of #558)."""
+    path = _package(tmp_path / "two_grid.aieng", runs={"run_001": (True, 0)}, current_revision=0)
+    with zipfile.ZipFile(path, "a") as zf:
+        zf.writestr("analysis/mesh_convergence_report.json", json.dumps({
+            "overall_verdict": "indeterminate", "geometry_revision": 0,
+            "verdicts": {"max_von_mises_stress": "two_grid_relative_change_only",
+                         "max_displacement": "insufficient_grids"},
+            "convergence": {"max_von_mises_stress": {"converged": False},
+                            "max_displacement": {"converged": None}},
+        }))
+    evidence = _evidence(path)
+
+    assert evidence["mesh_convergence"]["unconverged_metrics"] == ["max_von_mises_stress"]
+    stamp = classify_credibility(
+        "solver", solver_executed=True, mesh_convergence=evidence["mesh_convergence"]
+    )
+    assert "two_grid_relative_change_only" in stamp["qualifications"][0]

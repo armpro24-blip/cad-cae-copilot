@@ -102,8 +102,9 @@ def unconverged_mesh_qualification(mesh_convergence: Any) -> str | None:
     verdicts = mesh_convergence.get("verdicts")
     # Per metric, not only overall: the runner rolls a study with one
     # `not_converged` and one `indeterminate` metric up to `indeterminate`.
-    metric_unconverged = isinstance(verdicts, dict) and any(
-        "not_converged" in str(verdict) for verdict in verdicts.values()
+    metric_unconverged = bool(mesh_convergence.get("unconverged_metrics")) or (
+        isinstance(verdicts, dict)
+        and any("not_converged" in str(verdict) for verdict in verdicts.values())
     )
     if mesh_convergence.get("verdict") != "not_converged" and not metric_unconverged:
         return None
