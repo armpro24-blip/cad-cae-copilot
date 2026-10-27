@@ -2011,6 +2011,22 @@ def _reshare_area_loads(
 
     report: list[dict[str, Any]] = []
     for (selector, total, _direction), members in groups.items():
+        # The entries of ONE split add up to its total. If they do not, the
+        # bucket holds more than one authored group (same phrase, total and
+        # direction) or a hand-edited share; re-splitting would spread a single
+        # total over all of them, so leave them as written and say so.
+        authored = [item.get("value_n") for item in members]
+        if not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in authored) \
+                or abs(sum(authored) - total) > 1e-6 * abs(total):
+            report.append({
+                "selector": selector,
+                "total_force_n": total,
+                "status": "not_recomputed",
+                "reason": "the entries of this load group do not add up to its recorded "
+                          "total (more than one group shares the phrase, or a share was "
+                          "edited), so the shares were left as authored",
+            })
+            continue
         faces: list[str | None] = []
         for item in members:
             target = str(item.get("target") or "")
@@ -2031,7 +2047,7 @@ def _reshare_area_loads(
             continue
         total_area = sum(areas)
         changes = []
-        for item, fid, area in zip(members, faces, areas):
+        for item, fid, area in zip(members, faces, areas, strict=True):
             share = total * area / total_area
             previous = item.get("value_n")
             if isinstance(previous, (int, float)) and abs(previous - share) <= 1e-9 * abs(total):

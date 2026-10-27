@@ -571,3 +571,22 @@ def test_a_partly_retired_group_fills_the_free_faces(tmp_path: Path) -> None:
         "bc_001": "face_013"}
     bound = sorted(f for m in _mapping(pkg) for f in m["face_ids"])
     assert bound == ["face_011", "face_013"]
+
+
+def test_two_groups_sharing_phrase_and_total_are_not_merged(tmp_path: Path) -> None:
+    """Two authored 1000 N splits in one bucket must not become one 1000 N split.
+
+    Re-sharing groups entries by phrase, total and direction; two identical
+    groups would have had ONE total spread over all four entries — half the
+    load. Their shares sum to twice the total, so they are left as written.
+    """
+    pkg = _area_package(tmp_path / "twice.aieng",
+                        faces={"face_001": 1600.0, "face_002": 200.0},
+                        mapped=["face_001", "face_002", "face_001", "face_002"],
+                        shares=[800.0, 200.0, 800.0, 200.0], total=1000.0)
+
+    result = normalize_cae_bindings(pkg)
+
+    [group] = result["area_shares"]
+    assert group["status"] == "not_recomputed"
+    assert sum(entry["value_n"] for entry in _loads(pkg)) == pytest.approx(2000.0)
