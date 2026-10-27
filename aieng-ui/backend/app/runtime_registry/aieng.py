@@ -16,6 +16,25 @@ from ..logging_utils import log_exception
 LOGGER = logging.getLogger("app.app_factory")
 
 
+def _convergence_scope(analysis: dict[str, Any]) -> dict[str, Any] | None:
+    """Whether the report's convergence study describes the current geometry.
+
+    Same comparison the report's HTML applies: `current` when the study's
+    revision equals the design's, `stale` when it differs, `unknown` when the
+    study records none.
+    """
+    convergence = analysis.get("convergence")
+    if not isinstance(convergence, dict):
+        return None
+    study = convergence.get("geometry_revision")
+    current = analysis.get("current_revision")
+    if not isinstance(study, int):
+        status = "unknown"
+    else:
+        status = "current" if study == current else "stale"
+    return {"study_revision": study, "current_revision": current, "status": status}
+
+
 def register_aieng_tools(rt: Any, active_settings: Any, app_context: Any, _schema: Any) -> dict[str, Any]:
     """Register aieng runtime tools."""
     sync_main_symbols(globals())
@@ -677,12 +696,17 @@ def register_aieng_tools(rt: Any, active_settings: Any, app_context: Any, _schem
         from ..project_io import project_dir
 
         html_text = str(result.get("html") or "")
+        import uuid
+
+        # Unique per call: two calls in one second must not overwrite each
+        # other's report ("x" mode refuses an existing file outright).
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         reports_dir = project_dir(active_settings, project_id) / "reports"
-        report_file = reports_dir / f"engineering_report_{stamp}.html"
+        report_file = reports_dir / f"engineering_report_{stamp}_{uuid.uuid4().hex[:8]}.html"
         try:
             reports_dir.mkdir(parents=True, exist_ok=True)
-            report_file.write_text(html_text, encoding="utf-8")
+            with report_file.open("x", encoding="utf-8") as handle:
+                handle.write(html_text)
             written: str | None = str(report_file)
             write_error: str | None = None
         except OSError as exc:
@@ -705,7 +729,12 @@ def register_aieng_tools(rt: Any, active_settings: Any, app_context: Any, _schem
                 "setup": analysis.get("setup_lines") or [],
                 "mesh": analysis.get("mesh"),
                 "convergence_verdict": (analysis.get("convergence") or {}).get("verdict"),
-                "yield_margin": round(margin["ratio"], 3) if margin else None,
+                # Which geometry the verdict is about; the HTML states it, and
+                # the summary is what a caller reads by default.
+                "convergence_scope": _convergence_scope(analysis),
+                # Unrounded: 0.9996 rounded to 1.0 would read as passing a
+                # yield threshold it fails. Rounding is presentation's job.
+                "yield_margin": margin["ratio"] if margin else None,
                 "key_results": (result.get("credibility", {}).get("result_evidence") or {}).get(
                     "key_results"
                 ),

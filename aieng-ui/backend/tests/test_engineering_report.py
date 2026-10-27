@@ -418,3 +418,29 @@ def test_the_report_checks_each_fact_against_the_current_geometry(tmp_path: Path
     assert "cannot tie to a run" in html                            # temp-name regions
     assert out["analysis"]["margin"] is None                       # solved before the edit
     assert "claim tier is <code>stale_geometry</code>" in html
+
+
+def test_report_generate_summary_is_exact_and_each_call_keeps_its_file(tmp_path: Path) -> None:
+    """Review of #560: two calls in one second shared a file name; the summary's
+    convergence verdict carried no scope; the yield ratio was rounded."""
+    from app import runtime as _rt
+
+    settings = _make_settings(tmp_path)
+    create_app(settings)
+    project_id, pkg_path = _make_project(settings)
+    _write_report_package(pkg_path)
+    with zipfile.ZipFile(pkg_path, "a") as zf:
+        zf.writestr("simulation/cae_imports/parsed_materials.json", json.dumps(
+            {"materials": [{"name": "Al6061-T6", "yield_strength": 87.4 * 0.9996}]}))
+        zf.writestr("analysis/mesh_convergence_report.json", json.dumps(
+            {"overall_verdict": "converged", "verdicts": {}, "geometry_revision": 0}))
+
+    first = _rt.invoke_tool("report.generate", {"project_id": project_id})
+    second = _rt.invoke_tool("report.generate", {"project_id": project_id})
+
+    assert first["report_path"] != second["report_path"]
+    assert Path(first["report_path"]).is_file() and Path(second["report_path"]).is_file()
+    summary = first["summary"]
+    assert summary["yield_margin"] == pytest.approx(0.9996) and summary["yield_margin"] < 1
+    assert summary["convergence_scope"] == {
+        "study_revision": 0, "current_revision": 0, "status": "current"}
