@@ -490,3 +490,37 @@ def test_the_preflight_after_an_edit_points_at_the_rebind_that_works(bench) -> N
     deck = tool("cae.generate_solver_input", deck_rec["input"])
     assert deck["status"] == "completed", deck
     assert {r["id"] for r in deck["rebound_from_selector"]} == {r["id"] for r in rebind["rebound"]}
+
+
+def test_an_edit_receipt_reports_the_face_ids_the_package_kept(bench) -> None:
+    """The edit receipt described OCCT enumeration ids; the write re-identified them.
+
+    A cold-agent trial read "face 16/16 survived, stale_reference_risk: false"
+    after doubling a bracket's plate thickness (which also positions the rib),
+    while the package write had retired 14 of those 16 ids.
+    """
+    pid, pkg = _build(bench, (
+        "from build123d import *\n"
+        "PLATE_THICKNESS = 8.0\n"
+        "plate = Box(120, 80, PLATE_THICKNESS, align=(Align.CENTER, Align.CENTER, Align.MIN))\n"
+        "plate.label = 'base_plate'\n"
+        "rib = Box(60, 5, 25, align=(Align.CENTER, Align.CENTER, Align.MIN))\n"
+        "rib = rib.moved(Location((0, 0, PLATE_THICKNESS))); rib.label = 'rib_main'\n"
+        "result = Compound(children=[plate, rib])\n"
+    ), "edit_receipt")
+    tool = bench["runtime"].invoke_tool
+    params = tool("cad.list_editable_parameters", {"project_id": pid})["parameters"]
+    entry = next(p for p in params if p.get("cad_parameter_name") == "PLATE_THICKNESS")
+    edit = tool("cad.edit_parameter", {
+        "project_id": pid, "featureId": entry["featureId"],
+        "parameterName": entry["parameterName"], "newValue": 12.0,
+        "confirmScopeRisk": True,
+    })
+    assert edit["status"] == "ok", edit
+
+    stability = json.loads(_member(pkg, "diagnostics/topology_id_stability.json"))
+    retired = stability.get("retired_ids") or []
+    assert retired, stability  # the case is only meaningful when ids really retired
+    faces = edit["topology_change"]["entity_id_changes"]["face"]
+    assert faces["removed_count"] == len(retired), (faces, stability)
+    assert edit["topology_change"]["stale_reference_risk"] is True

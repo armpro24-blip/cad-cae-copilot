@@ -126,6 +126,9 @@ function shapeEntitySurvival(
   summary: EntitySurvivalSummary | undefined | null,
 ): EntitySurvivalView | null {
   if (!summary || typeof summary !== "object") return null;
+  // An unknown survival carries no counts; rendering it as "0 survived" would
+  // state a verdict the backend explicitly did not reach.
+  if (summary.status === "unknown") return null;
   return {
     before: num(summary.before_count) ?? 0,
     after: num(summary.after_count) ?? 0,
