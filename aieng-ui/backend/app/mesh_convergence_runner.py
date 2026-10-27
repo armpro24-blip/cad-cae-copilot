@@ -167,6 +167,11 @@ def run_mesh_convergence(
         "convergence": convergence,
         "verdicts": verdicts,
         "overall_verdict": overall,
+        # The geometry the study describes. The credibility stamp qualifies a
+        # claim with a `not_converged` study only when it ran on the CURRENT
+        # revision (or records none); a study of a design since edited away
+        # says nothing about this one.
+        "geometry_revision": _geometry_revision(pkg),
         "next_step": (
             "All requested metrics are mesh-converged within the GCI threshold."
             if overall == "converged"
@@ -191,3 +196,13 @@ def run_mesh_convergence(
         report["artifact_write_error"] = str(exc)
 
     return report
+
+
+def _geometry_revision(pkg: Path) -> int | None:
+    """The package's current geometry revision, or None if it cannot be read."""
+    try:
+        from .simulation_runner import _package_geometry_revision
+
+        return _package_geometry_revision(pkg)
+    except Exception:  # noqa: BLE001 - an unknown revision is recorded as unknown
+        return None

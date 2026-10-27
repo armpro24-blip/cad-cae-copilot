@@ -113,6 +113,7 @@ def _field_credibility(
                 mesh_accuracy_band=evidence.get("mesh_accuracy_band"),
                 mesh_accuracy_judged=evidence.get("mesh_accuracy_judged"),
                 geometry_stale=evidence.get("geometry_stale"),
+                mesh_convergence=evidence.get("mesh_convergence"),
                 notes="Per-node FRD data extracted from an executed solver run.",
             )
         if source == "vtu":
