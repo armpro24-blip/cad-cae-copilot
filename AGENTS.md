@@ -982,8 +982,10 @@ Celik, Ghia, Roache & Freitas (J. Fluids Eng. 130(7):078001, 2008), Table 1:
   `natural_frequencies_hz` from each mode's step header; a buckling FRD reports
   `buckling_factors` only when the analysis type is known (ccx writes `*BUCKLE`
   modes as the generic "user named" step type). Package extraction
-  (`cae.extract_solver_results`, `cae.compare_runs`) reads it from the run's
-  `solver_run.json`, else `simulation/solver_settings.json`. Before this, a
+  (`cae.extract_solver_results`, `cae.compare_runs`) reads it for a RUN's FRD
+  from that run's `solver_run.json`, else `simulation/solver_settings.json`; an
+  external `frd_path` stays unknown (the current settings do not describe a
+  file from elsewhere) and keeps its warning. Before this, a
   modal FRD yielded "max_displacement 226 mm / max_von_mises 97,163 MPa" on an
   unloaded beam.
 - `max_temperature` / `min_temperature` carry `unit: "as_applied"`: CalculiX

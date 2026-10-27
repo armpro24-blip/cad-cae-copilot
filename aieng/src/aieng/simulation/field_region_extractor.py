@@ -502,13 +502,20 @@ def _build_feature_resolver(
                 if _CAE_MAPPING_PATH in names
                 else None
             )
-            feature_graph = (
-                json.loads(zf.read(_FEATURE_GRAPH_PATH))
-                if _FEATURE_GRAPH_PATH in names
-                else None
-            )
+            graph_bytes = zf.read(_FEATURE_GRAPH_PATH) if _FEATURE_GRAPH_PATH in names else None
     except (zipfile.BadZipFile, OSError, json.JSONDecodeError):
         return lambda _node_id: _NO_REFS
+    # The feature graph is optional evidence for feature_ref only: an unreadable
+    # one must not also erase the cae_target_ref the deck + mapping establish.
+    feature_graph: Any = None
+    if graph_bytes is not None:
+        try:
+            feature_graph = json.loads(graph_bytes)
+        except json.JSONDecodeError:
+            warnings.append(
+                f"{_FEATURE_GRAPH_PATH} is not valid JSON; cluster feature_ref stays null "
+                "(cae_target_ref is unaffected)."
+            )
 
     if deck_text is None or not isinstance(mapping_raw, dict):
         return lambda _node_id: _NO_REFS
@@ -529,7 +536,7 @@ def _build_feature_resolver(
 
     def _resolve(node_id: int) -> tuple[str | None, str | None]:
         nsets = node_to_nsets.get(node_id, set())
-        targets = {nset_to_target[n] for n in nsets if n in nset_to_target}
+        targets = set().union(*(nset_to_target.get(n, set()) for n in nsets))
         if len(targets) != 1:
             return _NO_REFS
         target = next(iter(targets))
@@ -542,11 +549,16 @@ def _build_feature_resolver(
 
 def _build_nset_to_target(
     mapping_raw: dict[str, Any],
-) -> tuple[dict[str, str], dict[str, set[str]]]:
-    """``(nset -> CAE target id, CAE target id -> mapped face ids)``."""
+) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """``(nset -> CAE target ids, CAE target id -> mapped face ids)``.
+
+    One NSET may serve several targets (a load and a BC on the same faces);
+    all are kept, so the resolver can see that such a node is ambiguous instead
+    of the last mapping silently winning.
+    """
     from aieng.simulation.cae_mapping_writer import mapping_target_id
 
-    nset_to_target: dict[str, str] = {}
+    nset_to_target: dict[str, set[str]] = {}
     target_faces: dict[str, set[str]] = {}
     mappings = mapping_raw.get("mappings")
     if not isinstance(mappings, list):
@@ -558,7 +570,7 @@ def _build_nset_to_target(
         target = mapping_target_id(m)
         if not isinstance(cae_entity, str) or target is None:
             continue
-        nset_to_target[cae_entity] = target
+        nset_to_target.setdefault(cae_entity, set()).add(target)
         face_ids = m.get("face_ids")
         if isinstance(face_ids, list):
             target_faces.setdefault(target, set()).update(str(f) for f in face_ids)
@@ -566,7 +578,12 @@ def _build_nset_to_target(
 
 
 def _named_part_faces(feature_graph: Any) -> dict[str, set[str]]:
-    """Named-part feature id -> the face ids it owns (``geometry_refs.faces``)."""
+    """Named-part feature id -> the topology ids it owns.
+
+    ``geometry_refs`` is ``{faces: [...]}`` (preferred) or, per the schema's
+    backward-compatible form, a plain list of topology ids. Either is evidence;
+    extra non-face ids in the list form do not matter to a subset test.
+    """
     out: dict[str, set[str]] = {}
     features = feature_graph.get("features") if isinstance(feature_graph, dict) else None
     for feature in features if isinstance(features, list) else []:
@@ -575,7 +592,7 @@ def _named_part_faces(feature_graph: Any) -> dict[str, set[str]]:
         if feature.get("type") not in {"named_part", "standard_part"}:
             continue
         refs = feature.get("geometry_refs")
-        faces = refs.get("faces") if isinstance(refs, dict) else None
+        faces = refs.get("faces") if isinstance(refs, dict) else refs
         if isinstance(feature.get("id"), str) and isinstance(faces, list) and faces:
             out[feature["id"]] = {str(f) for f in faces}
     return out

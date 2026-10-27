@@ -646,10 +646,16 @@ def extract_computed_metrics(
 # ---------------------------------------------------------------------------
 
 def _package_analysis_type(package_path: Path, run_id: str | None) -> str | None:
-    """The analysis type the package records for ``run_id`` (or its setup)."""
-    candidates = ([f"simulation/runs/{run_id}/solver_run.json"] if run_id else []) + [
-        "simulation/solver_settings.json"
-    ]
+    """The analysis type the package records for the run ``run_id`` produced.
+
+    Only for a run-bound FRD: an external FRD (no ``run_id``) is not described
+    by the CURRENT settings — a buckling result read under ``static`` settings
+    would turn mode shapes back into physical numbers and silence the
+    unknown-analysis warning — so it stays unknown.
+    """
+    if not run_id:
+        return None
+    candidates = [f"simulation/runs/{run_id}/solver_run.json", "simulation/solver_settings.json"]
     try:
         with zipfile.ZipFile(package_path, "r") as zf:
             names = set(zf.namelist())
@@ -685,11 +691,11 @@ def write_computed_metrics_package(
         load_case_id: Load case ID for the metrics.
         software: Solver software name.
         overwrite: Replace existing ``computed_metrics.json`` if present.
-        analysis_type: The analysis the FRD came from. When omitted it is read
-            from the package — the run's own ``solver_run.json`` first (what was
-            actually solved), then ``simulation/solver_settings.json`` — because
-            ccx writes ``*BUCKLE`` modes as a generic step type, and without it a
-            buckling FRD's mode shapes would be read as a static result.
+        analysis_type: The analysis the FRD came from. When omitted for a
+            run-bound FRD (``run_id`` given) it is read from the package — the
+            run's own ``solver_run.json`` first (what was actually solved), then
+            ``simulation/solver_settings.json`` — because ccx writes ``*BUCKLE``
+            modes as a generic step type. An external FRD stays unknown.
 
     Returns:
         The computed metrics dict (same as :func:`extract_computed_metrics`).

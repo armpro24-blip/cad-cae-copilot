@@ -306,6 +306,43 @@ def test_a_cae_target_id_is_never_reported_as_a_feature(tmp_path: Path) -> None:
     assert cluster["feature_ref"] is None  # no face evidence -> no feature
 
 
+def test_one_nset_serving_two_targets_is_ambiguous(tmp_path: Path) -> None:
+    """A load and a BC on the same faces share an NSET; the last mapping used to
+    win silently. The peak cannot name either one."""
+    mappings = [
+        {"cae_entity": "N_FIX", "maps_to": {"cae_target_id": "bc_001"}, "face_ids": ["face_001"]},
+        {"cae_entity": "N_FIX", "maps_to": {"cae_target_id": "load_001"}, "face_ids": ["face_001"]},
+    ]
+    cluster = _extract_peak_cluster(tmp_path, mappings, _PART_GRAPH)
+    assert cluster["cae_target_ref"] is None
+    assert cluster["feature_ref"] is None
+
+
+def test_an_unreadable_feature_graph_keeps_the_target(tmp_path: Path) -> None:
+    mappings = [{"cae_entity": "N_FIX", "maps_to": {"cae_target_id": "bc_001"}, "face_ids": ["face_001"]}]
+    pkg = _package_with_cae_mapping(tmp_path, source_deck=_TWO_SET_DECK, mappings=mappings)
+    with zipfile.ZipFile(pkg, "a") as zf:
+        zf.writestr("graph/feature_graph.json", "{not json")
+    frd = tmp_path / "job.frd"
+    frd.write_text(_make_frd({1: (0, 0, 0), 2: (0.1, 0, 0), 3: (10, 0, 0)},
+                             {1: 100.0, 2: 99.0, 3: 1.0}), encoding="utf-8")
+    result = extract_field_regions_package(pkg, frd, threshold_percentile=80)
+    with zipfile.ZipFile(pkg) as zf:
+        cluster = json.loads(zf.read("results/field_regions.json"))["clusters"][0]
+    assert cluster["cae_target_ref"] == "bc_001"
+    assert cluster["feature_ref"] is None
+    assert any("feature_graph.json is not valid JSON" in w for w in result.get("warnings", []))
+
+
+def test_array_form_geometry_refs_is_ownership_evidence(tmp_path: Path) -> None:
+    """The feature-graph schema keeps a plain list of topology ids as a valid form."""
+    graph = {"features": [{"id": "feat_body_001", "type": "named_part", "name": "base_plate",
+                           "geometry_refs": ["face_001", "face_002", "edge_007"]}]}
+    mappings = [{"cae_entity": "N_FIX", "maps_to": {"cae_target_id": "bc_001"}, "face_ids": ["face_001"]}]
+    cluster = _extract_peak_cluster(tmp_path, mappings, graph)
+    assert cluster["feature_ref"] == "feat_body_001"
+
+
 def test_faces_spanning_two_parts_resolve_no_feature(tmp_path: Path) -> None:
     mappings = [
         {"cae_entity": "N_FIX", "cae_type": "boundary_condition_target",

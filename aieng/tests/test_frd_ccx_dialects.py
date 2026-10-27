@@ -132,6 +132,24 @@ def test_package_extraction_reads_the_analysis_type_it_records(
     assert len(cases) == 2  # the reference-load state + the factors, no mode shapes
 
 
+def test_an_external_frd_is_not_described_by_the_current_settings(tmp_path: Path) -> None:
+    """No run_id = an FRD from outside the package's runs. Its analysis is not
+    whatever solver_settings.json says NOW, so it stays unknown — and keeps the
+    warning that says so — rather than being read under a guessed type."""
+    import json
+    import zipfile
+
+    from aieng.simulation.frd_result_extractor import write_computed_metrics_package
+
+    pkg = tmp_path / "ext.aieng"
+    with zipfile.ZipFile(pkg, "w") as zf:
+        zf.writestr("manifest.json", json.dumps({"resources": {}}))
+        zf.writestr("simulation/solver_settings.json", json.dumps({"analysis_type": "buckling"}))
+    result = write_computed_metrics_package(pkg, CCX / "buckling.frd")
+    assert len(result["load_cases"]) == 4
+    assert sum("ICTYPE 4" in w for w in result["warnings"]) == 3
+
+
 def test_real_thermal_frd() -> None:
     cases = _metrics(extract_computed_metrics(CCX / "thermal.frd"))
     # the deck fixes 100 at the root face and 20 at the tip face
