@@ -37,7 +37,13 @@ class JUnitSummary:
 TARGETS: dict[str, PytestTarget] = {
     "nafems": PytestTarget(
         label="NAFEMS real-ccx numerical verification",
-        args=("aieng/tests/test_nafems_verification.py", "-q", "-k", "real_ccx"),
+        args=(
+            "aieng/tests/test_nafems_verification.py",
+            "aieng/tests/test_benchmarks_analytical_fea.py",
+            "-q",
+            "-k",
+            "real_ccx",
+        ),
     ),
     "backend": PytestTarget(
         label="Backend CAD->CAE real-ccx solve loop",

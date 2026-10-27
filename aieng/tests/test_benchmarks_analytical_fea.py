@@ -18,10 +18,10 @@ from aieng.benchmarks.analytical_fea import (
     score_corpus,
     write_scorecard,
 )
-from aieng.nafems_verification import REFERENCE_CASES
+from aieng.nafems_verification import REFERENCE_CASES, _find_ccx
 
 
-DATASET_ROOT = Path("benchmarks/datasets/analytical_fea")
+DATASET_ROOT = Path(__file__).resolve().parents[1] / "benchmarks" / "datasets" / "analytical_fea"
 
 
 # ---------------------------------------------------------------------------
@@ -46,14 +46,14 @@ def test_references_match_nafems_reference_cases() -> None:
         ref = load_reference(case_id, DATASET_ROOT)
         assert ref["description"] == expected["description"]
         assert ref["analysis_type"] == expected.get("analysis_type", "static")
+        assert set(ref["metrics"]) == set(expected["metrics"])
         for metric_name, metric in expected["metrics"].items():
-            assert metric_name in ref["metrics"]
-            assert ref["metrics"][metric_name]["value"] == pytest.approx(metric["value"])
-            assert ref["metrics"][metric_name]["unit"] == metric["unit"]
-            assert (
-                ref["metrics"][metric_name]["tolerance_percent"]
-                == metric["tolerance_percent"]
-            )
+            # Every field, not a chosen few: comparing only value/unit/tolerance
+            # let `gate` drift, so the CLI gated on peak stresses the table
+            # declares informational (tension rod: 21.9 vs 10 MPa).
+            got = dict(ref["metrics"][metric_name])
+            assert got.pop("value") == pytest.approx(metric["value"])
+            assert got == {k: v for k, v in metric.items() if k != "value"}
 
 
 # ---------------------------------------------------------------------------
@@ -223,29 +223,19 @@ def test_score_corpus_shape_with_mock_runner(tmp_path: Path) -> None:
 
 def test_score_corpus_status_is_failed_when_any_case_fails(tmp_path: Path) -> None:
     build_fixture_packages(tmp_path, DATASET_ROOT)
-    ref = load_reference("tension_rod", DATASET_ROOT)
 
     def _bad_runner(package_path: Path, run_id: str = "") -> dict[str, Any]:
+        # Every metric at twice its own case's reference, so each case fails on
+        # its gating metric rather than by coincidence with another case's values.
+        ref = load_reference(package_path.stem, DATASET_ROOT)
+        metrics = {
+            name: {"value": spec["value"] * 2.0, "unit": spec.get("unit", "")}
+            for name, spec in ref["metrics"].items()
+        }
         return {
             "status": "ok",
-            "analysis_type": "static",
-            "computed_metrics": {
-                "load_cases": [
-                    {
-                        "id": run_id,
-                        "metrics": {
-                            "max_displacement": {
-                                "value": ref["metrics"]["max_displacement"]["value"] * 2.0,
-                                "unit": "mm",
-                            },
-                            "max_von_mises_stress": {
-                                "value": ref["metrics"]["max_von_mises_stress"]["value"] * 2.0,
-                                "unit": "MPa",
-                            },
-                        },
-                    }
-                ]
-            },
+            "analysis_type": ref.get("analysis_type", "static"),
+            "computed_metrics": {"load_cases": [{"id": run_id, "metrics": metrics}]},
         }
 
     scorecard = score_corpus(
@@ -292,3 +282,27 @@ def test_cli_module_smoke(tmp_path: Path) -> None:
     data = json.loads(out.read_text(encoding="utf-8"))
     assert data["format"] == SCORECARD_FORMAT
     assert data["run_id"] == "cli_smoke"
+
+
+@pytest.mark.skipif(_find_ccx() is None, reason="CalculiX (ccx) not available")
+def test_cli_real_ccx_corpus_passes(tmp_path: Path) -> None:
+    """With a real solver every case must SOLVE and pass its gating metrics.
+
+    The smoke test above also passes without ccx (every case is ``skipped`` and
+    the CLI exits 0), so on its own it never exercised the scored path; this is
+    the one the real-ccx gate runs.
+    """
+    from aieng.benchmarks import analytical_fea
+
+    out = tmp_path / "scorecard.json"
+    rc = analytical_fea.main(
+        ["--packages-dir", str(tmp_path / "packages"), "--dataset-root", str(DATASET_ROOT),
+         "--run-id", "real_ccx", "--out", str(out)]
+    )
+    data = json.loads(out.read_text(encoding="utf-8"))
+    # Every canonical case, not "whatever corpus.json lists": an empty or partial
+    # corpus would otherwise pass, and -k real_ccx skips the integrity tests.
+    assert sorted(c["case_id"] for c in data["cases"]) == sorted(REFERENCE_CASES)
+    failing = [c["case_id"] for c in data["cases"] if c["verdict"] != "pass"]
+    assert rc == 0 and data["status"] == "passed", failing
+    assert all(c["status"] == "ok" for c in data["cases"])

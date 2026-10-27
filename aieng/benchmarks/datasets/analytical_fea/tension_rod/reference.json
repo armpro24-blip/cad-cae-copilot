@@ -9,6 +9,8 @@
       "value": 0.004761904761904762
     },
     "max_von_mises_stress": {
+      "gate": false,
+      "note": "Informational max stress: fully fixed end constraints create a local triaxial concentration; displacement is the gating metric.",
       "tolerance_percent": 10.0,
       "unit": "MPa",
       "value": 10.0
