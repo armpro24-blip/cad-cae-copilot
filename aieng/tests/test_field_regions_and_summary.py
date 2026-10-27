@@ -562,3 +562,136 @@ def test_ccx_field_name_stress_is_accepted(tmp_path: Path) -> None:
                              {1: 100, 2: 99, 3: 1}), encoding="utf-8")
     result = extract_field_regions_package(pkg, frd, field="STRESS", threshold_percentile=80)
     assert result["clusters"][0]["magnitude"] == {"value": 100.0, "unit": "MPa"}
+
+
+# The CURRENT mesh after a remesh: the same node ids sit elsewhere, so by id the
+# earlier run's peak nodes 1 & 2 would read as members of N_LOAD.
+_REMESHED_DECK = (
+    "*NODE\n"
+    "1, 10.0, 0.0, 0.0\n"
+    "2, 9.9, 0.0, 0.0\n"
+    "3, 0.0, 0.0, 0.0\n"
+    "*ELEMENT, TYPE=C3D4, ELSET=E_ALL\n"
+    "1, 1, 2, 3\n"
+    "*NSET, NSET=N_FIX\n"
+    "3\n"
+    "*NSET, NSET=N_LOAD\n"
+    "1, 2\n"
+)
+_TARGET_MAPPINGS = [
+    {"cae_entity": "N_FIX", "maps_to": {"cae_target_id": "bc_001"}, "face_ids": ["face_001"]},
+    {"cae_entity": "N_LOAD", "maps_to": {"cae_target_id": "load_001"}, "face_ids": ["face_010"]},
+]
+
+
+_RUN_MEMBER = "simulation/runs/run_001/outputs/result.frd"
+# What run_001 recorded when its deck was written.
+_RUN_PROVENANCE = {
+    "run_id": "run_001",
+    "setup_bindings": {"bc_001": ["face_001"], "load_001": ["face_010"]},
+    "setup_nsets": {"N_FIX": ["bc_001"], "N_LOAD": ["load_001"]},
+}
+
+
+def _remeshed_package_with_run(
+    tmp_path: Path,
+    *,
+    provenance: dict | None = None,
+    mappings: list[dict] | None = None,
+) -> tuple[Path, Path]:
+    """Source deck from the current mesh; run_001's own deck, FRD and record from the old one."""
+    pkg = _package_with_cae_mapping(
+        tmp_path, source_deck=_REMESHED_DECK, mappings=mappings or _TARGET_MAPPINGS,
+        feature_graph=_PART_GRAPH,
+    )
+    coords = {1: (0, 0, 0), 2: (0.1, 0, 0), 3: (10, 0, 0)}
+    frd_text = _make_frd(coords, {1: 100.0, 2: 99.0, 3: 1.0})
+    with zipfile.ZipFile(pkg, "a") as zf:
+        zf.writestr("simulation/runs/run_001/solver_input.inp", _TWO_SET_DECK)
+        zf.writestr(_RUN_MEMBER, frd_text)
+        if provenance is not None:
+            zf.writestr("simulation/runs/run_001/deck_provenance.json", json.dumps(provenance))
+    frd = tmp_path / "tmp_extracted.frd"   # what the tool hands over: a temp file
+    frd.write_text(frd_text, encoding="utf-8")
+    return pkg, frd
+
+
+def _regions(pkg: Path) -> dict:
+    import jsonschema
+    from importlib.resources import files
+
+    with zipfile.ZipFile(pkg) as zf:
+        regions = json.loads(zf.read("results/field_regions.json"))
+    schema = json.loads(files("aieng.schemas").joinpath("field_regions.schema.json").read_text())
+    jsonschema.validate(regions, schema)
+    return regions
+
+
+def test_an_earlier_runs_frd_is_attributed_with_that_runs_node_sets(tmp_path: Path) -> None:
+    """Found by a cold-agent trial: after a remesh, run_001's FRD was read against
+    the source deck re-synthesised from the NEW mesh, and two different bolt holes
+    were both attributed to bc_001."""
+    # The mapping has moved on since the run: N_FIX now serves another target.
+    moved = [
+        {"cae_entity": "N_FIX", "maps_to": {"cae_target_id": "bc_009"}, "face_ids": ["face_002"]},
+        {"cae_entity": "N_LOAD", "maps_to": {"cae_target_id": "load_001"}, "face_ids": ["face_010"]},
+    ]
+    pkg, frd = _remeshed_package_with_run(tmp_path, provenance=_RUN_PROVENANCE, mappings=moved)
+
+    extract_field_regions_package(pkg, frd, threshold_percentile=80, source_member=_RUN_MEMBER)
+
+    regions = _regions(pkg)
+    [cluster] = regions["clusters"]
+    # Not load_001 (the new mesh's node ids) and not bc_009 (the current mapping).
+    assert cluster["cae_target_ref"] == "bc_001"
+    assert cluster["feature_ref"] == "feat_body_001"  # face_001, as the run recorded it
+    assert cluster["peak_location"] == {"node_id": 1, "x": 0.0, "y": 0.0, "z": 0.0}
+    assert regions["source_frd"] == _RUN_MEMBER       # not the temp file's name
+
+
+def test_a_run_without_recorded_nsets_uses_the_mapping_only_if_it_still_fits(
+    tmp_path: Path,
+) -> None:
+    """Runs written before `setup_nsets` existed: the current mapping is used only
+    when it reaches exactly the targets the run recorded."""
+    older = {k: v for k, v in _RUN_PROVENANCE.items() if k != "setup_nsets"}
+    pkg, frd = _remeshed_package_with_run(tmp_path, provenance=older)
+    extract_field_regions_package(pkg, frd, threshold_percentile=80, source_member=_RUN_MEMBER)
+    assert _regions(pkg)["clusters"][0]["cae_target_ref"] == "bc_001"
+
+    moved = [
+        {"cae_entity": "N_FIX", "maps_to": {"cae_target_id": "bc_009"}, "face_ids": ["face_002"]},
+        {"cae_entity": "N_LOAD", "maps_to": {"cae_target_id": "load_001"}, "face_ids": ["face_010"]},
+    ]
+    other = tmp_path / "moved"
+    other.mkdir()
+    pkg, frd = _remeshed_package_with_run(other, provenance=older, mappings=moved)
+    result = extract_field_regions_package(
+        pkg, frd, threshold_percentile=80, source_member=_RUN_MEMBER
+    )
+    assert _regions(pkg)["clusters"][0]["cae_target_ref"] is None
+    assert any("predates recorded NSET bindings" in w for w in result["warnings"])
+
+
+def test_a_small_part_far_from_the_origin_is_judged_by_its_own_size() -> None:
+    """The tolerance was 1e-4 of the coordinate RANGE across x, y and z: a 1 mm
+    part at x = 1000 got ~0.1 mm, enough to accept a different mesh."""
+    from aieng.simulation.field_region_extractor import _deck_matches_frd_mesh
+
+    frd = {1: (1000.0, 0.0, 0.0), 2: (1001.0, 0.0, 0.0), 3: (1000.0, 1.0, 1.0)}
+    deck = "*NODE\n1, 1000.05, 0.0, 0.0\n2, 1001.0, 0.0, 0.0\n3, 1000.0, 1.0, 1.0\n"
+    assert _deck_matches_frd_mesh(deck, {1, 2, 3}, frd) is False      # moved 0.05 mm
+    exact = "*NODE\n1, 1000.0, 0.0, 0.0\n2, 1001.0, 0.0, 0.0\n3, 1000.0, 1.0, 1.0\n"
+    assert _deck_matches_frd_mesh(exact, {1, 2, 3}, frd) is True
+
+
+def test_node_sets_from_another_mesh_attribute_nothing(tmp_path: Path) -> None:
+    """With no run to tie the FRD to, the source deck is checked against the FRD's
+    node coordinates; a different mesh gives no attribution rather than a wrong one."""
+    pkg, frd = _remeshed_package_with_run(tmp_path)
+
+    result = extract_field_regions_package(pkg, frd, threshold_percentile=80)
+
+    [cluster] = _regions(pkg)["clusters"]
+    assert cluster["cae_target_ref"] is None and cluster["feature_ref"] is None
+    assert any("different mesh" in w for w in result["warnings"]), result["warnings"]

@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import shutil
 import tempfile
 import zipfile
@@ -83,6 +84,7 @@ def extract_field_regions_package(
     max_clusters: int = 3,
     threshold_percentile: float = 90.0,
     overwrite: bool = False,
+    source_member: str | None = None,
 ) -> dict[str, Any]:
     """Extract high-magnitude field regions from an FRD file and write into a .aieng package.
 
@@ -95,6 +97,11 @@ def extract_field_regions_package(
         threshold_percentile: Percentile cutoff (0–100). Only nodes above this
             percentile are considered for clustering.
         overwrite: Whether to overwrite an existing field_regions.json.
+        source_member: The FRD's package path when it came from the package
+            (``simulation/runs/<run_id>/outputs/result.frd``). It selects that
+            run's own deck for node-set attribution and is recorded as
+            ``source_frd``; a temp-file name says nothing about which run the
+            regions describe.
 
     Returns:
         Dict with ``ok``, ``field_regions``, ``clusters``, ``warnings``.
@@ -152,7 +159,7 @@ def extract_field_regions_package(
             f"threshold ({threshold:.4f}). Returning empty clusters."
         )
         return _write_regions_package(
-            pkg, [], frd.name, field, metric, warnings, overwrite=overwrite,
+            pkg, [], source_member or frd.name, field, metric, warnings, overwrite=overwrite,
             statistics=statistics,
         )
 
@@ -164,7 +171,7 @@ def extract_field_regions_package(
 
     # Cluster -> feature_id mapping from package evidence (source deck + cae_mapping).
     # Mapping is best-effort and honest: ambiguous or unmappable peaks remain None.
-    feature_resolver = _build_feature_resolver(pkg, warnings)
+    feature_resolver = _build_feature_resolver(pkg, warnings, coords, source_member)
 
     # Build structured cluster descriptions
     clusters = []
@@ -185,6 +192,13 @@ def extract_field_regions_package(
                     "unit": "MPa" if field.upper() in _STRESS_FIELDS else "mm",
                 },
                 "node_count": len(node_ids),
+                # Where the peak itself sits; `location` is the cluster centroid.
+                "peak_location": {
+                    "node_id": peak_node,
+                    "x": round(coords[peak_node][0], 6),
+                    "y": round(coords[peak_node][1], 6),
+                    "z": round(coords[peak_node][2], 6),
+                },
                 "feature_ref": feature_ref,
                 "cae_target_ref": cae_target_ref,
                 "peak_to_median_ratio": (
@@ -194,7 +208,7 @@ def extract_field_regions_package(
         )
 
     return _write_regions_package(
-        pkg, clusters, frd.name, field, metric, warnings, overwrite=overwrite,
+        pkg, clusters, source_member or frd.name, field, metric, warnings, overwrite=overwrite,
         statistics=statistics,
     )
 
@@ -470,9 +484,19 @@ _FEATURE_GRAPH_PATH = "graph/feature_graph.json"
 _NO_REFS: tuple[str | None, str | None] = (None, None)
 
 
+def _run_deck_member(source_member: str | None) -> str | None:
+    """``simulation/runs/<id>/solver_input.inp`` for an FRD inside that run."""
+    if not source_member:
+        return None
+    match = re.match(r"^simulation/runs/([^/]+)/", source_member.replace("\\", "/"))
+    return f"simulation/runs/{match.group(1)}/solver_input.inp" if match else None
+
+
 def _build_feature_resolver(
     pkg: Path,
     warnings: list[str],
+    frd_coords: dict[int, tuple[float, float, float]] | None = None,
+    source_member: str | None = None,
 ) -> Any:
     """Return a callable ``peak_node_id -> (cae_target_ref, feature_ref)``.
 
@@ -488,13 +512,38 @@ def _build_feature_resolver(
     Either stays ``None`` when its evidence is missing or ambiguous, so the
     honesty boundary ("``feature_ref: null`` when mapping is unavailable")
     is preserved.
+
+    The node sets must come from the mesh the FRD was solved on. The source
+    deck is re-synthesised from the CURRENT mesh, so for an earlier run's FRD
+    (after a remesh) its node ids meant other nodes: a cold-agent trial saw two
+    different bolt holes both attributed to ``bc_001``. A run's own deck is used
+    when the FRD came from that run, and in every case the deck's node
+    coordinates must match the FRD's or no attribution is made.
+
+    A run's node sets are read through that run's own record of what each set
+    served (`deck_provenance.json` `setup_nsets` + `setup_bindings`), because
+    the mapping file is rewritten as the setup moves on. A run recorded before
+    `setup_nsets` existed falls back to the current mapping only when the
+    targets it reaches through the run's sets are exactly the targets the run
+    recorded; otherwise its binding cannot be re-established and nothing is
+    attributed.
     """
+    deck_member = _run_deck_member(source_member)
+    run_provenance: Any = None
     try:
         with zipfile.ZipFile(pkg, "r") as zf:
             names = set(zf.namelist())
+            if deck_member in names:
+                provenance_member = deck_member.rsplit("/", 1)[0] + "/deck_provenance.json"
+                if provenance_member in names:
+                    run_provenance = json.loads(zf.read(provenance_member))
+                if not isinstance(run_provenance, dict):
+                    run_provenance = {}
+            else:
+                deck_member = _SOURCE_DECK_PATH
             deck_text = (
-                zf.read(_SOURCE_DECK_PATH).decode("utf-8", errors="replace")
-                if _SOURCE_DECK_PATH in names
+                zf.read(deck_member).decode("utf-8", errors="replace")
+                if deck_member in names
                 else None
             )
             mapping_raw = (
@@ -517,10 +566,20 @@ def _build_feature_resolver(
                 "(cae_target_ref is unaffected)."
             )
 
-    if deck_text is None or not isinstance(mapping_raw, dict):
+    if deck_text is None:
         return lambda _node_id: _NO_REFS
-
-    nset_to_target, target_faces = _build_nset_to_target(mapping_raw)
+    recorded_nsets = (run_provenance or {}).get("setup_nsets")
+    if isinstance(recorded_nsets, dict):
+        # The run's own record: authoritative for this deck's sets.
+        nset_to_target = {
+            str(name): {str(t) for t in targets}
+            for name, targets in recorded_nsets.items() if isinstance(targets, list)
+        }
+        target_faces = _recorded_target_faces(run_provenance)
+    elif isinstance(mapping_raw, dict):
+        nset_to_target, target_faces = _build_nset_to_target(mapping_raw)
+    else:
+        return lambda _node_id: _NO_REFS
     if not nset_to_target:
         return lambda _node_id: _NO_REFS
 
@@ -531,6 +590,30 @@ def _build_feature_resolver(
             "found in the source solver deck; cluster feature_ref stays null."
         )
         return lambda _node_id: _NO_REFS
+    if frd_coords is not None and not _deck_matches_frd_mesh(
+        deck_text, set(node_to_nsets), frd_coords
+    ):
+        warnings.append(
+            f"The node sets in {deck_member} belong to a different mesh than this "
+            "FRD (node coordinates differ), so clusters are not attributed to a CAE "
+            "target: cae_target_ref and feature_ref stay null."
+        )
+        return lambda _node_id: _NO_REFS
+    if run_provenance is not None and not isinstance(recorded_nsets, dict):
+        # An earlier run read through the CURRENT mapping: only sound if that
+        # mapping still reaches exactly the targets the run recorded.
+        recorded = run_provenance.get("setup_bindings")
+        deck_sets = set().union(*node_to_nsets.values())
+        reached = set().union(*(nset_to_target.get(n, set()) for n in deck_sets))
+        if not isinstance(recorded, dict) or reached != {str(t) for t in recorded}:
+            warnings.append(
+                f"{deck_member} predates recorded NSET bindings and the current "
+                "simulation/cae_mapping.json no longer reaches the targets this run "
+                "recorded, so its clusters are not attributed: cae_target_ref and "
+                "feature_ref stay null."
+            )
+            return lambda _node_id: _NO_REFS
+        target_faces = _recorded_target_faces(run_provenance)
 
     part_faces = _named_part_faces(feature_graph)
 
@@ -545,6 +628,81 @@ def _build_feature_resolver(
         return target, (owners[0] if len(owners) == 1 else None)
 
     return _resolve
+
+
+def _recorded_target_faces(run_provenance: dict[str, Any]) -> dict[str, set[str]]:
+    """`{target id: face ids}` as the run recorded them (`setup_bindings`)."""
+    recorded = run_provenance.get("setup_bindings")
+    if not isinstance(recorded, dict):
+        return {}
+    return {
+        str(target): {str(f) for f in faces}
+        for target, faces in recorded.items() if isinstance(faces, list)
+    }
+
+
+_NODE_OUTPUT_CARDS = ("*NODE FILE", "*NODE PRINT", "*NODE OUTPUT")
+
+
+def _deck_matches_frd_mesh(
+    deck_text: str,
+    node_ids: set[int],
+    frd_coords: dict[int, tuple[float, float, float]],
+) -> bool:
+    """Do the deck's coordinates for ``node_ids`` agree with the FRD's?
+
+    Tolerance = 1e-4 of the model's bounding-box diagonal (a different mesh
+    puts the same node id somewhere else entirely) plus the FRD's own rounding:
+    it writes coordinates as ``E12.5``, a RELATIVE precision of 1e-5 of the
+    coordinate's magnitude, which for a small part far from the origin exceeds
+    any model-size bound.
+    """
+    deck_coords = _parse_deck_node_coords(deck_text, node_ids)
+    if not deck_coords or len(deck_coords) != len(node_ids) or not frd_coords:
+        return False
+    spans = [
+        max(c[axis] for c in frd_coords.values()) - min(c[axis] for c in frd_coords.values())
+        for axis in range(3)
+    ]
+    diagonal = math.sqrt(sum(span * span for span in spans))
+    magnitude = max(abs(v) for c in frd_coords.values() for v in c)
+    tolerance = 1e-4 * diagonal + 1e-5 * magnitude
+    for nid, (x, y, z) in deck_coords.items():
+        other = frd_coords.get(nid)
+        if other is None:
+            return False
+        if max(abs(x - other[0]), abs(y - other[1]), abs(z - other[2])) > tolerance:
+            return False
+    return True
+
+
+def _parse_deck_node_coords(
+    deck_text: str, wanted: set[int]
+) -> dict[int, tuple[float, float, float]]:
+    """Coordinates of ``wanted`` nodes from the deck's ``*NODE`` blocks."""
+    coords: dict[int, tuple[float, float, float]] = {}
+    in_node = False
+    for raw_line in deck_text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("**"):
+            continue
+        if line.startswith("*"):
+            upper = line.upper()
+            in_node = upper.startswith("*NODE") and not upper.startswith(_NODE_OUTPUT_CARDS)
+            continue
+        if not in_node:
+            continue
+        parts = line.split(",")
+        try:
+            nid = int(parts[0])
+        except (ValueError, IndexError):
+            continue
+        if nid in wanted and len(parts) >= 4:
+            try:
+                coords[nid] = (float(parts[1]), float(parts[2]), float(parts[3]))
+            except ValueError:
+                continue
+    return coords
 
 
 def _build_nset_to_target(
@@ -660,7 +818,7 @@ def _write_regions_package(
             names = set(zf.namelist())
             if FIELD_REGIONS_PATH in names and not overwrite:
                 raise FileExistsError(
-                    f"{FIELD_REGIONS_PATH} already exists; use --overwrite to replace it"
+                    f"{FIELD_REGIONS_PATH} already exists; pass overwrite=true to replace it"
                 )
             manifest = json.loads(zf.read("manifest.json"))
             members = _read_existing_members(zf)

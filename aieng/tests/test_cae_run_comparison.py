@@ -454,3 +454,32 @@ def test_a_higher_mode_change_is_reported(tmp_path: Path) -> None:
     )
     assert rows["natural_frequencies_hz[mode_1]"]["percent_change"] == pytest.approx(0.0)
     assert "natural_frequencies_hz" not in rows  # no "no extracted value" row any more
+
+
+def test_a_target_only_a_pre_upgrade_deck_lists_is_not_a_change(tmp_path: Path) -> None:
+    """A deck recorded before `setup_nsets` listed every mapping entry, stale ones
+    included; a later deck lists only what it applied. Comparing the two must not
+    report the stale entry as a dropped restraint (independent review of #557)."""
+    pkg = _bindings_package(
+        tmp_path / "mixed.aieng",
+        before={"load_001": ["face_011"], "bc_stale": ["face_099"]},
+        after={"load_001": ["face_013"]},
+    )
+    with zipfile.ZipFile(pkg) as zf:
+        members = {n: zf.read(n) for n in zf.namelist()}
+    member = "simulation/runs/run_002/deck_provenance.json"
+    provenance = json.loads(members[member])
+    provenance["setup_nsets"] = {"LOAD_001": ["load_001"]}
+    members[member] = json.dumps(provenance).encode()
+    with zipfile.ZipFile(pkg, "w") as zf:
+        for name, data in members.items():
+            zf.writestr(name, data)
+
+    result = compare_runs(pkg)
+
+    # Not True (a stale entry is no dropped restraint), and not False either:
+    # four bolt holes re-authored to two look exactly like this, so the old
+    # record cannot say which it was.
+    assert result["binding_count_changed"] is None, result["warnings"]
+    assert any("predates per-deck NSET records" in w for w in result["warnings"])
+    assert any("bc_stale" in w and "cannot be told" in w for w in result["warnings"])

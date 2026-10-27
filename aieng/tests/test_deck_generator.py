@@ -677,3 +677,23 @@ def test_thermal_structural_without_expansion_warns(tmp_path: Path) -> None:
     result = generate_solver_input_package(pkg, run_id="run_ts_ne")
     assert result["ok"] is True
     assert any("expansion" in w.lower() for w in result["warnings"])
+
+
+def test_provenance_records_only_the_sets_this_deck_applied(tmp_path: Path) -> None:
+    """The mapping file keeps entries a re-authored setup no longer uses; the
+    run's provenance must not claim it held or loaded those faces."""
+    mapping = {
+        "mappings": [
+            *_CAE_MAPPING_WITH_FEATURES["mappings"],
+            {"cae_entity": "N_OLD", "maps_to": {"feature_id": "feat_retired"},
+             "face_ids": ["face_099"]},
+        ],
+    }
+    pkg = _write_package(tmp_path / "prov.aieng", setup=_SETUP_WITH_FEATURE_REFS,
+                         cae_mapping=mapping)
+    generate_solver_input_package(pkg, run_id="run_001")
+
+    with zipfile.ZipFile(pkg) as zf:
+        provenance = json.loads(zf.read("simulation/runs/run_001/deck_provenance.json"))
+    assert set(provenance["setup_nsets"]) == {"N_FIX", "N_LOAD"}
+    assert "feat_retired" not in provenance["setup_bindings"]

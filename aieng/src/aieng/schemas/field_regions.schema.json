@@ -51,6 +51,18 @@
             }
           },
           "node_count": {"type": "integer", "minimum": 1},
+          "peak_location": {
+            "$comment": "The node carrying the cluster's peak value and its coordinates; `location` is the cluster centroid, which can sit far from the peak.",
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["node_id", "x", "y", "z"],
+            "properties": {
+              "node_id": {"type": "integer"},
+              "x": {"type": "number"},
+              "y": {"type": "number"},
+              "z": {"type": "number"}
+            }
+          },
           "feature_ref": {
             "description": "Feature ID when mesh-to-feature mapping evidence exists; null when unavailable.",
             "type": ["string", "null"]
