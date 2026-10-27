@@ -1443,6 +1443,19 @@ carries a `qualifications` list (and the result summary the same, beside an
 unchanged `claim_tier`) saying the band is unknown rather than good, and to run
 `cae.mesh_convergence` before relying on the number.
 
+**An unconverged mesh study QUALIFIES the claim too (owner decision,
+2026-10-27).** When the latest `analysis/mesh_convergence_report.json` says
+`not_converged`, every stamp built from `read_solver_evidence` and the result
+summary add a qualification naming the per-metric verdicts, beside an unchanged
+tier. On the cold-agent bracket trial the stamp read `executed_solver_result`
+with `qualifications: []` right after the study returned
+`diverging_not_converged` / `oscillatory_not_converged`. It qualifies rather
+than downgrades because that study scattered by ~6 % on stress and ~3 % on
+displacement, and `unverified` would rank it with "no solver ran". The report
+now records `geometry_revision`. A study of another revision is ignored, and one
+that records none (written before this) qualifies with "does not record which
+geometry revision it ran on".
+
 **A producer must READ its evidence, not assert it.** The classifier can only
 downgrade a claim its caller has not already decided. `analysis/cae_result_map.json`
 passed `solver_executed=True` as a literal, so on that path the invariant was

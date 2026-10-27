@@ -97,6 +97,7 @@ def map_cae_results(
     mesh_accuracy_band: str | None = None,
     mesh_accuracy_judged: bool | None = None,
     geometry_stale: bool | None = None,
+    mesh_convergence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Correlate NEUTRAL CAE results with Shape IR nodes. Pure; neutral dicts in.
 
@@ -289,6 +290,7 @@ def map_cae_results(
             mesh_accuracy_band=mesh_accuracy_band,
             mesh_accuracy_judged=mesh_accuracy_judged,
             geometry_stale=geometry_stale,
+            mesh_convergence=mesh_convergence,
         ),
     }
 
@@ -321,6 +323,7 @@ def build_cae_result_map_for_package(package_path: str | Path) -> dict[str, Any]
         mesh_accuracy_band=evidence["mesh_accuracy_band"],
         mesh_accuracy_judged=evidence["mesh_accuracy_judged"],
         geometry_stale=evidence["geometry_stale"],
+        mesh_convergence=evidence["mesh_convergence"],
     )
     result["provenance"]["artifact_source"] = neutral["source"]
     return result

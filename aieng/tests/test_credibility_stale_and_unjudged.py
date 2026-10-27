@@ -400,3 +400,121 @@ def test_the_whole_summary_carries_the_qualification_end_to_end(
 
     assert contract["claim_tier"] == "executed_solver_result"
     assert contract["qualifications"], contract
+
+
+# --- An unconverged mesh study QUALIFIES the claim; it does not downgrade it ---
+#
+# Found by the cold-agent bracket trial: cae.mesh_convergence returned
+# `not_converged` for both metrics while the stamp read executed_solver_result
+# with `qualifications: []`. Owner decision (2026-10-27): qualify, keep the tier —
+# the study scattered by ~6 % / 3 %, and `unverified` would rank that solve with
+# "no solver ran".
+
+_UNCONVERGED = {
+    "verdict": "not_converged",
+    "verdicts": {"max_von_mises_stress": "oscillatory_not_converged"},
+    "applies": True,
+}
+
+
+def test_an_unconverged_study_qualifies_without_moving_the_rank() -> None:
+    stamp = classify_credibility("solver", solver_executed=True, mesh_convergence=_UNCONVERGED)
+
+    assert stamp["tier"] == "executed_solver_result" and stamp["rank"] == 4
+    [qualification] = stamp["qualifications"]
+    assert "did NOT converge" in qualification
+    assert "oscillatory_not_converged" in qualification
+    assert stamp["signals"]["mesh_convergence_verdict"] == "not_converged"
+
+
+def test_a_study_of_another_geometry_revision_says_nothing() -> None:
+    stamp = classify_credibility(
+        "solver", solver_executed=True, mesh_convergence={**_UNCONVERGED, "applies": False}
+    )
+    assert "qualifications" not in stamp
+
+
+def test_a_study_that_records_no_revision_may_apply_and_says_so() -> None:
+    stamp = classify_credibility(
+        "solver", solver_executed=True, mesh_convergence={**_UNCONVERGED, "applies": None}
+    )
+    assert "does not record which geometry revision" in stamp["qualifications"][0]
+
+
+def test_a_converged_study_adds_nothing() -> None:
+    stamp = classify_credibility(
+        "solver", solver_executed=True,
+        mesh_convergence={"verdict": "converged", "verdicts": {}, "applies": True},
+    )
+    assert "qualifications" not in stamp
+
+
+def _with_study(path: Path, *, current_revision: int, study_revision: int | None) -> Path:
+    _package(path, runs={"run_001": (True, current_revision)}, current_revision=current_revision)
+    report = {"overall_verdict": "not_converged",
+              "verdicts": {"max_displacement": "diverging_not_converged"}}
+    if study_revision is not None:
+        report["geometry_revision"] = study_revision
+    with zipfile.ZipFile(path, "a") as zf:
+        zf.writestr("analysis/mesh_convergence_report.json", json.dumps(report))
+    return path
+
+
+def test_the_package_reads_whether_its_study_describes_this_geometry(tmp_path: Path) -> None:
+    same = _evidence(_with_study(tmp_path / "same.aieng", current_revision=1, study_revision=1))
+    other = _evidence(_with_study(tmp_path / "other.aieng", current_revision=1, study_revision=0))
+    unrecorded = _evidence(
+        _with_study(tmp_path / "none.aieng", current_revision=1, study_revision=None)
+    )
+
+    assert same["mesh_convergence"]["applies"] is True
+    assert other["mesh_convergence"]["applies"] is False
+    assert unrecorded["mesh_convergence"]["applies"] is None
+    assert _evidence(_package(tmp_path / "bare.aieng"))["mesh_convergence"] is None
+
+
+def test_the_summary_qualifies_an_unconverged_study_beside_an_unchanged_tier() -> None:
+    contract = _contract(mesh_convergence=_UNCONVERGED)
+
+    assert contract["claim_tier"] == "executed_solver_result"
+    assert any("did NOT converge" in q for q in contract["qualifications"])
+
+
+def test_one_unconverged_metric_qualifies_even_when_the_rollup_is_indeterminate() -> None:
+    stamp = classify_credibility("solver", solver_executed=True, mesh_convergence={
+        "verdict": "indeterminate", "applies": True,
+        "verdicts": {"max_displacement": "diverging_not_converged",
+                     "max_von_mises_stress": "indeterminate"},
+    })
+    [qualification] = stamp["qualifications"]
+    assert "diverging_not_converged" in qualification and "indeterminate" in qualification
+
+
+def test_a_study_of_another_revision_leaves_no_verdict_signal() -> None:
+    stamp = classify_credibility(
+        "solver", solver_executed=True, mesh_convergence={**_UNCONVERGED, "applies": False}
+    )
+    assert "mesh_convergence_verdict" not in stamp["signals"]
+    current = classify_credibility("solver", solver_executed=True, mesh_convergence=_UNCONVERGED)
+    assert current["signals"]["mesh_convergence_applies"] is True
+
+
+def test_a_failing_two_grid_metric_qualifies_by_its_converged_flag(tmp_path: Path) -> None:
+    """`two_grid_relative_change_only` carries no "not_converged" in its name; the
+    metric's own `converged: false` must decide (independent review of #558)."""
+    path = _package(tmp_path / "two_grid.aieng", runs={"run_001": (True, 0)}, current_revision=0)
+    with zipfile.ZipFile(path, "a") as zf:
+        zf.writestr("analysis/mesh_convergence_report.json", json.dumps({
+            "overall_verdict": "indeterminate", "geometry_revision": 0,
+            "verdicts": {"max_von_mises_stress": "two_grid_relative_change_only",
+                         "max_displacement": "insufficient_grids"},
+            "convergence": {"max_von_mises_stress": {"converged": False},
+                            "max_displacement": {"converged": None}},
+        }))
+    evidence = _evidence(path)
+
+    assert evidence["mesh_convergence"]["unconverged_metrics"] == ["max_von_mises_stress"]
+    stamp = classify_credibility(
+        "solver", solver_executed=True, mesh_convergence=evidence["mesh_convergence"]
+    )
+    assert "two_grid_relative_change_only" in stamp["qualifications"][0]

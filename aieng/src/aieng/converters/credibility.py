@@ -84,6 +84,51 @@ def credibility_rank(tier: str) -> int:
     return int(meta["rank"]) if meta else int(_UNVERIFIED["rank"])
 
 
+def unconverged_mesh_qualification(mesh_convergence: Any) -> str | None:
+    """The qualification for a mesh-convergence study that did not converge.
+
+    A `not_converged` study is a positive finding about the discretisation, but
+    it QUALIFIES the claim rather than downgrading it (owner decision,
+    2026-10-27): on the cold-agent bracket trial the study scattered by about
+    6 % on stress and 3 % on displacement, and `unverified` would put that solve
+    on the same rank as "no solver ran". It used to do neither — the tier read
+    `executed_solver_result` with `qualifications: []` beside a study that had
+    just said `not_converged`. A study of ANOTHER geometry revision says nothing
+    about this one and is ignored; one that records no revision may apply and
+    says so.
+    """
+    if not isinstance(mesh_convergence, dict):
+        return None
+    verdicts = mesh_convergence.get("verdicts")
+    # Per metric, not only overall: the runner rolls a study with one
+    # `not_converged` and one `indeterminate` metric up to `indeterminate`.
+    metric_unconverged = bool(mesh_convergence.get("unconverged_metrics")) or (
+        isinstance(verdicts, dict)
+        and any("not_converged" in str(verdict) for verdict in verdicts.values())
+    )
+    if mesh_convergence.get("verdict") != "not_converged" and not metric_unconverged:
+        return None
+    applies = mesh_convergence.get("applies")
+    if applies is False:
+        return None
+    detail = (
+        "; ".join(f"{metric}: {verdict}" for metric, verdict in sorted(verdicts.items()))
+        if isinstance(verdicts, dict) and verdicts
+        else "not_converged"
+    )
+    scope = (
+        "on this geometry"
+        if applies is True
+        else "that does not record which geometry revision it ran on"
+    )
+    return (
+        f"a mesh-convergence study {scope} did NOT converge ({detail}): the value "
+        "carries discretisation uncertainty the study could not bound. Treat it as "
+        "an estimate, not a converged result; refine the mesh (smaller mesh sizes) "
+        "and re-run cae.mesh_convergence before relying on it"
+    )
+
+
 def classify_credibility(
     evidence_kind: str,
     *,
@@ -96,6 +141,7 @@ def classify_credibility(
     mesh_accuracy_band: str | None = None,
     mesh_accuracy_judged: bool | None = None,
     geometry_stale: bool | None = None,
+    mesh_convergence: dict[str, Any] | None = None,
     notes: str | None = None,
 ) -> dict[str, Any]:
     """Map an evidence kind + its honesty flags to ONE credibility tier.
@@ -199,6 +245,10 @@ def classify_credibility(
             "stands, but nothing here says the mesh could resolve it — run "
             "cae.mesh_convergence before relying on the number"
         )
+    if tier == "executed_solver_result":
+        unconverged = unconverged_mesh_qualification(mesh_convergence)
+        if unconverged:
+            qualifications.append(unconverged)
 
     signals = {
         "evidence_kind": kind or None,
@@ -210,6 +260,17 @@ def classify_credibility(
         "mesh_accuracy_band": mesh_accuracy_band,
         "mesh_accuracy_judged": mesh_accuracy_judged,
         "geometry_stale": geometry_stale,
+        # Only a study that may describe THIS geometry is a signal about it.
+        "mesh_convergence_verdict": (
+            mesh_convergence.get("verdict")
+            if isinstance(mesh_convergence, dict) and mesh_convergence.get("applies") is not False
+            else None
+        ),
+        "mesh_convergence_applies": (
+            mesh_convergence.get("applies")
+            if isinstance(mesh_convergence, dict) and mesh_convergence.get("applies") is not False
+            else None
+        ),
     }
     signals = {k: v for k, v in signals.items() if v is not None}
 

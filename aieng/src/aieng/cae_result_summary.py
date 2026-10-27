@@ -165,6 +165,7 @@ def generate_cae_result_summary(package_path: str | Path) -> dict[str, Any]:
         mesh_accuracy_band=solver_evidence["mesh_accuracy_band"],
         mesh_accuracy_judged=solver_evidence["mesh_accuracy_judged"],
         geometry_stale=solver_evidence["geometry_stale"],
+        mesh_convergence=solver_evidence["mesh_convergence"],
     )
     targets = _compare_design_targets(design_targets, computed_values)
     design_target_comparisons = _build_design_target_comparisons(
@@ -1284,6 +1285,11 @@ class SolverEvidence(TypedDict):
     #: for a geometry revision other than the one the package is at now, False
     #: when they agree, None when no revision is recorded to compare.
     geometry_stale: bool | None
+    #: The latest `cae.mesh_convergence` study: `{verdict, verdicts,
+    #: geometry_revision, applies}`. `applies` is True when the study ran on the
+    #: current geometry revision, False on another, None when it records none.
+    #: None when the package holds no study.
+    mesh_convergence: dict[str, Any] | None
     solver_run_count: int
     completed_run_count: int
 
@@ -1308,8 +1314,35 @@ def read_solver_evidence(zf: zipfile.ZipFile) -> SolverEvidence:
         "mesh_accuracy_band": band,
         "mesh_accuracy_judged": judged,
         "geometry_stale": _geometry_staleness(zf, completed),
+        "mesh_convergence": _read_mesh_convergence(zf),
         "solver_run_count": len(runs),
         "completed_run_count": len(completed),
+    }
+
+
+MESH_CONVERGENCE_REPORT_PATH = "analysis/mesh_convergence_report.json"
+
+
+def _read_mesh_convergence(zf: zipfile.ZipFile) -> dict[str, Any] | None:
+    """The latest mesh-convergence study and whether it describes this geometry."""
+    report = _read_json_from_zip(zf, MESH_CONVERGENCE_REPORT_PATH)
+    if not isinstance(report, dict) or not report.get("overall_verdict"):
+        return None
+    revision = report.get("geometry_revision")
+    applies = (
+        revision == _package_geometry_revision(zf) if isinstance(revision, int) else None
+    )
+    return {
+        "verdict": report.get("overall_verdict"),
+        "verdicts": report.get("verdicts") if isinstance(report.get("verdicts"), dict) else {},
+        # Each metric's own `converged: false`, not a pattern on its verdict
+        # name: a failing two-grid metric is `two_grid_relative_change_only`.
+        "unconverged_metrics": sorted(
+            metric for metric, detail in (report.get("convergence") or {}).items()
+            if isinstance(detail, dict) and detail.get("converged") is False
+        ) if isinstance(report.get("convergence"), dict) else [],
+        "geometry_revision": revision if isinstance(revision, int) else None,
+        "applies": applies,
     }
 
 
@@ -1449,6 +1482,7 @@ def _build_result_contract(
     mesh_accuracy_band: str | None = None,
     mesh_accuracy_judged: bool | None = None,
     geometry_stale: bool | None = None,
+    mesh_convergence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the normalized solver-result contract block.
 
@@ -1518,6 +1552,12 @@ def _build_result_contract(
             "body has no wall its bounding box describes). Run "
             "cae.mesh_convergence before relying on the number."
         )
+    if claim_tier == "executed_solver_result":
+        from .converters.credibility import unconverged_mesh_qualification
+
+        unconverged = unconverged_mesh_qualification(mesh_convergence)
+        if unconverged:
+            qualifications.append(unconverged[0].upper() + unconverged[1:] + ".")
 
     return {
         "schema_version": "0.1",
