@@ -1595,6 +1595,8 @@ export type EntitySurvivalSummary = {
   sample_added?: string[];
   sample_removed?: string[];
   referenced?: Array<{ id: string; status: string }>;
+  /** `"unknown"` when the backend could not establish survival (no counts then). */
+  status?: string;
 };
 
 /** Topology / export survival evidence from a CAD edit (#309, #311). */

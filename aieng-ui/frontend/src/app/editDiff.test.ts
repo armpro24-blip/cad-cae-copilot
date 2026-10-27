@@ -188,3 +188,31 @@ test("geometry verification unknown when topology_preserved is missing", () => {
   expect(view.geometryVerification?.status).toBe("unknown");
   expect(view.geometryVerification?.topologyPreserved).toBeNull();
 });
+
+test("an unknown face survival is not rendered as zero survived", () => {
+  const view = shapeEditDiff(
+    resp({
+      geometry_verification: {
+        topology_preserved: null as unknown as boolean,
+        stale_reference_risk: null as unknown as boolean,
+        face_edge_survival: {
+          face: {
+            status: "unknown",
+            before_count: 16,
+            after_count: 16,
+            referenced: [{ id: "face_001", status: "unknown" }],
+          } as never,
+        },
+        export_sanity: {
+          step_exported: true,
+          stl_exported: true,
+          glb_exported: true,
+          status: "pass",
+          detail: "",
+        },
+      },
+    }),
+  );
+  expect(view.geometryVerification?.status).toBe("unknown");
+  expect(view.geometryVerification?.faceSurvival).toBeNull();
+});
