@@ -1594,7 +1594,12 @@ run of the cantilever V&V in three). The batch solve therefore re-runs the same
 deck ONCE when CalculiX produced no result and reported no error, and labels the
 variant `solver_retry`; a run in which CalculiX reports an error is never
 retried. A crash that survives the retry is reported `likely_cause:
-"solver_crash"` with a same-mesh retry, not a finer mesh.
+"solver_crash"` with a same-mesh retry, not a finer mesh. A REPORTED error is
+classified by what it says: `mesh` (finer-mesh suggestion) only when ccx names
+the mesh — jacobian, distorted elements, negative volume, inconsistent
+orientation; `solver_internal_limit` for ccx's own array sizing
+(`*ERROR in bounadd: increase nboun_`, seen on retries of the silent crash,
+#549); otherwise `solver_error`, pointing at `solver_diagnosis` without a guess.
 
 **A refusal is not a problem — do not pass it back.** The derivation returns
 `status: needs_user_input` rather than inventing supports and loads, and the

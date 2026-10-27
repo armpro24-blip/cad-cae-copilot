@@ -234,6 +234,25 @@ def _is_solver_abort(solve: dict[str, Any]) -> bool:
     return "no FRD" in error or "returned code" in error or status == "solver_failed"
 
 
+# What CalculiX says when the MESH is what it rejects. Anything else it reports
+# is not evidence about the mesh, and "use a finer mesh" is then a guess.
+_MESH_EVIDENCE = ("JACOBIAN", "DISTORT", "NEGATIVE VOLUME", "INCONSISTENT ORIENTATION", "ERROR IN FACE")
+# ccx's own array-sizing errors ("*ERROR in bounadd: increase nboun_"): its
+# counting pass under-sized an internal array. Measured on ccx 2.23 / Windows,
+# the identical deck also solved on other runs (#549).
+_INTERNAL_LIMIT = re.compile(r"INCREASE\s+N\w*_")
+
+
+def _abort_cause(solve: dict[str, Any]) -> str:
+    """``mesh`` / ``solver_internal_limit`` / ``solver_error``, from what ccx reported."""
+    diagnosis = " ".join(str(d) for d in solve.get("solver_diagnosis") or []).upper()
+    if any(token in diagnosis for token in _MESH_EVIDENCE):
+        return "mesh"
+    if _INTERNAL_LIMIT.search(diagnosis):
+        return "solver_internal_limit"
+    return "solver_error"
+
+
 def record_from_solve(
     solve: dict[str, Any], topology_map: dict[str, Any], density: float | None,
     mesh_size_mm: float | None,
@@ -263,22 +282,42 @@ def record_from_solve(
                 "Re-run this variant at the SAME mesh size."
             ),
         }
-    # A variant can fail purely because the swept dimension changed the
-    # mesh: measured on the reference bracket, 8 mm aborted CalculiX
-    # (code 201, no FRD) at mesh_size 4 mm and solved cleanly at 3 mm,
-    # with identical geometry, BCs and load. Saying only "not solved"
-    # sends the caller looking at their design instead of their mesh.
+    # A variant can fail because the swept dimension changed the mesh, and
+    # saying only "not solved" sends the caller looking at their design. But the
+    # cause is read from what CalculiX REPORTED: every abort used to be blamed on
+    # the mesh, including ccx's internal `increase nboun_` sizing error.
     elif not record["solver_executed"] and _is_solver_abort(solve):
-        record["likely_cause"] = "mesh"
-        record["suggested_retry"] = {
-            "mesh_size_mm": round(float(mesh_size_mm) * 0.75, 3) if mesh_size_mm else None,
-            "reason": (
-                "The solver aborted without producing results while the geometry "
-                "built successfully — at this mesh size this variant's shape meshes "
-                "into elements CalculiX rejects. Re-run the sweep with a smaller "
-                "mesh_size_mm; the geometry itself is not necessarily the problem."
-            ),
-        }
+        cause = _abort_cause(solve)
+        record["likely_cause"] = cause
+        if cause == "mesh":
+            record["suggested_retry"] = {
+                "mesh_size_mm": round(float(mesh_size_mm) * 0.75, 3) if mesh_size_mm else None,
+                "reason": (
+                    "CalculiX rejected elements of this variant's mesh (see "
+                    "solver_diagnosis) while the geometry built successfully. Re-run "
+                    "with a smaller mesh_size_mm; the design itself is not necessarily "
+                    "the problem."
+                ),
+            }
+        elif cause == "solver_internal_limit":
+            record["suggested_retry"] = {
+                "mesh_size_mm": mesh_size_mm,
+                "reason": (
+                    "CalculiX hit one of its own internal array limits (see "
+                    "solver_diagnosis). That is not evidence about the mesh or the "
+                    "design; measured, the identical deck also solved on other runs. "
+                    "Re-run at the SAME mesh size; if it reproduces, it is a solver issue."
+                ),
+            }
+        else:
+            record["suggested_retry"] = {
+                "mesh_size_mm": mesh_size_mm,
+                "reason": (
+                    "CalculiX aborted with the error in solver_diagnosis, which does "
+                    "not identify the mesh. Read that error before changing the mesh "
+                    "or the design."
+                ),
+            }
     if solve.get("solver_diagnosis"):
         record["solver_diagnosis"] = solve["solver_diagnosis"]
     return record
