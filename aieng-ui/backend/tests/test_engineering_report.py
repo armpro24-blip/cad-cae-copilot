@@ -433,7 +433,11 @@ def test_report_generate_summary_is_exact_and_each_call_keeps_its_file(tmp_path:
         zf.writestr("simulation/cae_imports/parsed_materials.json", json.dumps(
             {"materials": [{"name": "Al6061-T6", "yield_strength": 87.4 * 0.9996}]}))
         zf.writestr("analysis/mesh_convergence_report.json", json.dumps(
-            {"overall_verdict": "converged", "verdicts": {}, "geometry_revision": 0}))
+            {"overall_verdict": "converged", "verdicts": {}, "geometry_revision": 1}))
+        # The design's revision stated explicitly (absent, it is 0 by the shared
+        # "no edit recorded" convention).
+        zf.writestr("state/revalidation_status.json",
+                    json.dumps({"current_geometry_revision": 1}))
 
     first = _rt.invoke_tool("report.generate", {"project_id": project_id})
     second = _rt.invoke_tool("report.generate", {"project_id": project_id})
@@ -443,4 +447,4 @@ def test_report_generate_summary_is_exact_and_each_call_keeps_its_file(tmp_path:
     summary = first["summary"]
     assert summary["yield_margin"] == pytest.approx(0.9996) and summary["yield_margin"] < 1
     assert summary["convergence_scope"] == {
-        "study_revision": 0, "current_revision": 0, "status": "current"}
+        "study_revision": 1, "current_revision": 1, "status": "current"}

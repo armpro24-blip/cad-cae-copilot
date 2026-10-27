@@ -21,7 +21,10 @@ def _convergence_scope(analysis: dict[str, Any]) -> dict[str, Any] | None:
 
     Same comparison the report's HTML applies: `current` when the study's
     revision equals the design's, `stale` when it differs, `unknown` when the
-    study records none.
+    study records none. The design's revision is 0 when the package records no
+    geometry edit — the convention every revision reader here shares (see
+    `cae_result_summary._package_geometry_revision`): each edit writes
+    `state/revalidation_status.json`, so its absence IS "no edit recorded".
     """
     convergence = analysis.get("convergence")
     if not isinstance(convergence, dict):
