@@ -1324,16 +1324,29 @@ retired entry a face another entry still held: two restraints on one hole, none
 on the other. A group whose phrase now picks a single face is a change of
 count and refuses too.
 
+**The preflight says whether the rebind will work (`selector_rebind`).** When
+face references are stale, `cae.prepare_solver_run` runs the deck-time
+normalisation on a throwaway copy of the package and reports
+`preflight.selector_rebind` (`recovers_all`, each `rebound` move,
+`still_missing`). When it recovers every reference, the recommendation is the
+ordinary `cae.generate_mesh` -> `cae.generate_solver_input` path, with a warning
+naming each move. A cold-agent trial found the preflight recommending
+`ai_preprocessing` (an API key) and a hand-written `cae_mapping.json` there,
+while deck generation recovered every face on its own.
+
 To recover:
-1. For parametric variants / design-study candidates, enable adaptive rebind by
+1. A setup authored by `cae.setup_static` / `cae.apply_load_case`: regenerate
+   the mesh and the deck; `selector_rebind` says beforehand whether that
+   recovers every face.
+2. For parametric variants / design-study candidates, enable adaptive rebind by
    calling the solver with `rebind_faces=True` and a `baseline_package_path`.
    `opt.sizing_sweep` and `solve_candidate_geometry` already do this.
-2. For one-off geometry edits, call `ai_preprocessing.run_ai_preprocessing` with
-   the same (or updated) task description to rebind loads/BCs against the new
-   topology.
-3. Or use `cae.apply_setup_patch` to manually update `simulation/cae_mapping.json`
+3. Otherwise re-run `cae.setup_static` with the same words, or call
+   `ai_preprocessing.run_ai_preprocessing` (needs an Anthropic API key) with the
+   same (or updated) task description.
+4. Or use `cae.apply_setup_patch` to manually update `simulation/cae_mapping.json`
    (`face_ids` and `topology_hash`) and `simulation/setup.yaml`.
-4. Then re-run `cae.prepare_solver_run` and `cae.run_solver`.
+5. Then re-run `cae.prepare_solver_run` and `cae.run_solver`.
 
 ---
 

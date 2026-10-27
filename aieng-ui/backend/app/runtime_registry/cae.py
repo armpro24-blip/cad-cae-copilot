@@ -615,6 +615,34 @@ def _run_id_from_deck_path(deck_path: str | None) -> str:
     return ""
 
 
+def _mesh_and_current_revision(package_path: Path) -> tuple[int | None, int]:
+    """`(revision the mesh was built for, current geometry revision)`.
+
+    The mesh side is `None` when there is no mesh or it records no revision
+    (meshes written before meshes recorded one).
+    """
+    import json as _json
+    import zipfile as _zipfile
+
+    mesh_revision: int | None = None
+    current = 0
+    try:
+        with _zipfile.ZipFile(package_path, "r") as zf:
+            names = set(zf.namelist())
+            if "simulation/mesh/mesh_metadata.json" in names:
+                meta = _json.loads(zf.read("simulation/mesh/mesh_metadata.json"))
+                candidate = meta.get("geometry_revision") if isinstance(meta, dict) else None
+                mesh_revision = candidate if isinstance(candidate, int) else None
+            if "state/revalidation_status.json" in names:
+                status = _json.loads(zf.read("state/revalidation_status.json"))
+                if isinstance(status, dict):
+                    candidate = status.get("current_geometry_revision")
+                    current = candidate if isinstance(candidate, int) else 0
+    except Exception:  # noqa: BLE001 - an unreadable package is reported elsewhere
+        return None, 0
+    return mesh_revision, current
+
+
 def _stale_mesh_revisions(package_path: Path) -> tuple[int, int] | None:
     """`(mesh revision, current revision)` when they disagree, else None.
 
@@ -622,27 +650,45 @@ def _stale_mesh_revisions(package_path: Path) -> tuple[int, int] | None:
     revision carries none, and refusing on an unknown would block every
     pre-existing package. Same reasoning as `_deck_and_current_revision`.
     """
-    import json as _json
-    import zipfile as _zipfile
-
-    try:
-        with _zipfile.ZipFile(package_path, "r") as zf:
-            names = set(zf.namelist())
-            if "simulation/mesh/mesh_metadata.json" not in names:
-                return None
-            meta = _json.loads(zf.read("simulation/mesh/mesh_metadata.json"))
-            mesh_revision = meta.get("geometry_revision") if isinstance(meta, dict) else None
-            if not isinstance(mesh_revision, int):
-                return None
-            current = 0
-            if "state/revalidation_status.json" in names:
-                status = _json.loads(zf.read("state/revalidation_status.json"))
-                if isinstance(status, dict):
-                    candidate = status.get("current_geometry_revision")
-                    current = candidate if isinstance(candidate, int) else 0
-    except Exception:  # noqa: BLE001 - an unreadable package is reported elsewhere
+    mesh_revision, current = _mesh_and_current_revision(package_path)
+    if mesh_revision is None:
         return None
     return (mesh_revision, current) if mesh_revision != current else None
+
+
+def _selector_rebind_preview(package_path: Path) -> dict[str, Any]:
+    """What deck-time binding would recover, measured on a throwaway copy.
+
+    After an edit that moves the bound faces, their ids retire and the
+    preflight reports stale references. `cae.generate_solver_input` then
+    re-resolves each binding from the phrase that chose it (`target_selector`)
+    — which is how a cold-agent trial actually got past it — but the preflight
+    recommended `ai_preprocessing` (an API key) and a hand-written
+    `cae_mapping.json` instead. Running the same normalisation on a copy turns
+    "would the rebind work?" into evidence rather than a guess.
+    """
+    import shutil as _shutil
+    import tempfile as _tempfile
+    from pathlib import Path
+
+    from .. import simulation_runner
+    from ..project_io import validate_cae_topology_references
+
+    try:
+        with _tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            trial = Path(tmp) / Path(package_path).name
+            _shutil.copy2(package_path, trial)
+            report = simulation_runner.normalize_cae_bindings(trial)
+            after = validate_cae_topology_references(trial)
+    except Exception as exc:  # noqa: BLE001 - a preview must never break the preflight
+        return {"recovers_all": False, "rebound": [], "error": f"{type(exc).__name__}: {exc}"}
+    rebound = report.get("rebound_from_selector") or []
+    still_missing = after.get("missing_face_ids") or []
+    return {
+        "recovers_all": bool(rebound) and not still_missing,
+        "rebound": rebound,
+        "still_missing": still_missing,
+    }
 
 
 def _deck_and_current_revision(zf, deck_path: str) -> tuple[int | None, int | None]:
@@ -1907,7 +1953,8 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 ),
                 "resolves_blocked_reason_codes": [_blocked_reason_codes.MISSING_LOADS],
             })
-        if not preflight.get("nset_binding_valid", True):
+        rebind_recovers = bool(preflight.get("selector_rebind_recovers"))
+        if not preflight.get("nset_binding_valid", True) and not rebind_recovers:
             recs.append({
                 "tool": "cae.apply_setup_patch",
                 "input": {
@@ -1945,7 +1992,15 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                     "geometry's numbers as the new ones."
                 ),
             })
-        if not preflight["has_input_deck"] or preflight.get("stale_deck"):
+        if not preflight["has_input_deck"] or preflight.get("stale_deck") or rebind_recovers:
+            resolves = [_blocked_reason_codes.DECK_NOT_PREPARED]
+            if rebind_recovers:
+                # Deck generation re-resolves the retired faces from the
+                # setup's recorded phrases (measured on a copy by the preflight).
+                resolves += [
+                    _blocked_reason_codes.STALE_TOPOLOGY_REFERENCE,
+                    _blocked_reason_codes.NSET_BINDING_INVALID,
+                ]
             recs.append({
                 "tool": "cae.generate_solver_input",
                 # A free run id, and NO overwrite: AGENTS.md calls
@@ -1954,15 +2009,22 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 # literally. It used to recommend exactly that, on run_001.
                 "input": {"project_id": project_id, "run_id": deck_run_id},
                 "reason": (
-                    f"Generate the deck for the current geometry under {deck_run_id}, "
-                    "keeping the earlier run intact to compare against."
-                    if preflight.get("stale_deck")
-                    else (
-                        "Missing solver input deck; generate it once mesh, solver "
-                        "settings, material, boundary conditions and loads are present."
+                    (
+                        f"Generate the deck for the current geometry under {deck_run_id}, "
+                        "keeping the earlier run intact to compare against."
+                        if preflight.get("stale_deck") or rebind_recovers
+                        else (
+                            "Missing solver input deck; generate it once mesh, solver "
+                            "settings, material, boundary conditions and loads are present."
+                        )
+                    )
+                    + (
+                        " It also rebinds the loads/BCs whose faces the edit retired, "
+                        "from the phrases the setup recorded."
+                        if rebind_recovers else ""
                     )
                 ),
-                "resolves_blocked_reason_codes": [_blocked_reason_codes.DECK_NOT_PREPARED],
+                "resolves_blocked_reason_codes": resolves,
             })
         if not preflight["ccx_available"]:
             recs.append({
@@ -2140,6 +2202,12 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         # Validate that face-scoped CAE references still match the current topology.
         topology_validation = validate_cae_topology_references(package_path)
         topology_refs_ok = topology_validation["valid"]
+        # Stale references are not the end of the story: a setup authored in
+        # engineering words recovers moved faces at deck time. Measure it.
+        selector_rebind = (
+            _selector_rebind_preview(package_path) if not topology_refs_ok else None
+        )
+        rebind_recovers = bool(selector_rebind and selector_rebind["recovers_all"])
 
         # Validate that referenced NSETs are defined and non-empty.
         nset_validation = _validate_cae_mapping_for_solver(package_path)
@@ -2240,7 +2308,10 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             "deck_geometry_revision": deck_revision,
             "current_geometry_revision": deck_current_revision,
             "stale_deck": stale_deck,
-            "mesh_geometry_revision": stale_mesh[0] if stale_mesh else None,
+            # Reported whether or not it is stale: `None` means the mesh records
+            # no revision (or there is no mesh), never "it agrees".
+            "mesh_geometry_revision": _mesh_and_current_revision(package_path)[0],
+            "selector_rebind": selector_rebind,
             "stale_mesh": stale_mesh is not None,
             "next_free_run_id": free_run_id,
         }
@@ -2258,11 +2329,23 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 "nset_binding_valid": nset_binding_valid,
                 "stale_mesh": stale_mesh,
                 "stale_deck": stale_deck,
+                "selector_rebind_recovers": rebind_recovers,
             },
             ready_to_run,
             free_run_id=free_run_id,
         )
-        if not topology_refs_ok:
+        if rebind_recovers:
+            moves = "; ".join(
+                f"{r.get('id')} {str(r.get('selector'))!r} -> @face:{r.get('face_id')}"
+                for r in selector_rebind["rebound"]
+            )
+            warnings.append(
+                "The face ids this setup was bound to were retired by the geometry "
+                "edit, but the phrases the setup recorded resolve to the current "
+                f"faces ({moves}). cae.generate_solver_input rebinds them and reports "
+                "each move; nothing needs re-authoring."
+            )
+        elif not topology_refs_ok:
             resolves_codes = [_blocked_reason_codes.STALE_TOPOLOGY_REFERENCE]
             if nset_validation.get("missing_face_ids"):
                 resolves_codes.append(_blocked_reason_codes.NSET_BINDING_INVALID)
@@ -2273,9 +2356,12 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                     "task_description": "Refresh CAE face references after geometry change",
                 },
                 "reason": (
-                    "CAE face references are stale relative to the current topology. "
-                    "Run ai_preprocessing.run_ai_preprocessing to rebind loads/BCs to the new face IDs, "
-                    "then call cae.prepare_solver_run again to verify the setup."
+                    "CAE face references are stale relative to the current topology, "
+                    "and the setup's recorded phrases do not recover them. Re-run "
+                    "cae.setup_static (or cae.apply_load_case) with the same engineering "
+                    "words — no API key needed — or run ai_preprocessing.run_ai_preprocessing "
+                    "(needs an Anthropic API key) to rebind loads/BCs to the new face IDs; "
+                    "then call cae.prepare_solver_run again."
                 ),
                 "resolves_blocked_reason_codes": resolves_codes,
             })

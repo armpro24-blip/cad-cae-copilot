@@ -1313,11 +1313,6 @@ def validate_cae_topology_references(package_path: str | Path) -> dict[str, Any]
         result["warnings"].append(
             "geometry/topology_map.json missing; cannot validate face references."
         )
-    if result["cae_mapping_stale"]:
-        result["warnings"].append(
-            "simulation/cae_mapping.json is marked stale — "
-            "re-run AI preprocessing to refresh face references."
-        )
     if missing_face_ids:
         result["warnings"].append(
             f"Referenced face IDs missing from current topology: {sorted(missing_face_ids)}."
@@ -1379,6 +1374,17 @@ def validate_cae_topology_references(package_path: str | Path) -> dict[str, Any]
             "Referenced faces changed character since binding "
             f"({[m['face_id'] for m in mismatched_character]}) — the CAE binding "
             "may now point at a different face."
+        )
+
+    if result["cae_mapping_stale"] and not references_reverified:
+        # Not emitted when the bindings were re-verified: the trial read "re-run
+        # AI preprocessing" beside `ready_to_run: true` and "bindings were
+        # re-verified" in the same response.
+        result["warnings"].append(
+            "simulation/cae_mapping.json is marked stale (the geometry changed since "
+            "it was written) and its face references could not be re-verified. "
+            "Regenerating the deck rebinds faces a cae.setup_static setup recorded "
+            "phrases for; otherwise re-run cae.setup_static or AI preprocessing."
         )
 
     suspicion_only = result["hash_status"] == "mismatch" or result["cae_mapping_stale"]
