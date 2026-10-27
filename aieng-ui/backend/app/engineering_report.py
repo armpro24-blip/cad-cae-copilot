@@ -144,6 +144,184 @@ def _credibility(settings: Settings, project_id: str, package_path: Path) -> dic
         }
 
 
+def _analysis_facts(package_path: Path) -> dict[str, Any]:
+    """What a reviewer needs to judge the numbers, read from the package.
+
+    A cold-agent trial handed this report to a "lead" and found it omitted the
+    loads and supports, the mesh and its accuracy band, the convergence verdict,
+    where the peak stress sits and any margin — and that its header said
+    "Credibility: unknown" for an executed solver result. Every fact here is
+    read from an artifact the package already records; nothing is recomputed
+    beyond the yield / peak-stress ratio, which says what it is.
+    """
+    facts: dict[str, Any] = {}
+    try:
+        from aieng.cae_result_summary import generate_cae_result_summary
+
+        contract = generate_cae_result_summary(package_path).get("result_contract") or {}
+        facts["claim_tier"] = contract.get("claim_tier")
+        facts["claim_reason"] = contract.get("reason")
+        facts["qualifications"] = list(contract.get("qualifications") or [])
+    except Exception as exc:  # noqa: BLE001 - a report section must not fail the report
+        facts["claim_tier"] = None
+        facts["claim_error"] = f"{type(exc).__name__}: {exc}"
+    try:
+        from .runtime_registry.cae import _describe_cae_setup
+
+        facts["setup_lines"] = _describe_cae_setup(package_path)
+    except Exception:  # noqa: BLE001
+        facts["setup_lines"] = []
+
+    mesh = _read_package_json(package_path, "simulation/mesh/mesh_metadata.json")
+    if isinstance(mesh, dict):
+        accuracy = mesh.get("accuracy") if isinstance(mesh.get("accuracy"), dict) else {}
+        facts["mesh"] = {
+            "target_size_mm": mesh.get("target_size_mm"),
+            "element_type": mesh.get("element_type"),
+            "element_count": mesh.get("element_count"),
+            "band": accuracy.get("band"),
+            "reason": accuracy.get("reason"),
+        }
+    convergence = _read_package_json(package_path, "analysis/mesh_convergence_report.json")
+    if isinstance(convergence, dict) and convergence.get("overall_verdict"):
+        facts["convergence"] = {
+            "verdict": convergence.get("overall_verdict"),
+            "verdicts": convergence.get("verdicts") or {},
+            "mesh_sizes": convergence.get("mesh_sizes") or [],
+            "geometry_revision": convergence.get("geometry_revision"),
+        }
+    regions = _read_package_json(package_path, "results/field_regions.json")
+    if isinstance(regions, dict):
+        facts["regions"] = {
+            "source_frd": regions.get("source_frd"),
+            "clusters": [c for c in (regions.get("clusters") or []) if isinstance(c, dict)][:5],
+        }
+    facts["margin"] = _yield_margin(package_path)
+    return facts
+
+
+def _yield_margin(package_path: Path) -> dict[str, Any] | None:
+    """Yield strength / peak nodal von Mises, when both are recorded."""
+    materials = _read_package_json(package_path, "simulation/cae_imports/parsed_materials.json")
+    metrics = _read_package_json(package_path, "results/computed_metrics.json")
+    records = materials.get("materials") if isinstance(materials, dict) else None
+    if not isinstance(records, list) or len(records) != 1 or not isinstance(metrics, dict):
+        return None
+    yield_mpa = records[0].get("yield_strength") if isinstance(records[0], dict) else None
+    peak = None
+    for case in metrics.get("load_cases") or []:
+        entry = (case.get("metrics") or {}).get("max_von_mises_stress") if isinstance(case, dict) else None
+        value = entry.get("value") if isinstance(entry, dict) else None
+        if isinstance(value, (int, float)) and (peak is None or value > peak):
+            peak = float(value)
+    if not isinstance(yield_mpa, (int, float)) or not peak or peak <= 0:
+        return None
+    return {
+        "material": records[0].get("name"),
+        "yield_mpa": float(yield_mpa),
+        "peak_von_mises_mpa": peak,
+        "ratio": float(yield_mpa) / peak,
+    }
+
+
+def _analysis_html(facts: dict[str, Any]) -> str:
+    parts: list[str] = []
+    tier = facts.get("claim_tier") or "unknown"
+    parts.append(f"<p><strong>Claim tier:</strong> <code>{html.escape(str(tier))}</code>"
+                 + (f" — {html.escape(str(facts['claim_reason']))}" if facts.get("claim_reason") else "")
+                 + "</p>")
+    for qualification in facts.get("qualifications") or []:
+        parts.append(f"<blockquote>{html.escape(str(qualification))}</blockquote>")
+    setup_lines = facts.get("setup_lines") or []
+    parts.append("<h3>Setup</h3>")
+    parts.append(
+        _html_list([str(line) for line in setup_lines])
+        if setup_lines else "<p class=\"muted\">No CAE setup recorded.</p>"
+    )
+    mesh = facts.get("mesh")
+    parts.append("<h3>Mesh</h3>")
+    if mesh:
+        parts.append(
+            "<p>"
+            f"{html.escape(str(mesh.get('element_type') or 'elements'))}, "
+            f"{html.escape(str(mesh.get('element_count') or '?'))} elements, "
+            f"target size {html.escape(str(mesh.get('target_size_mm') or '?'))} mm; "
+            f"accuracy band <code>{html.escape(str(mesh.get('band') or 'not judged'))}</code>"
+            + (f" — {html.escape(str(mesh['reason']))}" if mesh.get("reason") else "")
+            + "</p>"
+        )
+    else:
+        parts.append("<p class=\"muted\">No mesh recorded.</p>")
+    convergence = facts.get("convergence")
+    parts.append("<h3>Mesh convergence</h3>")
+    if convergence:
+        verdicts = "; ".join(
+            f"{html.escape(str(k))}: {html.escape(str(v))}"
+            for k, v in sorted((convergence.get("verdicts") or {}).items())
+        )
+        parts.append(
+            f"<p>Overall <code>{html.escape(str(convergence['verdict']))}</code> over mesh sizes "
+            f"{html.escape(str(convergence.get('mesh_sizes')))} mm"
+            + (f" ({verdicts})" if verdicts else "")
+            + "</p>"
+        )
+    else:
+        parts.append("<p class=\"muted\">No convergence study has been run; the result is "
+                     "mesh-dependent to an unknown degree.</p>")
+    regions = facts.get("regions")
+    parts.append("<h3>Where the peaks are</h3>")
+    if regions and regions.get("clusters"):
+        rows = []
+        for cluster in regions["clusters"]:
+            peak = cluster.get("peak_location") or cluster.get("location") or {}
+            magnitude = cluster.get("magnitude") or {}
+            rows.append(
+                "<tr>"
+                f"<td>{html.escape(str(magnitude.get('value')))} {html.escape(str(magnitude.get('unit') or ''))}</td>"
+                f"<td>({html.escape(str(peak.get('x')))}, {html.escape(str(peak.get('y')))}, {html.escape(str(peak.get('z')))})"
+                + ("" if cluster.get("peak_location") else " centroid")
+                + "</td>"
+                f"<td>{html.escape(str(cluster.get('cae_target_ref') or '-'))}</td>"
+                f"<td>{html.escape(str(cluster.get('feature_ref') or '-'))}</td>"
+                "</tr>"
+            )
+        parts.append(
+            f"<p class=\"muted\">From {html.escape(str(regions.get('source_frd') or 'the latest extraction'))}. "
+            "A peak on a loaded or restrained face is often a load-introduction effect, not the "
+            "part's design stress.</p>"
+            "<div class=\"table-wrap\"><table><thead><tr><th>Peak</th><th>Location (mm)</th>"
+            "<th>Near setup entity</th><th>Feature</th></tr></thead><tbody>"
+            + "".join(rows) + "</tbody></table></div>"
+        )
+    else:
+        parts.append("<p class=\"muted\">No field regions extracted (cae.extract_field_regions).</p>")
+    margin = facts.get("margin")
+    parts.append("<h3>Margin against yield</h3>")
+    if margin:
+        parts.append(
+            f"<p>{html.escape(str(margin['material']))}: yield {margin['yield_mpa']:.4g} MPa / peak nodal "
+            f"von Mises {margin['peak_von_mises_mpa']:.4g} MPa = <strong>{margin['ratio']:.3g}</strong>. "
+            "A static yield ratio on the peak nodal value only: no fatigue, stability or code check, "
+            "and no knock-down for the convergence state above.</p>"
+        )
+    else:
+        parts.append("<p class=\"muted\">Not available: needs exactly one material with a yield "
+                     "strength and an extracted peak von Mises stress.</p>")
+    return "\n".join(parts)
+
+
+def _clean_warnings(warnings: list[str], package_path: Path) -> list[str]:
+    """Drop exact repeats and the local absolute package path, keeping order."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for warning in warnings:
+        text = str(warning).replace(str(package_path), package_path.name)
+        if text not in seen:
+            seen.add(text)
+            out.append(text)
+    return out
+
+
 def _review_packet(settings: Settings, project_id: str) -> dict[str, Any]:
     from . import review_support_packet
 
@@ -509,7 +687,10 @@ def _html_report(payload: dict[str, Any]) -> str:
         if thumbnail_uri
         else "<div class=\"thumbnail placeholder\">No embedded thumbnail available</div>"
     )
-    status_chip = html.escape(str(credibility_summary.get("overall") or "unknown"))
+    analysis = payload.get("analysis") if isinstance(payload.get("analysis"), dict) else {}
+    # The V&V claim tier, not the evidence-status roll-up: the roll-up read
+    # "unknown" for an executed solver result whenever no design targets exist.
+    status_chip = html.escape(str(analysis.get("claim_tier") or "unknown"))
     project_name = html.escape(str(project.get("name") or "(unnamed project)"))
     project_id = html.escape(str(project.get("id") or ""))
     generated_at = html.escape(str(report.get("generated_at") or ""))
@@ -569,7 +750,7 @@ def _html_report(payload: dict[str, Any]) -> str:
       <div class="meta">
         <span class="chip"><strong>Project</strong> {project_id}</span>
         <span class="chip"><strong>Generated</strong> {generated_at}</span>
-        <span class="chip"><strong>Credibility</strong> {status_chip}</span>
+        <span class="chip"><strong>Claim tier</strong> {status_chip}</span>
         <span class="chip"><strong>Claim advancement</strong> none</span>
       </div>
     </div>
@@ -582,9 +763,9 @@ def _html_report(payload: dict[str, Any]) -> str:
   </section>
 
   <section class="section">
-    <h2>Credibility Stamp</h2>
+    <h2>Evidence Status</h2>
     <div class="grid">
-      <div class="metric"><span>Overall</span><strong>{html.escape(str(credibility_summary.get("overall") or "unknown"))}</strong></div>
+      <div class="metric"><span>Roll-up</span><strong>{html.escape(str(credibility_summary.get("overall") or "unknown"))}</strong></div>
       <div class="metric"><span>Geometry</span><strong>{html.escape(str(credibility_summary.get("geometry_evidence") or "unknown"))}</strong></div>
       <div class="metric"><span>CAE</span><strong>{html.escape(str(credibility_summary.get("cae_evidence") or "unknown"))}</strong></div>
       <div class="metric"><span>Results</span><strong>{html.escape(str(credibility_summary.get("result_evidence") or "unknown"))}</strong></div>
@@ -599,6 +780,11 @@ def _html_report(payload: dict[str, Any]) -> str:
   <section class="section">
     <h2>Key Results</h2>
     {_key_results_html(result_evidence if isinstance(result_evidence, dict) else {})}
+  </section>
+
+  <section class="section">
+    <h2>Analysis Setup and Result Quality</h2>
+    {_analysis_html(analysis)}
   </section>
 
   <section class="section">
@@ -652,6 +838,7 @@ def generate_engineering_report(settings: Settings, project_id: str) -> dict[str
     # says so in its own warnings. Rendering only the table would drop exactly
     # the caveat that decides whether the delta means anything.
     warnings.extend(str(item) for item in (run_comparison.get("warnings") or []))
+    warnings = _clean_warnings(warnings, package_path)
 
     payload: dict[str, Any] = {
         "ok": True,
@@ -672,6 +859,7 @@ def generate_engineering_report(settings: Settings, project_id: str) -> dict[str
             "warnings": warnings,
         },
         "credibility": credibility,
+        "analysis": _analysis_facts(package_path),
         "run_comparison": run_comparison,
         "provenance": _provenance(package_path, result_evidence if isinstance(result_evidence, dict) else {}),
         "review_packet": review_packet,

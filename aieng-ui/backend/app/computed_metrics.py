@@ -343,6 +343,14 @@ def get_computed_metrics(settings: Settings, project_id: str) -> dict[str, Any]:
     doc, errors, warnings = normalize_computed_metrics_document(raw, source_format="existing")
     if doc is None and errors:
         return _response(project_id, raw if isinstance(raw, dict) else None, warnings, errors, artifact_path=_COMPUTED_METRICS_PATH)
+    if doc is not None:
+        # Reading a STORED document: report the source it recorded, verbatim.
+        # The normaliser is built for imports and stamped `imported_by: "user"`,
+        # `format: "existing"` while dropping `run_id` / `source_files` — so the
+        # engineering report called metrics this workbench's own solver run
+        # produced a user import. Nothing recorded stays nothing.
+        stored = raw.get("metrics_source") if isinstance(raw, dict) else None
+        doc["metrics_source"] = dict(stored) if isinstance(stored, dict) else {}
     return _response(project_id, doc, warnings, [], artifact_path=_COMPUTED_METRICS_PATH, target_mapping=build_target_mapping(doc, design_targets))
 
 

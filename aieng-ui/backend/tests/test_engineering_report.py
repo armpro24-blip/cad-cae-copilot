@@ -7,10 +7,12 @@ import json
 import zipfile
 from pathlib import Path
 
+import pytest
 import yaml
 from fastapi.testclient import TestClient
 
 from app.config import Settings
+from app.engineering_report import generate_engineering_report
 from app.main import create_app, default_project, project_dir, save_project
 
 _WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
@@ -135,7 +137,7 @@ def test_engineering_report_endpoint_returns_self_contained_html_read_only(tmp_p
     assert "Engineering Report" in html
     assert "Honesty Boundary" in html
     assert "does not certify design safety" in html
-    assert "Credibility Stamp" in html
+    assert "Evidence Status" in html  # the roll-up, no longer labelled a credibility stamp
     assert "Provenance" in html
     assert "<table>" in html
     assert "status-chip" in html
@@ -305,3 +307,44 @@ def test_report_generate_tool_is_registered() -> None:
     tools = {tool["name"]: tool for tool in registered_tools_info()}
     assert "report.generate" in tools
     assert "Read-only" in tools["report.generate"]["description"]
+
+
+def test_the_report_states_what_a_reviewer_needs_to_judge_the_numbers(tmp_path: Path) -> None:
+    """Found by a cold-agent trial: the report said "Credibility: unknown" for an
+    executed solver result, called the solver's metrics a user import, listed a
+    hole pattern as a part, and omitted the setup, mesh, convergence, peaks and
+    margin. Every one of those is read from the package."""
+    settings = _make_settings(tmp_path)
+    project_id, pkg_path = _make_project(settings)
+    _write_report_package(pkg_path)
+    with zipfile.ZipFile(pkg_path, "a") as zf:
+        zf.writestr("simulation/mesh/mesh_metadata.json", json.dumps({
+            "element_type": "C3D10", "element_count": 1234, "target_size_mm": 2.5,
+            "accuracy": {"band": "reliable", "reason": "2 elements through the wall"},
+        }))
+        zf.writestr("analysis/mesh_convergence_report.json", json.dumps({
+            "overall_verdict": "not_converged", "mesh_sizes": [4.0, 2.8, 2.0],
+            "verdicts": {"max_von_mises_stress": "oscillatory_not_converged"},
+        }))
+        zf.writestr("simulation/cae_imports/parsed_materials.json", json.dumps(
+            {"materials": [{"name": "Al6061-T6", "yield_strength": 276.0}]}))
+        zf.writestr("results/field_regions.json", json.dumps({
+            "source_frd": "simulation/runs/run_001/outputs/result.frd",
+            "clusters": [{"id": "cluster_001", "magnitude": {"value": 87.4, "unit": "MPa"},
+                          "location": {"x": 0, "y": 0, "z": 0},
+                          "peak_location": {"node_id": 7, "x": 30.0, "y": 2.5, "z": 37.0},
+                          "node_count": 3, "feature_ref": None, "cae_target_ref": "load_001"}],
+        }))
+
+    out = generate_engineering_report(settings, project_id)
+
+    html = out["html"]
+    assert "<strong>Claim tier</strong> executed_solver_result" in html
+    assert out["provenance"]["metrics_source"] == {"tool": "frd_parser_v1", "software": "CalculiX"}
+    assert "Analysis Setup and Result Quality" in html
+    assert "oscillatory_not_converged" in html and "1234 elements" in html
+    assert "(30.0, 2.5, 37.0)" in html and "load_001" in html
+    assert out["analysis"]["margin"]["ratio"] == pytest.approx(276.0 / 87.4)
+    assert "No data available" not in html
+    assert len(out["report"]["warnings"]) == len(set(out["report"]["warnings"]))
+    assert str(pkg_path) not in " ".join(out["report"]["warnings"])

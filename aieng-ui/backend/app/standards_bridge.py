@@ -657,6 +657,27 @@ def to_bom_frontend_payload(
     }
 
 
+_FEATURE_ONLY_BOM_TYPES = ("mounting_hole", "mounting_hole_pattern", "base_plate")
+
+
+def _setup_material_names(zf: zipfile.ZipFile, names: set[str]) -> list[str]:
+    """Distinct material names the CAE setup assigns (parsed_materials.json)."""
+    member = "simulation/cae_imports/parsed_materials.json"
+    if member not in names:
+        return []
+    try:
+        doc = json.loads(zf.read(member).decode("utf-8"))
+    except Exception:  # noqa: BLE001 - an unreadable setup assigns nothing
+        return []
+    materials = doc.get("materials") if isinstance(doc, dict) else None
+    found = {
+        str(m.get("name")).strip()
+        for m in (materials or [])
+        if isinstance(m, dict) and str(m.get("name") or "").strip()
+    }
+    return sorted(found)
+
+
 def generate_bom(
     active_settings: Any,
     project_id: str | None,
@@ -678,6 +699,7 @@ def generate_bom(
             fg = {}
             if "graph/feature_graph.json" in names:
                 fg = json.loads(zf.read("graph/feature_graph.json").decode("utf-8"))
+            setup_materials = _setup_material_names(zf, names)
     except Exception as exc:
         return {
             "status": "error",
@@ -688,10 +710,19 @@ def generate_bom(
     features = fg.get("features", [])
     items: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
+    # A hole pattern or the plate's bottom face is a FEATURE of a part. They are
+    # listed only when the model names no parts (imported geometry); beside
+    # named parts they double-count — a bracket's BOM read "base_plate, rib_main,
+    # Hole pattern r=5.0mm (4 holes), Base face".
+    has_parts = any(
+        f.get("type") in ("named_part", "standard_part") and f.get("name") for f in features
+    )
     for feat in features:
         ftype = feat.get("type", "")
         name = feat.get("name", "")
         if not name:
+            continue
+        if has_parts and ftype in _FEATURE_ONLY_BOM_TYPES:
             continue
         if not ftype:
             warnings.append(
@@ -706,12 +737,20 @@ def generate_bom(
             continue
         params = feat.get("parameters", {}) or {}
         material = params.get("material", "") or ""
+        material_source = "part" if material else None
+        if not material and ftype == "named_part" and len(setup_materials) == 1:
+            # The analysis assigned one material to the whole model; say where
+            # it came from rather than presenting it as the part's specification.
+            material = setup_materials[0]
+            material_source = "cae_setup"
         item: dict[str, Any] = {
             "part_name": name,
             "part_type": ftype,
             "material": material,
             "quantity": 1,
         }
+        if material_source:
+            item["material_source"] = material_source
         # Standard part metadata
         if ftype == "standard_part":
             item["standard_part"] = True
@@ -773,8 +812,11 @@ def generate_bom(
             "|-----------|------|----------|-----|",
         ]
         for item in bom:
+            material = item.get("material") or "-"
+            if item.get("material_source") == "cae_setup":
+                material += " (from CAE setup)"
             lines.append(
-                f"| {item['part_name']} | {item['part_type']} | {item.get('material', '-')} | {item['quantity']} |"
+                f"| {item['part_name']} | {item['part_type']} | {material} | {item['quantity']} |"
             )
         result["markdown"] = "\n".join(lines)
     elif fmt == "csv":
