@@ -348,3 +348,49 @@ def test_the_report_states_what_a_reviewer_needs_to_judge_the_numbers(tmp_path: 
     assert "No data available" not in html
     assert len(out["report"]["warnings"]) == len(set(out["report"]["warnings"]))
     assert str(pkg_path) not in " ".join(out["report"]["warnings"])
+
+
+def test_the_report_checks_each_fact_against_the_current_geometry(tmp_path: Path) -> None:
+    """Independent review of #559: facts were shown without checking that they
+    describe the current geometry, and a local temp path reached Provenance."""
+    settings = _make_settings(tmp_path)
+    project_id, pkg_path = _make_project(settings)
+    _write_report_package(pkg_path)
+    metrics = {
+        "schema_version": "0.1",
+        "metrics_source": {"tool": "frd_parser_v1",
+                           "source_files": ["C:/Users/someone/AppData/Local/Temp/x/solver_input.frd"]},
+        "load_cases": [{"load_case_id": "lc1",
+                        "metrics": {"max_von_mises_stress": {"value": 87.4, "unit": "MPa"}}}],
+    }
+    members = {}
+    with zipfile.ZipFile(pkg_path) as zf:
+        members = {n: zf.read(n) for n in zf.namelist()}
+    members["results/computed_metrics.json"] = json.dumps(metrics).encode()
+    members["state/revalidation_status.json"] = json.dumps({"current_geometry_revision": 2}).encode()
+    members["simulation/runs/run_001/deck_provenance.json"] = json.dumps(
+        {"run_id": "run_001", "geometry_revision": 0}).encode()
+    members["simulation/mesh/mesh_metadata.json"] = json.dumps(
+        {"element_type": "C3D4", "element_count": 10, "geometry_revision": 1}).encode()
+    members["analysis/mesh_convergence_report.json"] = json.dumps(
+        {"overall_verdict": "converged", "verdicts": {}, "geometry_revision": 0}).encode()
+    members["simulation/cae_imports/parsed_materials.json"] = json.dumps(
+        {"materials": [{"name": "Al6061-T6", "yield_strength": 276.0}]}).encode()
+    members["results/field_regions.json"] = json.dumps({"source_frd": "tmp5qds4fh3.frd", "clusters": [
+        {"id": "c1", "magnitude": {"value": 87.4, "unit": "MPa"}, "location": {"x": 0, "y": 0, "z": 0},
+         "node_count": 2, "feature_ref": None}]}).encode()
+    with zipfile.ZipFile(pkg_path, "w") as zf:
+        for name, data in members.items():
+            zf.writestr(name, data)
+
+    out = generate_engineering_report(settings, project_id)
+    html = out["html"]
+
+    assert "someone" not in html and "AppData" not in html
+    assert "solver_input.frd (local path, not a package member)" in html
+    assert "built for geometry revision 1" in html                 # stale mesh flagged
+    assert "not recorded (mesh predates accuracy bands)" in html   # not "not judged"
+    assert "studied geometry revision 0" in html                   # old study not applied
+    assert "cannot tie to a run" in html                            # temp-name regions
+    assert out["analysis"]["margin"] is None                       # solved before the edit
+    assert "claim tier is <code>stale_geometry</code>" in html

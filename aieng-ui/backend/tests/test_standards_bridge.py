@@ -457,9 +457,11 @@ def test_features_of_named_parts_are_not_listed_as_parts(tmp_path: Path) -> None
     result = generate_bom(settings, project_id=None, package_path=str(pkg_path), fmt="markdown")
 
     assert [i["part_name"] for i in result["items"]] == ["base_plate", "rib_main"]
-    assert {i["material"] for i in result["items"]} == {"Al6061-T6"}
-    assert {i["material_source"] for i in result["items"]} == {"cae_setup"}
-    assert "Al6061-T6 (from CAE setup)" in result["markdown"]
+    # Not the part's declared material: CSV/JSON/XLSX and the UI read `material`
+    # without provenance, so the analysis material travels separately.
+    assert {i["material"] for i in result["items"]} == {""}
+    assert {i["analysis_material"] for i in result["items"]} == {"Al6061-T6"}
+    assert "- (CAE setup: Al6061-T6)" in result["markdown"]
 
 
 def test_an_imported_shape_without_named_parts_still_lists_its_features(tmp_path: Path) -> None:
@@ -474,4 +476,4 @@ def test_an_imported_shape_without_named_parts_still_lists_its_features(tmp_path
     result = generate_bom(settings, project_id=None, package_path=str(pkg_path), fmt="markdown")
 
     assert [i["part_name"] for i in result["items"]] == ["Hole pattern r=5.0mm (4 holes)"]
-    assert "material_source" not in result["items"][0]
+    assert "analysis_material" not in result["items"][0]

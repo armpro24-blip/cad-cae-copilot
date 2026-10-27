@@ -670,10 +670,13 @@ def _setup_material_names(zf: zipfile.ZipFile, names: set[str]) -> list[str]:
     except Exception:  # noqa: BLE001 - an unreadable setup assigns nothing
         return []
     materials = doc.get("materials") if isinstance(doc, dict) else None
+    # `AIENG_MATERIAL` is the deck generator's placeholder for an unnamed material.
     found = {
         str(m.get("name")).strip()
         for m in (materials or [])
-        if isinstance(m, dict) and str(m.get("name") or "").strip()
+        if isinstance(m, dict)
+        and str(m.get("name") or "").strip()
+        and str(m.get("name")).strip() != "AIENG_MATERIAL"
     }
     return sorted(found)
 
@@ -737,20 +740,18 @@ def generate_bom(
             continue
         params = feat.get("parameters", {}) or {}
         material = params.get("material", "") or ""
-        material_source = "part" if material else None
-        if not material and ftype == "named_part" and len(setup_materials) == 1:
-            # The analysis assigned one material to the whole model; say where
-            # it came from rather than presenting it as the part's specification.
-            material = setup_materials[0]
-            material_source = "cae_setup"
         item: dict[str, Any] = {
             "part_name": name,
             "part_type": ftype,
             "material": material,
             "quantity": 1,
         }
-        if material_source:
-            item["material_source"] = material_source
+        if not material and ftype == "named_part" and len(setup_materials) == 1:
+            # The analysis assigned one material to the whole model. It is NOT
+            # written into `material`: CSV/JSON/XLSX line items and the UI read
+            # that column with no provenance, so it would read as the part's
+            # specification. It travels separately, labelled by its source.
+            item["analysis_material"] = setup_materials[0]
         # Standard part metadata
         if ftype == "standard_part":
             item["standard_part"] = True
@@ -813,8 +814,8 @@ def generate_bom(
         ]
         for item in bom:
             material = item.get("material") or "-"
-            if item.get("material_source") == "cae_setup":
-                material += " (from CAE setup)"
+            if item.get("analysis_material"):
+                material += f" (CAE setup: {item['analysis_material']})"
             lines.append(
                 f"| {item['part_name']} | {item['part_type']} | {material} | {item['quantity']} |"
             )

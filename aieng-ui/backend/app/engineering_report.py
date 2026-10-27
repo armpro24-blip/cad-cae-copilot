@@ -124,8 +124,37 @@ def _provenance(package_path: Path, result_evidence: dict[str, Any]) -> dict[str
         "deck_paths": deck_paths,
         "result_paths": result_paths,
         "computed_metrics_path": "results/computed_metrics.json" if "results/computed_metrics.json" in members else None,
-        "metrics_source": metrics_source if isinstance(metrics_source, dict) else {},
+        "metrics_source": (
+            _redact_local_paths(metrics_source) if isinstance(metrics_source, dict) else {}
+        ),
     }
+
+
+_ABSOLUTE_PATH = re.compile(r"^(?:[A-Za-z]:[\\/]|[\\/]{2}|/)")
+
+
+def _redact_local_paths(value: Any) -> Any:
+    """Replace absolute local paths with their file name, recursively.
+
+    Packages written before solver outputs were stored in-package recorded
+    `metrics_source.source_files` as the solve's temp path — the user's home
+    directory and Windows account name included. A report is handed on; it
+    names the file, not the machine it was solved on.
+    """
+    if isinstance(value, dict):
+        return {key: _redact_local_paths(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_local_paths(item) for item in value]
+    if isinstance(value, str) and _ABSOLUTE_PATH.match(value):
+        return f"{Path(value.replace(chr(92), '/')).name} (local path, not a package member)"
+    return value
+
+
+def _package_geometry_revision(package_path: Path) -> int:
+    """The package's current geometry revision (0 when no edit is recorded)."""
+    status = _read_package_json(package_path, "state/revalidation_status.json")
+    revision = status.get("current_geometry_revision") if isinstance(status, dict) else None
+    return revision if isinstance(revision, int) else 0
 
 
 def _credibility(settings: Settings, project_id: str, package_path: Path) -> dict[str, Any]:
@@ -154,7 +183,7 @@ def _analysis_facts(package_path: Path) -> dict[str, Any]:
     read from an artifact the package already records; nothing is recomputed
     beyond the yield / peak-stress ratio, which says what it is.
     """
-    facts: dict[str, Any] = {}
+    facts: dict[str, Any] = {"current_revision": _package_geometry_revision(package_path)}
     try:
         from aieng.cae_result_summary import generate_cae_result_summary
 
@@ -179,8 +208,12 @@ def _analysis_facts(package_path: Path) -> dict[str, Any]:
             "target_size_mm": mesh.get("target_size_mm"),
             "element_type": mesh.get("element_type"),
             "element_count": mesh.get("element_count"),
+            # A mesh with no accuracy block predates the band; a block with
+            # `band: null` records that the mesh could not be judged.
+            "accuracy_recorded": isinstance(mesh.get("accuracy"), dict),
             "band": accuracy.get("band"),
             "reason": accuracy.get("reason"),
+            "geometry_revision": mesh.get("geometry_revision"),
         }
     convergence = _read_package_json(package_path, "analysis/mesh_convergence_report.json")
     if isinstance(convergence, dict) and convergence.get("overall_verdict"):
@@ -192,11 +225,19 @@ def _analysis_facts(package_path: Path) -> dict[str, Any]:
         }
     regions = _read_package_json(package_path, "results/field_regions.json")
     if isinstance(regions, dict):
+        source = str(regions.get("source_frd") or "")
         facts["regions"] = {
-            "source_frd": regions.get("source_frd"),
+            "source_frd": source or None,
+            # A temp-file name (extracted before regions recorded their run)
+            # cannot be tied to any run in this package.
+            "traceable": source.startswith("simulation/runs/"),
             "clusters": [c for c in (regions.get("clusters") or []) if isinstance(c, dict)][:5],
         }
-    facts["margin"] = _yield_margin(package_path)
+    # Yield over the peak only for a result that describes this geometry: after
+    # an edit without a re-solve the two numbers belong to different designs.
+    facts["margin"] = (
+        _yield_margin(package_path) if facts.get("claim_tier") == "executed_solver_result" else None
+    )
     return facts
 
 
@@ -240,16 +281,29 @@ def _analysis_html(facts: dict[str, Any]) -> str:
     )
     mesh = facts.get("mesh")
     parts.append("<h3>Mesh</h3>")
+    current = facts.get("current_revision")
     if mesh:
+        band = (
+            mesh.get("band") or "not judged"
+            if mesh.get("accuracy_recorded")
+            else "not recorded (mesh predates accuracy bands)"
+        )
         parts.append(
             "<p>"
             f"{html.escape(str(mesh.get('element_type') or 'elements'))}, "
             f"{html.escape(str(mesh.get('element_count') or '?'))} elements, "
             f"target size {html.escape(str(mesh.get('target_size_mm') or '?'))} mm; "
-            f"accuracy band <code>{html.escape(str(mesh.get('band') or 'not judged'))}</code>"
+            f"accuracy band <code>{html.escape(str(band))}</code>"
             + (f" — {html.escape(str(mesh['reason']))}" if mesh.get("reason") else "")
             + "</p>"
         )
+        mesh_revision = mesh.get("geometry_revision")
+        if isinstance(mesh_revision, int) and mesh_revision != current:
+            parts.append(
+                f"<blockquote>This mesh was built for geometry revision {mesh_revision}; "
+                f"the design is at revision {html.escape(str(current))}. Re-mesh before "
+                "relying on anything above.</blockquote>"
+            )
     else:
         parts.append("<p class=\"muted\">No mesh recorded.</p>")
     convergence = facts.get("convergence")
@@ -259,11 +313,20 @@ def _analysis_html(facts: dict[str, Any]) -> str:
             f"{html.escape(str(k))}: {html.escape(str(v))}"
             for k, v in sorted((convergence.get("verdicts") or {}).items())
         )
+        study_revision = convergence.get("geometry_revision")
+        if isinstance(study_revision, int) and study_revision != current:
+            scope = (f" <strong>It studied geometry revision {study_revision}; the design is "
+                     f"at {html.escape(str(current))}, so it says nothing about this "
+                     "result.</strong>")
+        elif study_revision is None:
+            scope = " It does not record which geometry revision it studied."
+        else:
+            scope = ""
         parts.append(
             f"<p>Overall <code>{html.escape(str(convergence['verdict']))}</code> over mesh sizes "
             f"{html.escape(str(convergence.get('mesh_sizes')))} mm"
             + (f" ({verdicts})" if verdicts else "")
-            + "</p>"
+            + f".{scope}</p>"
         )
     else:
         parts.append("<p class=\"muted\">No convergence study has been run; the result is "
@@ -285,8 +348,14 @@ def _analysis_html(facts: dict[str, Any]) -> str:
                 f"<td>{html.escape(str(cluster.get('feature_ref') or '-'))}</td>"
                 "</tr>"
             )
+        source = (
+            html.escape(str(regions["source_frd"]))
+            if regions.get("traceable")
+            else "an FRD this package cannot tie to a run (extracted before regions "
+                 "recorded their source) — re-run cae.extract_field_regions to trace it"
+        )
         parts.append(
-            f"<p class=\"muted\">From {html.escape(str(regions.get('source_frd') or 'the latest extraction'))}. "
+            f"<p class=\"muted\">From {source}. "
             "A peak on a loaded or restrained face is often a load-introduction effect, not the "
             "part's design stress.</p>"
             "<div class=\"table-wrap\"><table><thead><tr><th>Peak</th><th>Location (mm)</th>"
@@ -305,8 +374,12 @@ def _analysis_html(facts: dict[str, Any]) -> str:
             "and no knock-down for the convergence state above.</p>"
         )
     else:
-        parts.append("<p class=\"muted\">Not available: needs exactly one material with a yield "
-                     "strength and an extracted peak von Mises stress.</p>")
+        parts.append(
+            "<p class=\"muted\">Not available: needs a result describing the current geometry "
+            f"(claim tier is <code>{html.escape(str(facts.get('claim_tier') or 'unknown'))}</code>), "
+            "exactly one material with a yield strength, and an extracted peak von Mises "
+            "stress.</p>"
+        )
     return "\n".join(parts)
 
 
