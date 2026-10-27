@@ -233,3 +233,18 @@ def test_a_missing_deck_still_recommends_generating_one(preflight, tmp_path) -> 
     deck = _rec(result, "cae.generate_solver_input")
     assert deck["input"]["run_id"] == "run_001", "nothing to preserve yet"
     assert "overwrite" not in deck["input"], deck
+
+
+def test_a_package_path_caller_gets_calls_it_can_make(preflight, tmp_path) -> None:
+    """With no project_id, every recommended call used to carry `project_id: ""`,
+    which resolves to nothing; following it returned `missing_package_path`."""
+    pkg = _package(tmp_path / "by_path.aieng", mesh_revision=1, deck_revision=0,
+                   current_revision=1)
+    result = preflight(pkg)
+
+    deck = _rec(result, "cae.generate_solver_input")
+    assert deck["input"].get("package_path") == str(pkg), deck
+    assert "project_id" not in deck["input"]
+    for action in result["next_actions"]:
+        call_input = action.get("input") or {}
+        assert call_input.get("project_id") != "", action

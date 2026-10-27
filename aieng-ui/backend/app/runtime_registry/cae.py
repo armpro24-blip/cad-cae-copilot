@@ -2361,11 +2361,19 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 f"{r.get('id')} {str(r.get('selector'))!r} -> @face:{r.get('face_id')}"
                 for r in selector_rebind["rebound"]
             )
+            nsets_ok = bool(selector_rebind.get("nset_valid_after"))
             warnings.append(
                 "The face ids this setup was bound to were retired by the geometry "
                 "edit, but the phrases the setup recorded resolve to the current "
                 f"faces ({moves}). cae.generate_solver_input rebinds them and reports "
-                "each move; nothing needs re-authoring."
+                "each move"
+                + (
+                    "; nothing needs re-authoring."
+                    if nsets_ok
+                    else ". Those face references recover, but an NSET stays invalid "
+                    "after the rebind — repair it as the cae_mapping recommendation "
+                    "describes before solving."
+                )
             )
         elif not topology_refs_ok:
             resolves_codes = [_blocked_reason_codes.STALE_TOPOLOGY_REFERENCE]
@@ -2412,6 +2420,14 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                     "priority": "high",
                 },
             )
+        if not project_id:
+            # A caller that named only the package must get calls it can make:
+            # `project_id: ""` resolves to nothing (`missing_package_path`).
+            for action in next_actions_raw:
+                call_input = action.get("input") if isinstance(action, dict) else None
+                if isinstance(call_input, dict) and not call_input.get("project_id"):
+                    call_input.pop("project_id", None)
+                    call_input["package_path"] = str(package_path)
         next_actions = _next_actions.normalize_next_actions(
             next_actions_raw, source="cae.prepare_solver_run"
         )
