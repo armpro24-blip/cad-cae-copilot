@@ -2128,6 +2128,11 @@ def ensure_source_deck_from_mesh(package_path: Path) -> dict[str, Any]:
                 "input_hash": input_hash,
                 # A repeat call must still show which sets are approximate.
                 "binding_methods": prior_marker.get("binding_methods") or {},
+                # ...and a load group that still cannot be re-split by area: the
+                # deck keeps using its authored shares, so the warning must not
+                # vanish just because nothing changed since the last call.
+                "area_shares": normalization.get("area_shares") or [],
+                "rebound_from_selector": normalization.get("rebound_from_selector") or [],
             }
         # else: inputs changed -> fall through and re-synthesize.
 
