@@ -99,12 +99,17 @@ def unconverged_mesh_qualification(mesh_convergence: Any) -> str | None:
     """
     if not isinstance(mesh_convergence, dict):
         return None
-    if mesh_convergence.get("verdict") != "not_converged":
+    verdicts = mesh_convergence.get("verdicts")
+    # Per metric, not only overall: the runner rolls a study with one
+    # `not_converged` and one `indeterminate` metric up to `indeterminate`.
+    metric_unconverged = isinstance(verdicts, dict) and any(
+        "not_converged" in str(verdict) for verdict in verdicts.values()
+    )
+    if mesh_convergence.get("verdict") != "not_converged" and not metric_unconverged:
         return None
     applies = mesh_convergence.get("applies")
     if applies is False:
         return None
-    verdicts = mesh_convergence.get("verdicts")
     detail = (
         "; ".join(f"{metric}: {verdict}" for metric, verdict in sorted(verdicts.items()))
         if isinstance(verdicts, dict) and verdicts
@@ -254,8 +259,16 @@ def classify_credibility(
         "mesh_accuracy_band": mesh_accuracy_band,
         "mesh_accuracy_judged": mesh_accuracy_judged,
         "geometry_stale": geometry_stale,
+        # Only a study that may describe THIS geometry is a signal about it.
         "mesh_convergence_verdict": (
-            mesh_convergence.get("verdict") if isinstance(mesh_convergence, dict) else None
+            mesh_convergence.get("verdict")
+            if isinstance(mesh_convergence, dict) and mesh_convergence.get("applies") is not False
+            else None
+        ),
+        "mesh_convergence_applies": (
+            mesh_convergence.get("applies")
+            if isinstance(mesh_convergence, dict) and mesh_convergence.get("applies") is not False
+            else None
         ),
     }
     signals = {k: v for k, v in signals.items() if v is not None}

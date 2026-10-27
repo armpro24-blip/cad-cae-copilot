@@ -478,3 +478,22 @@ def test_the_summary_qualifies_an_unconverged_study_beside_an_unchanged_tier() -
 
     assert contract["claim_tier"] == "executed_solver_result"
     assert any("did NOT converge" in q for q in contract["qualifications"])
+
+
+def test_one_unconverged_metric_qualifies_even_when_the_rollup_is_indeterminate() -> None:
+    stamp = classify_credibility("solver", solver_executed=True, mesh_convergence={
+        "verdict": "indeterminate", "applies": True,
+        "verdicts": {"max_displacement": "diverging_not_converged",
+                     "max_von_mises_stress": "indeterminate"},
+    })
+    [qualification] = stamp["qualifications"]
+    assert "diverging_not_converged" in qualification and "indeterminate" in qualification
+
+
+def test_a_study_of_another_revision_leaves_no_verdict_signal() -> None:
+    stamp = classify_credibility(
+        "solver", solver_executed=True, mesh_convergence={**_UNCONVERGED, "applies": False}
+    )
+    assert "mesh_convergence_verdict" not in stamp["signals"]
+    current = classify_credibility("solver", solver_executed=True, mesh_convergence=_UNCONVERGED)
+    assert current["signals"]["mesh_convergence_applies"] is True
