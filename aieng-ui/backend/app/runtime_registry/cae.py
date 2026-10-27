@@ -656,6 +656,10 @@ def _stale_mesh_revisions(package_path: Path) -> tuple[int, int] | None:
     return (mesh_revision, current) if mesh_revision != current else None
 
 
+# Tools whose schema requires `project_id` and accepts no `package_path`.
+_PROJECT_ID_ONLY_TOOLS = frozenset({"ai_preprocessing.run_ai_preprocessing"})
+
+
 def _selector_rebind_preview(
     package_path: Path, original_validation: dict[str, Any] | None = None
 ) -> dict[str, Any]:
@@ -2371,8 +2375,9 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                     "; nothing needs re-authoring."
                     if nsets_ok
                     else ". Those face references recover, but an NSET stays invalid "
-                    "after the rebind — repair it as the cae_mapping recommendation "
-                    "describes before solving."
+                    "after the rebind (preflight.selector_rebind.nset_valid_after: "
+                    "false); repair the mapping, or re-run cae.setup_static, before "
+                    "solving."
                 )
             )
         elif not topology_refs_ok:
@@ -2425,8 +2430,18 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             # `project_id: ""` resolves to nothing (`missing_package_path`).
             for action in next_actions_raw:
                 call_input = action.get("input") if isinstance(action, dict) else None
-                if isinstance(call_input, dict) and not call_input.get("project_id"):
-                    call_input.pop("project_id", None)
+                if not isinstance(call_input, dict) or call_input.get("project_id"):
+                    continue
+                call_input.pop("project_id", None)
+                if action.get("tool") in _PROJECT_ID_ONLY_TOOLS:
+                    # This tool takes no package_path: say so rather than hand
+                    # over a call that returns `missing_project_id`.
+                    action["available_now"] = False
+                    action["blocked_reason"] = (
+                        f"{action['tool']} needs a project_id; this preflight was "
+                        "called with a package_path only."
+                    )
+                else:
                     call_input["package_path"] = str(package_path)
         next_actions = _next_actions.normalize_next_actions(
             next_actions_raw, source="cae.prepare_solver_run"
