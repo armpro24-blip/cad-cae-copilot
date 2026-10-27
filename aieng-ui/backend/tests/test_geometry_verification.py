@@ -264,3 +264,21 @@ def test_a_face_that_did_not_move_keeps_its_id_in_the_report() -> None:
     result = _geometry_verification(before, after, step_bytes=b"s", stl_bytes=b"s")
 
     assert result["stale_reference_risk"] is False
+
+
+def test_a_failed_face_id_prediction_reports_unknown_not_preserved(monkeypatch) -> None:
+    """If the re-identification cannot run, raw enumeration ids prove nothing."""
+    import app.topology_identity as identity
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("simulated failure")
+
+    monkeypatch.setattr(identity, "stabilize_topology_face_ids", _boom)
+    before = _make_topo([_plane("face_001", 8.0, 9600.0)])
+    after = _make_topo([_plane("face_001", 12.0, 9600.0)])
+
+    result = _geometry_verification(before, after, step_bytes=b"s", stl_bytes=b"s")
+
+    assert result["stale_reference_risk"] is None
+    assert result["topology_preserved"] is None
+    assert result["topology_change"]["face_ids_verified"] is False

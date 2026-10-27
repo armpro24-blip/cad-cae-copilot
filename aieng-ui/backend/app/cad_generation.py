@@ -3926,7 +3926,7 @@ def _topology_change_summary(before: dict[str, Any], after: dict[str, Any]) -> d
 
 def _with_persisted_face_ids(
     before_topo: dict[str, Any], after_topo: dict[str, Any]
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
     """A copy of ``after_topo`` carrying the face ids the package write will persist.
 
     A rebuild comes back with faces numbered by OCCT enumeration order, so an
@@ -3936,7 +3936,8 @@ def _with_persisted_face_ids(
     Comparing the raw enumeration reported "face 16/16 survived,
     stale_reference_risk: false" on a plate-thickness edit whose write retired
     every bound face id. The re-identification is deterministic, so applying it
-    to a copy here predicts exactly what will be persisted.
+    to a copy here predicts exactly what will be persisted. ``None`` when the
+    prediction fails: the raw ids prove nothing, so survival is then unknown.
     """
     try:
         from .topology_identity import stabilize_topology_face_ids
@@ -3945,8 +3946,8 @@ def _with_persisted_face_ids(
         stabilize_topology_face_ids(before_topo, predicted)
         return predicted
     except Exception as exc:  # noqa: BLE001 - a report must never block an edit
-        LOGGER.warning("face-id prediction failed; reporting raw ids: %s", exc)
-        return after_topo
+        LOGGER.warning("face-id prediction failed; face-id survival unknown: %s", exc)
+        return None
 
 
 def _topology_entity_ids(topology_map: dict[str, Any], entity_type: str) -> set[str]:
@@ -4062,8 +4063,21 @@ def _geometry_verification(
     ``unknown`` because the current execution pipeline only checks build
     success, non-empty solids, and export sanity.
     """
-    after_topo = _with_persisted_face_ids(before_topo, after_topo)
+    predicted = _with_persisted_face_ids(before_topo, after_topo)
+    face_ids_known = predicted is not None
+    if face_ids_known:
+        after_topo = predicted
     topology_change = _topology_change_summary(before_topo, after_topo)
+    if not face_ids_known:
+        # Raw enumeration ids match by name whatever they denote, so a fallback
+        # comparison could again report "preserved". Say "unknown" instead.
+        topology_change["stale_reference_risk"] = None
+        topology_change["face_ids_verified"] = False
+        topology_change["message"] = (
+            "Face-id survival is unknown: the ids the package write will persist "
+            "could not be predicted. Read diagnostics/topology_id_stability.json "
+            "after the write before relying on any @face: reference."
+        )
     step_ok = bool(step_bytes)
     stl_ok = bool(stl_bytes)
     glb_ok = bool(glb_bytes)
@@ -4079,7 +4093,9 @@ def _geometry_verification(
         export_detail = "No STEP or STL export produced; the rebuild did not yield usable geometry artifacts."
 
     return {
-        "topology_preserved": not topology_change["topology_changed"],
+        "topology_preserved": (
+            not topology_change["topology_changed"] if face_ids_known else None
+        ),
         "stale_reference_risk": topology_change["stale_reference_risk"],
         "topology_change": topology_change,
         "face_edge_survival": {
