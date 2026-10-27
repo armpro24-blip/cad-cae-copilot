@@ -494,6 +494,51 @@ def test_a_silent_solver_crash_is_not_blamed_on_the_mesh() -> None:
     assert record_from_solve(reported, {}, None, 2.0)["likely_cause"] == "mesh"
 
 
+def test_a_reported_error_is_blamed_on_the_mesh_only_when_it_names_the_mesh() -> None:
+    """Every reported abort used to be `likely_cause: mesh` + a finer mesh. Measured
+    on ccx 2.23 (#549): the automatic retry of a silent crash reported
+    `*ERROR in bounadd: increase nboun_` — ccx's own array sizing, not the mesh —
+    and the identical deck solved on other runs."""
+    from app.sizing_sweep_runner import record_from_solve
+
+    base = {
+        "solver_executed": False, "status": "solver_error",
+        "error": "CalculiX returned code 201 or produced no FRD",
+        "failure_kind": "solver_reported_error",
+    }
+    internal = record_from_solve(
+        {**base, "solver_diagnosis": ["Solver reported: *ERROR in bounadd: increase nboun_"]},
+        {}, None, 2.0,
+    )
+    assert internal["likely_cause"] == "solver_internal_limit"
+    assert internal["suggested_retry"]["mesh_size_mm"] == 2.0  # same mesh, not finer
+
+    other = record_from_solve(
+        {**base, "solver_diagnosis": ["Solver reported: *ERROR in mafillsm: something else"]},
+        {}, None, 2.0,
+    )
+    assert other["likely_cause"] == "solver_error"
+    assert other["suggested_retry"]["mesh_size_mm"] == 2.0
+
+
+def test_the_rewritten_orientation_diagnosis_still_counts_as_mesh_evidence() -> None:
+    """solver_diagnosis carries _diagnose_solver_log's rewritten text, not the raw
+    log, so a face-orientation error arrives as 'Mesh has inconsistently oriented
+    faces' — it must still classify as `mesh`."""
+    from app.simulation_runner import _diagnose_solver_log
+    from app.sizing_sweep_runner import record_from_solve
+
+    diagnosis = _diagnose_solver_log("*ERROR in face: inconsistent orientation of element 12")
+    record = record_from_solve(
+        {"solver_executed": False, "status": "solver_error",
+         "error": "CalculiX returned code 201 or produced no FRD",
+         "failure_kind": "solver_reported_error", "solver_diagnosis": diagnosis},
+        {}, None, 2.0,
+    )
+    assert record["likely_cause"] == "mesh"
+    assert record["suggested_retry"]["mesh_size_mm"] == 1.5
+
+
 def test_crash_retry_reruns_the_same_deck_once(monkeypatch, tmp_path: Path) -> None:
     from app import simulation_runner as sr
 
