@@ -300,6 +300,9 @@ def test_cli_real_ccx_corpus_passes(tmp_path: Path) -> None:
          "--run-id", "real_ccx", "--out", str(out)]
     )
     data = json.loads(out.read_text(encoding="utf-8"))
+    # Every canonical case, not "whatever corpus.json lists": an empty or partial
+    # corpus would otherwise pass, and -k real_ccx skips the integrity tests.
+    assert sorted(c["case_id"] for c in data["cases"]) == sorted(REFERENCE_CASES)
     failing = [c["case_id"] for c in data["cases"] if c["verdict"] != "pass"]
     assert rc == 0 and data["status"] == "passed", failing
     assert all(c["status"] == "ok" for c in data["cases"])

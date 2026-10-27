@@ -331,9 +331,9 @@ def score_corpus(
             "reference_basis": "closed-form beam/rod/column theory",
             "mesh_note": (
                 "Coarse C3D8 meshes for fast CI. Only metrics with gating=true decide a "
-                "case verdict; peak stresses on these meshes are informational and may "
-                "deviate far outside their band (clamped-end concentration, bending "
-                "under-prediction)."
+                "case verdict. In the default corpus every peak stress is non-gating and "
+                "may deviate far outside its band (clamped-end concentration, bending "
+                "under-prediction); a custom dataset_root sets its own gates."
             ),
         },
     }
