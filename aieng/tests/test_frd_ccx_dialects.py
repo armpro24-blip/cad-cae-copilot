@@ -105,6 +105,33 @@ def test_real_buckling_frd_without_analysis_type_is_qualified() -> None:
     assert sum("ICTYPE 4" in w for w in result["warnings"]) == 3
 
 
+@pytest.mark.parametrize(
+    "member, payload",
+    [
+        ("simulation/runs/run_001/solver_run.json", {"state": "completed", "analysis_type": "buckling"}),
+        ("simulation/solver_settings.json", {"analysis_type": "buckling"}),
+    ],
+)
+def test_package_extraction_reads_the_analysis_type_it_records(
+    tmp_path: Path, member: str, payload: dict
+) -> None:
+    """`cae.extract_solver_results` passes no analysis_type; the package records one.
+    Without reading it, a buckling FRD's mode shapes became a static result."""
+    import json
+    import zipfile
+
+    from aieng.simulation.frd_result_extractor import write_computed_metrics_package
+
+    pkg = tmp_path / "buckle.aieng"
+    with zipfile.ZipFile(pkg, "w") as zf:
+        zf.writestr("manifest.json", json.dumps({"resources": {}}))
+        zf.writestr(member, json.dumps(payload))
+    result = write_computed_metrics_package(pkg, CCX / "buckling.frd", run_id="run_001")
+    cases = _metrics(result)
+    assert cases["buckling_001"]["lowest_buckling_factor"] == pytest.approx(155.8898, rel=1e-6)
+    assert len(cases) == 2  # the reference-load state + the factors, no mode shapes
+
+
 def test_real_thermal_frd() -> None:
     cases = _metrics(extract_computed_metrics(CCX / "thermal.frd"))
     # the deck fixes 100 at the root face and 20 at the tip face

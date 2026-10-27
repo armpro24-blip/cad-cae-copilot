@@ -175,6 +175,7 @@ def extract_field_regions_package(
         cy = sum(coords[nid][1] for nid in node_ids) / len(node_ids)
         cz = sum(coords[nid][2] for nid in node_ids) / len(node_ids)
         median = statistics["median"]
+        cae_target_ref, feature_ref = feature_resolver(peak_node)
         clusters.append(
             {
                 "id": f"cluster_{idx:03d}",
@@ -184,7 +185,8 @@ def extract_field_regions_package(
                     "unit": "MPa" if field.upper() in _STRESS_FIELDS else "mm",
                 },
                 "node_count": len(node_ids),
-                "feature_ref": feature_resolver(peak_node),
+                "feature_ref": feature_ref,
+                "cae_target_ref": cae_target_ref,
                 "peak_to_median_ratio": (
                     round(peak_val / median, 4) if median > 0 else None
                 ),
@@ -463,24 +465,29 @@ def _limit_clusters(clusters: list[list[int]], max_clusters: int) -> list[list[i
 
 _SOURCE_DECK_PATH = "simulation/cae_imports/source_solver_deck.inp"
 _CAE_MAPPING_PATH = "simulation/cae_mapping.json"
+_FEATURE_GRAPH_PATH = "graph/feature_graph.json"
+
+_NO_REFS: tuple[str | None, str | None] = (None, None)
 
 
 def _build_feature_resolver(
     pkg: Path,
     warnings: list[str],
 ) -> Any:
-    """Return a callable ``peak_node_id -> feature_id | None``.
+    """Return a callable ``peak_node_id -> (cae_target_ref, feature_ref)``.
 
-    Mapping is derived from two pieces of evidence:
+    * ``cae_target_ref`` — the CAE setup entity (boundary condition / load id)
+      whose node set holds the peak, from the source deck's NSETs and
+      ``simulation/cae_mapping.json``. That mapping records a CAE target id
+      under ``maps_to.cae_target_id`` (historically misnamed ``feature_id``);
+      it was never a CAD feature, so it is not reported as one.
+    * ``feature_ref`` — the CAD feature, only when the evidence chain reaches
+      one: the target's mapped ``face_ids`` all lie on exactly one named part
+      in ``graph/feature_graph.json``.
 
-    * ``simulation/cae_imports/source_solver_deck.inp`` — NSET definitions
-      that group nodes;
-    * ``simulation/cae_mapping.json`` — explicit ``cae_entity -> feature_id``
-      mapping written by the CAE import.
-
-    Returns a resolver that always reports ``None`` when either piece is
-    missing or when the lookup is ambiguous, so the honesty boundary
-    ("``feature_ref: null`` when mapping is unavailable") is preserved.
+    Either stays ``None`` when its evidence is missing or ambiguous, so the
+    honesty boundary ("``feature_ref: null`` when mapping is unavailable")
+    is preserved.
     """
     try:
         with zipfile.ZipFile(pkg, "r") as zf:
@@ -495,15 +502,20 @@ def _build_feature_resolver(
                 if _CAE_MAPPING_PATH in names
                 else None
             )
+            feature_graph = (
+                json.loads(zf.read(_FEATURE_GRAPH_PATH))
+                if _FEATURE_GRAPH_PATH in names
+                else None
+            )
     except (zipfile.BadZipFile, OSError, json.JSONDecodeError):
-        return lambda _node_id: None
+        return lambda _node_id: _NO_REFS
 
     if deck_text is None or not isinstance(mapping_raw, dict):
-        return lambda _node_id: None
+        return lambda _node_id: _NO_REFS
 
-    nset_to_feature = _build_nset_to_feature(mapping_raw)
-    if not nset_to_feature:
-        return lambda _node_id: None
+    nset_to_target, target_faces = _build_nset_to_target(mapping_raw)
+    if not nset_to_target:
+        return lambda _node_id: _NO_REFS
 
     node_to_nsets = _build_node_to_nsets(deck_text)
     if not node_to_nsets:
@@ -511,33 +523,61 @@ def _build_feature_resolver(
             "simulation/cae_mapping.json exists but no NSET memberships were "
             "found in the source solver deck; cluster feature_ref stays null."
         )
-        return lambda _node_id: None
+        return lambda _node_id: _NO_REFS
 
-    def _resolve(node_id: int) -> str | None:
+    part_faces = _named_part_faces(feature_graph)
+
+    def _resolve(node_id: int) -> tuple[str | None, str | None]:
         nsets = node_to_nsets.get(node_id, set())
-        feature_ids = {nset_to_feature[n] for n in nsets if n in nset_to_feature}
-        if len(feature_ids) == 1:
-            return next(iter(feature_ids))
-        return None
+        targets = {nset_to_target[n] for n in nsets if n in nset_to_target}
+        if len(targets) != 1:
+            return _NO_REFS
+        target = next(iter(targets))
+        faces = target_faces.get(target) or set()
+        owners = [fid for fid, owned in part_faces.items() if faces and faces <= owned]
+        return target, (owners[0] if len(owners) == 1 else None)
 
     return _resolve
 
 
-def _build_nset_to_feature(mapping_raw: dict[str, Any]) -> dict[str, str]:
-    out: dict[str, str] = {}
+def _build_nset_to_target(
+    mapping_raw: dict[str, Any],
+) -> tuple[dict[str, str], dict[str, set[str]]]:
+    """``(nset -> CAE target id, CAE target id -> mapped face ids)``."""
+    from aieng.simulation.cae_mapping_writer import mapping_target_id
+
+    nset_to_target: dict[str, str] = {}
+    target_faces: dict[str, set[str]] = {}
     mappings = mapping_raw.get("mappings")
     if not isinstance(mappings, list):
-        return out
+        return nset_to_target, target_faces
     for m in mappings:
         if not isinstance(m, dict):
             continue
         cae_entity = m.get("cae_entity")
-        maps_to = m.get("maps_to") if isinstance(m.get("maps_to"), dict) else None
-        if not isinstance(cae_entity, str) or maps_to is None:
+        target = mapping_target_id(m)
+        if not isinstance(cae_entity, str) or target is None:
             continue
-        feature_id = maps_to.get("feature_id")
-        if isinstance(feature_id, str) and feature_id:
-            out[cae_entity] = feature_id
+        nset_to_target[cae_entity] = target
+        face_ids = m.get("face_ids")
+        if isinstance(face_ids, list):
+            target_faces.setdefault(target, set()).update(str(f) for f in face_ids)
+    return nset_to_target, target_faces
+
+
+def _named_part_faces(feature_graph: Any) -> dict[str, set[str]]:
+    """Named-part feature id -> the face ids it owns (``geometry_refs.faces``)."""
+    out: dict[str, set[str]] = {}
+    features = feature_graph.get("features") if isinstance(feature_graph, dict) else None
+    for feature in features if isinstance(features, list) else []:
+        if not isinstance(feature, dict):
+            continue
+        if feature.get("type") not in {"named_part", "standard_part"}:
+            continue
+        refs = feature.get("geometry_refs")
+        faces = refs.get("faces") if isinstance(refs, dict) else None
+        if isinstance(feature.get("id"), str) and isinstance(faces, list) and faces:
+            out[feature["id"]] = {str(f) for f in faces}
     return out
 
 

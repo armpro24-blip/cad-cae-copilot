@@ -504,8 +504,13 @@ class TestThermalTemperatureExtraction:
         frd = _write_frd(tmp_path, _make_thermal_frd({1: 100.0, 2: 37.5, 3: 0.0}))
         result = extract_computed_metrics(frd)
         metrics = result["load_cases"][0]["metrics"]
-        assert metrics["max_temperature"] == {"value": 100.0, "unit": "K"}
-        assert metrics["min_temperature"] == {"value": 0.0, "unit": "K"}
+        assert metrics["max_temperature"]["value"] == 100.0
+        assert metrics["min_temperature"]["value"] == 0.0
+        # ccx has no temperature unit; the value is in the scale of the applied
+        # BCs. "K" was invented — a degC setup read back as kelvin.
+        for name in ("max_temperature", "min_temperature"):
+            assert metrics[name]["unit"] == "as_applied"
+            assert "applied temperature boundary conditions" in metrics[name]["basis"]
 
     def test_thermal_only_frd_has_no_structural_warnings(self, tmp_path: Path) -> None:
         frd = _write_frd(tmp_path, _make_thermal_frd({1: 100.0, 2: 0.0}))

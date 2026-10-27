@@ -980,10 +980,15 @@ Celik, Ghia, Roache & Freitas (J. Fluids Eng. 130(7):078001, 2008), Table 1:
   a concentration is higher.
 - Eigenmode steps are not physical results. A modal FRD reports
   `natural_frequencies_hz` from each mode's step header; a buckling FRD reports
-  `buckling_factors` only when `analysis_type` is passed (ccx writes `*BUCKLE`
-  modes as the generic "user named" step type) — `cae.compare_runs` passes it
-  from `solver_run.json`. Before this, a modal FRD yielded "max_displacement
-  226 mm / max_von_mises 97,163 MPa" on an unloaded beam.
+  `buckling_factors` only when the analysis type is known (ccx writes `*BUCKLE`
+  modes as the generic "user named" step type). Package extraction
+  (`cae.extract_solver_results`, `cae.compare_runs`) reads it from the run's
+  `solver_run.json`, else `simulation/solver_settings.json`. Before this, a
+  modal FRD yielded "max_displacement 226 mm / max_von_mises 97,163 MPa" on an
+  unloaded beam.
+- `max_temperature` / `min_temperature` carry `unit: "as_applied"`: CalculiX
+  has no temperature unit, so the value is in the scale (degC or K) of the
+  applied temperature BCs. It used to be stamped "K" whatever was applied.
 - `cae.mesh_convergence` computes h from the **realized element count**
   (Celik Eq. 1), not the requested Gmsh size — measured, a nominal r = 2
   realized 1.45-2.06 — and reports `h_basis`. A series whose change grows
@@ -999,7 +1004,12 @@ Celik, Ghia, Roache & Freitas (J. Fluids Eng. 130(7):078001, 2008), Table 1:
   another step's field.
 - `cae.extract_field_regions` takes the top percentile, which always selects
   something. Read `field_statistics.near_uniform` / `peak_to_median_ratio`
-  before calling a cluster a hot spot.
+  before calling a cluster a hot spot. Each cluster names `cae_target_ref` —
+  the boundary condition / load whose node set holds its peak — and a
+  `feature_ref` only when that target's mapped faces all lie on one named part
+  in the feature graph. The mapping's target id was once reported as the
+  `feature_ref` itself ("near feature bc_001"), which the recommendation chain
+  then passed on as a `featureId` to edit.
 
 **Inverted elements are repaired or refused at mesh time.** `setOrder(2)`
 curves boundary mid-side nodes onto the CAD surface, and next to small holes

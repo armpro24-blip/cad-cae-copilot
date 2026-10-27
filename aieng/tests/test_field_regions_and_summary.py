@@ -206,8 +206,9 @@ def _package_with_cae_mapping(
     *,
     source_deck: str,
     mappings: list[dict],
+    feature_graph: dict | None = None,
 ) -> Path:
-    """Build a package with source deck + cae_mapping so feature_ref can be resolved."""
+    """Build a package with source deck + cae_mapping (+ optional feature graph)."""
     pkg_path = _package(tmp_path / "mapped.aieng")
     new = tmp_path / "mapped_new.aieng"
     with zipfile.ZipFile(pkg_path, "r") as src, zipfile.ZipFile(
@@ -226,57 +227,94 @@ def _package_with_cae_mapping(
                 "notes": [],
             }),
         )
+        if feature_graph is not None:
+            dst.writestr("graph/feature_graph.json", json.dumps(feature_graph))
     new.replace(pkg_path)
     return pkg_path
 
 
-def test_feature_ref_resolved_when_mapping_evidence_exists(tmp_path: Path) -> None:
-    """When source deck NSETs + cae_mapping evidence exists, cluster feature_ref is filled."""
-    source_deck = (
-        "*NODE\n"
-        "1, 0.0, 0.0, 0.0\n"
-        "2, 0.1, 0.0, 0.0\n"
-        "3, 10.0, 0.0, 0.0\n"
-        "*ELEMENT, TYPE=C3D4, ELSET=E_ALL\n"
-        "1, 1, 2, 3\n"
-        "*NSET, NSET=N_FILLET\n"
-        "1, 2\n"
-        "*NSET, NSET=N_BASE\n"
-        "3\n"
-    )
-    mappings = [
-        {
-            "cae_entity": "N_FILLET",
-            "cae_type": "boundary_condition_target",
-            "maps_to": {"feature_id": "feat_fillet_001"},
-            "mapping_status": "mapped",
-            "mapping_method": "named_selection",
-            "confidence": 1.0,
-        },
-        {
-            "cae_entity": "N_BASE",
-            "cae_type": "load_target",
-            "maps_to": {"feature_id": "feat_base_001"},
-            "mapping_status": "mapped",
-            "mapping_method": "named_selection",
-            "confidence": 1.0,
-        },
+_TWO_SET_DECK = (
+    "*NODE\n"
+    "1, 0.0, 0.0, 0.0\n"
+    "2, 0.1, 0.0, 0.0\n"
+    "3, 10.0, 0.0, 0.0\n"
+    "*ELEMENT, TYPE=C3D4, ELSET=E_ALL\n"
+    "1, 1, 2, 3\n"
+    "*NSET, NSET=N_FIX\n"
+    "1, 2\n"
+    "*NSET, NSET=N_LOAD\n"
+    "3\n"
+)
+_PART_GRAPH = {
+    "features": [
+        {"id": "feat_body_001", "type": "named_part", "name": "base_plate",
+         "geometry_refs": {"body": "body_001", "faces": ["face_001", "face_002", "face_003"]}},
+        {"id": "feat_body_002", "type": "named_part", "name": "rib_main",
+         "geometry_refs": {"body": "body_002", "faces": ["face_010", "face_011"]}},
     ]
-    pkg = _package_with_cae_mapping(tmp_path, source_deck=source_deck, mappings=mappings)
+}
 
+
+def _extract_peak_cluster(tmp_path: Path, mappings: list[dict], feature_graph: dict | None) -> dict:
+    pkg = _package_with_cae_mapping(
+        tmp_path, source_deck=_TWO_SET_DECK, mappings=mappings, feature_graph=feature_graph,
+    )
     frd = tmp_path / "job.frd"
     coords = {1: (0, 0, 0), 2: (0.1, 0, 0), 3: (10, 0, 0)}
-    stress = {1: 100.0, 2: 99.0, 3: 1.0}  # cluster forms around peak nodes 1 & 2
+    stress = {1: 100.0, 2: 99.0, 3: 1.0}  # cluster forms around peak nodes 1 & 2 (N_FIX)
     frd.write_text(_make_frd(coords, stress), encoding="utf-8")
-
     result = extract_field_regions_package(pkg, frd, threshold_percentile=80)
     assert result["cluster_count"] == 1
     with zipfile.ZipFile(pkg) as zf:
         regions = json.loads(zf.read("results/field_regions.json"))
-    cluster = regions["clusters"][0]
-    assert cluster["feature_ref"] == "feat_fillet_001", (
-        "peak node 1 belongs to N_FILLET → feat_fillet_001"
-    )
+    # Only the artifact under test: these minimal fixtures are not full packages.
+    import jsonschema
+    from importlib.resources import files
+    schema = json.loads(files("aieng.schemas").joinpath("field_regions.schema.json").read_text())
+    jsonschema.validate(regions, schema)
+    return regions["clusters"][0]
+
+
+def test_feature_ref_resolved_through_mapped_faces_to_their_part(tmp_path: Path) -> None:
+    """The shape the workbench writes: maps_to.cae_target_id + face_ids. The target is
+    reported as cae_target_ref; the FEATURE is the named part that owns those faces."""
+    mappings = [
+        {"cae_entity": "N_FIX", "cae_type": "boundary_condition_target",
+         "maps_to": {"cae_target_id": "bc_001"}, "face_ids": ["face_001"],
+         "mapping_status": "mapped", "confidence": 1.0},
+        {"cae_entity": "N_LOAD", "cae_type": "load_target",
+         "maps_to": {"cae_target_id": "load_001"}, "face_ids": ["face_010"],
+         "mapping_status": "mapped", "confidence": 1.0},
+    ]
+    cluster = _extract_peak_cluster(tmp_path, mappings, _PART_GRAPH)
+    assert cluster["cae_target_ref"] == "bc_001"
+    assert cluster["feature_ref"] == "feat_body_001"  # face_001 lies on base_plate
+
+
+def test_a_cae_target_id_is_never_reported_as_a_feature(tmp_path: Path) -> None:
+    """The legacy `maps_to.feature_id` spelling held a BC/load id, never a CAD feature.
+    It used to be emitted as feature_ref ('near feature bc_001'), which the copilot
+    recommendation chain then passed on as a featureId to edit."""
+    mappings = [
+        {"cae_entity": "N_FIX", "cae_type": "boundary_condition_target",
+         "maps_to": {"feature_id": "bc_001"}, "mapping_status": "mapped", "confidence": 1.0},
+        {"cae_entity": "N_LOAD", "cae_type": "load_target",
+         "maps_to": {"feature_id": "load_001"}, "mapping_status": "mapped", "confidence": 1.0},
+    ]
+    cluster = _extract_peak_cluster(tmp_path, mappings, _PART_GRAPH)
+    assert cluster["cae_target_ref"] == "bc_001"  # legacy spelling still read as a target
+    assert cluster["feature_ref"] is None  # no face evidence -> no feature
+
+
+def test_faces_spanning_two_parts_resolve_no_feature(tmp_path: Path) -> None:
+    mappings = [
+        {"cae_entity": "N_FIX", "cae_type": "boundary_condition_target",
+         "maps_to": {"cae_target_id": "bc_001"}, "face_ids": ["face_001", "face_010"],
+         "mapping_status": "mapped", "confidence": 1.0},
+    ]
+    cluster = _extract_peak_cluster(tmp_path, mappings, _PART_GRAPH)
+    assert cluster["cae_target_ref"] == "bc_001"
+    assert cluster["feature_ref"] is None
 
 
 def test_feature_ref_null_when_peak_node_in_no_mapped_nset(tmp_path: Path) -> None:

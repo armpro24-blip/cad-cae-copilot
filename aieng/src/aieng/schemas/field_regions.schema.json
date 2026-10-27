@@ -55,6 +55,10 @@
             "description": "Feature ID when mesh-to-feature mapping evidence exists; null when unavailable.",
             "type": ["string", "null"]
           },
+          "cae_target_ref": {
+            "description": "CAE setup entity (boundary condition / load id) whose node set holds the cluster peak; null when unmapped or ambiguous. Not a CAD feature.",
+            "type": ["string", "null"]
+          },
           "peak_to_median_ratio": {
             "description": "Cluster peak divided by the field median; null when the median is not positive.",
             "type": ["number", "null"]
