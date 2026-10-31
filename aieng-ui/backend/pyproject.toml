@@ -90,6 +90,8 @@ full = [
   "openai>=2.0.0",
 ]
 dev = ["pytest>=8.0", "httpx>=0.27"]
+# Independent solver oracle; test-only and pinned to the measured minor.
+verification = ["scikit-fem>=11.0,<11.1"]
 
 [project.scripts]
 aieng-workbench-mcp = "aieng_workbench_mcp.__main__:main"

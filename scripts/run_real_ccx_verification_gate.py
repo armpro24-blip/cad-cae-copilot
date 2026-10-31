@@ -70,6 +70,12 @@ TARGETS: dict[str, PytestTarget] = {
         label="Acceptance: edit -> re-solve -> compare -> export",
         args=("aieng-ui/backend/tests/test_acceptance_edit_resolve_compare.py", "-q"),
     ),
+    "cross-validation": PytestTarget(
+        label="Independent scikit-fem C3D10/FRD and topology/traction cross-validation",
+        # xunit1 retains record_property measurements without xunit2 warnings.
+        args=("aieng-ui/backend/tests/test_skfem_cross_validation.py", "-q", "-s",
+              "-o", "junit_family=xunit1"),
+    ),
 }
 
 
@@ -156,7 +162,9 @@ def run_target(
         ]
         print(f"\n==> {target.label}")
         print("+ " + " ".join(shlex.quote(part) for part in cmd))
-        completed = subprocess.run(cmd, cwd=repo_root(), env=env, text=True)
+        completed = subprocess.run(
+            cmd, cwd=repo_root(), env=env, stdin=subprocess.DEVNULL, text=True,
+        )
         if not junit.exists():
             print(f"ERROR: pytest did not write JUnit XML for {target.label}", file=sys.stderr)
             return completed.returncode or 1
