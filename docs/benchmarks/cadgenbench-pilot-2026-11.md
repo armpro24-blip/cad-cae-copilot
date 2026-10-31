@@ -172,7 +172,7 @@ M 组可以包含建模辅助、结构化反馈和预览的系统收益，但不
 
 ## 9. 本地 headless 探针：实际结果与阻塞
 
-新增 [`headless_probe.py`][local-probe]。使用 conda aieng311 的解释器，以 `-I -B` 运行，工作目录、HOME、临时文件、SQLite、日志和相对缓存均在任务 scratch。父启动调用显式设置不含 API 密钥的环境和 `stdin=subprocess.DEVNULL`，不连接正在运行的后端或求解器。安全钩子禁止网络、常见凭据文件读取、无显式 env 的子进程，并对 Python 子进程要求 `-I`。
+新增 [`headless_probe.py`][local-probe]。使用 conda aieng311 的解释器，以 `-I -B` 运行，工作目录、HOME、临时文件、SQLite、日志和相对缓存均在任务 scratch。父启动调用显式设置不含 API 密钥的环境和 `stdin=subprocess.DEVNULL`，不连接正在运行的后端或求解器。安全钩子禁止网络、常见凭据文件读取、无显式 env 的子进程，并对 Python 子进程要求 `-I`。其中，将 env 检查扩展到依赖深处已有调用，是探针额外保守的 guard；用户要求显式 env 和 DEVNULL 的范围是**本任务新增的 subprocess 调用**，不包括标准库中每个已有调用。
 
 脚本使用实际 `create_app(settings)` 和 `runtime.invoke_tool`。每个阶段先调用并保存 `aieng.agent_readme`、`aieng.guide(topic="cad")`；已完整读取其返回内容。保留 `AIENG_MCP_REQUIRE_GUIDES=1`，驱动脚本还要求完成这两次读取后才允许 CAD 工具。这是 **in-process 顺序检查**，没有启动 MCP transport，不能当作真实 MCP guide guard 的端到端测试。
 
@@ -193,7 +193,7 @@ M 组可以包含建模辅助、结构化反馈和预览的系统收益，但不
 
 **审批阻塞是实际 guide 合同，不是模型调用失败。** 返回的 CAD guide 明确写明建模请求本身不等于计划批准。`cad.confirm_modeling_plan` 的元数据确认 `requires_approval=true`，但直接 `invoke_tool` 不提供客户端批准界面。本轮没有调用确认 handler 制造“已批准”回执，也没有调用 `cad.execute_build123d` 或 `cad.edit_parameter`。两个探针均记录 `blocked_before_geometry_mutation`，输出包列表为空。
 
-**`import_step` 路径的运行阻塞更早发生在依赖导入。** `from build123d import import_step` 进入 `IPython → platform.system() → platform.win32_ver() → _syscmd_ver()`，尝试 `cmd /c ver`。aieng311 的 `Lib/platform.py:284–290` 已设置 `stdin=DEVNULL`，但 `subprocess.check_output` 没有显式 env。审计事件显示 `explicit_env=false`，在创建子进程前以 `Child launch blocked: missing explicit env` 拒绝。因此没有执行到 `import_step(input.step)`，也没有完成 204 所要求的两孔中心距 20→30 mm 修改。未通过修改产品/标准库或放宽钩子绕过该限制。
+**额外审计 guard 在 `import_step` 的依赖导入阶段拒绝执行。** `from build123d import import_step` 进入 `IPython → platform.system() → platform.win32_ver() → _syscmd_ver()`，尝试 `cmd /c ver`。aieng311 的 `Lib/platform.py:284–290` 已设置 `stdin=DEVNULL`，但 `subprocess.check_output` 没有显式 env。审计事件显示 `explicit_env=false`，在创建子进程前以 `Child launch blocked: missing explicit env` 拒绝。这是上述额外 guard 的实际拒绝，不能据此认定标准库已有调用违反用户对新增调用的规则。因此没有执行到 `import_step(input.step)`，也没有完成 204 所要求的两孔中心距 20→30 mm 修改。本次未修改产品/标准库或放宽钩子，也未重跑探针。
 
 为将“输入实体合法性”和“build123d 路径可运行”分开，另用底层 `OCP.STEPControl_Reader` 与 `BRepCheck_Analyzer` 检查 **204 原始输入**，没有更改形状。实际返回：
 
@@ -277,13 +277,13 @@ M 组可以包含建模辅助、结构化反馈和预览的系统收益，但不
 
 现有提示未硬执行用户要求的相同工具上限，108 已越过 20 次。**本轮不能作为等工具预算的公平 B/M 比较**，M 组也没有运行。不能事后删去超限调用、把工具调用混称候选迭代，或以近似结果补齐未运行题目。各题耗时和提示设置尚未形成完整统一审计，五题结果只作部分运行记录。
 
-第 9 节两个 headless 探针仍是 `blocked_before_geometry_mutation`：直接 `invoke_tool` 缺少真实计划批准界面，build123d 依赖路径还尝试无显式 env 的 `cmd /c ver`。另一个不导入 aieng 的独立预检也观察到相同 env 阻塞。后续独立工作节点成功导入 build123d 不等于这些受保护探针已完成，也不能证明执行环境相同。现有命令摘要不足以核验每次父进程和依赖子进程的显式 env/DEVNULL，故不补称全部历史执行符合这一安全要求。不能修改产品、标准库、放宽审计钩子或伪造计划批准来消除阻塞。
+第 9 节两个 headless 探针仍是 `blocked_before_geometry_mutation`：直接 `invoke_tool` 缺少真实计划批准界面，build123d 依赖中的 `cmd /c ver` 被额外保守的审计 guard 拒绝。另一个不导入 aieng 的独立预检也观察到相同 guard 拒绝。后续独立工作节点成功导入 build123d 不等于这些探针已完成，也不能证明执行环境相同。现有命令摘要不足以逐项核验历史工作中本任务新增调用的显式 env/DEVNULL，仍不补称其全部合规。对额外 guard 范围的澄清不授权绕过产品审批或 Python `-I` 要求。
 
 ## 11. 继续工作与草稿范围
 
 1. 保留冻结种子与全部 10 个 ID。五道未尝试题为 **134、147、247、248、250**，本次不启动它们，也不重跑已尝试题。恢复时由主执行通道落实同一请求模型、正常 coding-plan 授权和硬工具限额，不能静默转 API、加购额度或变更题目。
 2. 204 需要主代理确认：能否从原始固定输入识别满足描述的孔对？若需更正输入或修改目标，须另获明确批准并标记对原基准语义的影响。建议先核对固定输入与描述，不自行选择相近孔对。206 的体积增量断言仍未通过，不能改弱容差来补成成功。
-3. 原样 R 未运行且已获准替换。M 组的建模计划批准通道和 env/DEVNULL/`-I` 执行边界仍待解决，guide 要求保持有效，不以直接确认 handler 替代真实批准。不得将 B 部分结果称为已完成 MCP 探针。
+3. 原样 R 未运行且已获准替换。M 组的真实建模计划批准通道和 Python `-I` 执行路径仍待验证，本任务新增 subprocess 调用须显式传入 env 和 DEVNULL。guide 要求保持有效，不以直接确认 handler 替代真实批准。不得将 B 部分结果称为已完成 MCP 探针。
 4. 完整 checker、私有真值评分、统一工具计数、完整十题及 p90 预测均未完成。订阅美元成本和额度继续标记不可得，保留已有失败与近似说明。
 5. 按用户更新后的要求提交**英文 draft PR**，只包含本中文报告和 `scripts/bench/cadgenbench` 脚本，明确 5/10 部分尝试及全部阻塞。产品/runtime、下载源码与公开输入保持不变；数据集、生成 STEP 和本地原始日志均不入提交。未向外部基准上传结果。
 
