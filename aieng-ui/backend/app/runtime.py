@@ -111,7 +111,7 @@ def register_tool(
     handler: ToolHandler,
     *,
     requires_approval: bool = False,
-    read_only: bool | None = None,
+    read_only: bool = False,
     destructive: bool | None = None,
     description: str = "",
     input_schema: dict[str, Any] | None = None,
@@ -119,6 +119,19 @@ def register_tool(
     """Register a runtime tool.
 
     Args:
+        read_only: True only for a tool that writes nothing — no package member,
+            project file or metadata. A tool is treated as a writer unless it
+            says so, because the flag decides three things: whether the MCP
+            server serializes the call per project, the `readOnlyHint` clients
+            use to run calls in parallel, and whether inspection-only mode
+            blocks it. The old default (`not requires_approval`) labelled 24
+            writers read-only — `cae.setup_static`, `cae.generate_mesh`,
+            `opt.writeback_to_shape_ir`, … — and measured on 2026-11-05 a
+            headless Claude Code agent ran `cae.setup_static` and
+            `cae.generate_mesh` on the same project concurrently and the
+            mesher read a half-written package (`BadZipFile`). Wrongly
+            claiming "writer" costs one serialization; wrongly claiming
+            "reader" corrupts a package.
         input_schema: JSON Schema (draft-7+) describing the tool's input dict.
             Optional but strongly recommended for tools exposed via MCP — the
             agent uses the schema to construct valid tool calls. When omitted,
@@ -127,7 +140,7 @@ def register_tool(
     _REGISTRY[name] = {
         "handler": handler,
         "requires_approval": requires_approval,
-        "read_only": (not requires_approval) if read_only is None else read_only,
+        "read_only": read_only,
         "destructive": requires_approval if destructive is None else destructive,
         "description": description,
         "input_schema": input_schema,

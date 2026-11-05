@@ -64,6 +64,11 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                 "enum": ["quickstart", "full"],
                 "description": "Return compact onboarding by default; use full only when the canonical complete guide is required.",
             },
+            "part": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "For the full guide only: which part to return (default 1). Part 1 contains both contracts; the response gives parts_total and the next_call.",
+            },
         },
         "additionalProperties": False,
         "description": "No parameters required. Returns compact onboarding; detail=full returns canonical AGENTS.md.",
@@ -74,8 +79,13 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "properties": {
             "topic": {
                 "type": "string",
-                "enum": ["cad", "cad-helpers", "cad-modes", "cae", "cae-assembly", "pointers", "tools", "workflows", "package", "fallback", "frontend", "approvals", "operators", "full"],
-                "description": "Detailed guide topic to read from the canonical AGENTS.md.",
+                "enum": ["cad", "cad-reference", "cad-helpers", "cad-modes", "cae", "cae-reference", "cae-assembly", "pointers", "tools", "review", "workflows", "package", "fallback", "frontend", "approvals", "operators", "full"],
+                "description": "Guide topic to read from the canonical AGENTS.md.",
+            },
+            "part": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "For the full guide only: which part to return (default 1). Part 1 contains both contracts; the response gives parts_total and the next_call.",
             },
         },
         "additionalProperties": False,

@@ -1027,6 +1027,7 @@ def register_aieng_tools(rt: Any, active_settings: Any, app_context: Any, _schem
     rt.register_tool(
         "aieng.list_projects",
         _tool_aieng_list_projects,
+        read_only=True,
         description=(
             "List all projects available in this workbench instance. Returns id, "
             "name, status, last-modified, and (for agent-built geometry) named_parts "
@@ -1101,6 +1102,7 @@ def register_aieng_tools(rt: Any, active_settings: Any, app_context: Any, _schem
     rt.register_tool(
         "aieng.find_projects_by_part",
         _tool_aieng_find_projects_by_part,
+        read_only=True,
         description=(
             "Find projects whose geometry contains a named part matching the query "
             "(case-insensitive substring on part labels). Use this to locate a model "
@@ -1271,12 +1273,18 @@ def register_aieng_tools(rt: Any, active_settings: Any, app_context: Any, _schem
         requires_approval=True,
     )
 
+    def _guide_part(inp: dict[str, Any]) -> int:
+        try:
+            return int(inp.get("part") or 1)
+        except (TypeError, ValueError):
+            return 0  # reported by full_result as out of range
+
     def _tool_aieng_agent_readme(inp: dict[str, Any], _ctx: dict[str, Any]) -> dict[str, Any]:
         """Return compact onboarding by default, with a full-guide compatibility mode."""
         from .. import agent_guides
 
         if str(inp.get("detail") or "quickstart").lower() == "full":
-            result = agent_guides.full_result()
+            result = agent_guides.full_result(_guide_part(inp))
         else:
             result = agent_guides.quickstart_result()
         # Registry identity so an agent can tell if this long-lived MCP session
@@ -1287,10 +1295,11 @@ def register_aieng_tools(rt: Any, active_settings: Any, app_context: Any, _schem
     rt.register_tool(
         "aieng.agent_readme",
         _tool_aieng_agent_readme,
+        read_only=True,
         description=(
             "Return compact operational onboarding. Read this once at the start of a session, "
-            "then use aieng.guide only for task-specific detail. detail=full preserves access "
-            "to the canonical complete AGENTS.md."
+            "then use aieng.guide only for task-specific detail. detail=full returns the "
+            "complete AGENTS.md one part at a time (see `part`)."
         ),
         input_schema=_schema("aieng.agent_readme"),
     )
@@ -1299,15 +1308,17 @@ def register_aieng_tools(rt: Any, active_settings: Any, app_context: Any, _schem
         """Return one detailed guide topic extracted from canonical AGENTS.md."""
         from .. import agent_guides
 
-        return agent_guides.guide_result(str(inp.get("topic") or ""))
+        return agent_guides.guide_result(str(inp.get("topic") or ""), _guide_part(inp))
 
     rt.register_tool(
         "aieng.guide",
         _tool_aieng_guide,
+        read_only=True,
         description=(
-            "Return task-specific detail extracted from the canonical AGENTS.md without "
-            "loading the full guide. Topics include cad, cae, pointers, tools, workflows, "
-            "package, fallback, frontend, approvals, operators, and full."
+            "Return one guide topic from the canonical AGENTS.md. cad and cae are the short "
+            "contracts the server requires before cad.* and cae.*/opt.*/postprocess.* tools; "
+            "cad-reference, cae-reference, cad-helpers, cad-modes, cae-assembly and the other "
+            "topics are reference material. full returns the whole guide in parts."
         ),
         input_schema=_schema("aieng.guide"),
     )
@@ -1315,6 +1326,7 @@ def register_aieng_tools(rt: Any, active_settings: Any, app_context: Any, _schem
     rt.register_tool(
         "aieng.inspect_package",
         _tool_inspect_package,
+        read_only=True,
         description=(
             "Inspect a .aieng package and return the full project semantic summary "
             "(geometry, CAE setup, results, verdict, design targets). "
@@ -1325,6 +1337,7 @@ def register_aieng_tools(rt: Any, active_settings: Any, app_context: Any, _schem
     rt.register_tool(
         "aieng.agent_context",
         _tool_agent_context,
+        read_only=True,
         description=(
             "Return the compact agent-facing CAD/CAE context: geometry with @face/@feature pointers, "
             "stale-artifact warnings (EDIT IMPACT), CAE setup summary, results, design targets, "
@@ -1359,12 +1372,14 @@ def register_aieng_tools(rt: Any, active_settings: Any, app_context: Any, _schem
     rt.register_tool(
         "aieng.read_audit_log",
         _tool_read_audit_log,
+        read_only=True,
         description="Return the most recent audit log entries for this project",
         input_schema=_schema("aieng.read_audit_log"),
     )
     rt.register_tool(
         "aieng.recent_activity",
         _tool_recent_activity,
+        read_only=True,
         description=(
             "Return recent CAD build/activity events for a project (paginated by "
             "limit / since_ts) — headless build feedback + iteration errors without "
@@ -1433,6 +1448,7 @@ def register_aieng_tools(rt: Any, active_settings: Any, app_context: Any, _schem
     rt.register_tool(
         "aieng.validate",
         _tool_aieng_validate,
+        read_only=True,
         description=(
             "Validate a .aieng package against AIENG schemas and rules. "
             "Returns PASS/WARN/FAIL messages and an overall validation_ok boolean."

@@ -37,6 +37,49 @@ def test_same_project_gets_one_lock_different_projects_do_not() -> None:
     assert a1 is not b, "unrelated projects must not block each other"
 
 
+def test_a_tool_that_does_not_declare_read_only_is_serialized_per_project(monkeypatch) -> None:
+    """Writing is the default: an undeclared tool must take the project lock.
+
+    The old default made every non-approval tool read-only, so 24 package
+    writers ran unlocked, and two of them sent in one message by an agent
+    interleaved inside one `.aieng` package.
+    """
+    import asyncio
+
+    from app import runtime as rt
+
+    active = 0
+    overlapped = False
+    guard = threading.Lock()
+
+    def _probe(_inp: dict, _ctx: dict) -> dict:
+        nonlocal active, overlapped
+        with guard:
+            active += 1
+            overlapped = overlapped or active > 1
+        time.sleep(0.3)
+        with guard:
+            active -= 1
+        return {"status": "ok"}
+
+    rt.register_tool("cae.write_probe", _probe, description="default-registered probe")
+    try:
+        monkeypatch.setenv("AIENG_MCP_REQUIRE_GUIDES", "0")
+        monkeypatch.setattr(mcp_server, "_BACKEND_URL", "")
+        server = mcp_server._build_mcp_server()
+
+        async def _both() -> None:
+            await asyncio.gather(
+                server.call_tool("cae_write_probe", {"project_id": "same"}),
+                server.call_tool("cae_write_probe", {"project_id": "same"}),
+            )
+
+        asyncio.run(_both())
+        assert not overlapped, "two writes to one project ran at the same time"
+    finally:
+        rt._REGISTRY.pop("cae.write_probe", None)
+
+
 def test_concurrent_tool_count_is_bounded() -> None:
     limiter = mcp_server._tool_thread_limiter()
     assert limiter is mcp_server._tool_thread_limiter(), "limiter must be shared"

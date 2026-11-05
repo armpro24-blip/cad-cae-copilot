@@ -138,6 +138,13 @@ def _required_guide_topic(tool_name: str) -> str | None:
     return None
 
 
+def _requested_part(args: dict[str, Any]) -> int | None:
+    try:
+        return int(args.get("part") or 1)
+    except (TypeError, ValueError):
+        return None
+
+
 def _guide_required_result(tool_name: str, topic: str, read_topics: set[str]) -> dict[str, Any]:
     return {
         "status": "error",
@@ -880,12 +887,18 @@ def _build_mcp_server(name: str = "aieng-workbench", *, compact_surface: bool | 
                 if name_ == "aieng.guide":
                     topic = str(args.get("topic") or "").strip().lower()
                     if topic == "full":
-                        from . import agent_guides
+                        # Only part 1 carries the contracts, so only it unlocks.
+                        if _requested_part(args) == 1:
+                            from . import agent_guides
 
-                        read_guide_topics.update(agent_guides.TOPIC_SECTIONS)
+                            read_guide_topics.update(agent_guides.TOPIC_SECTIONS)
                     elif topic:
                         read_guide_topics.add(topic)
-                elif name_ == "aieng.agent_readme" and str(args.get("detail") or "").lower() == "full":
+                elif (
+                    name_ == "aieng.agent_readme"
+                    and str(args.get("detail") or "").lower() == "full"
+                    and _requested_part(args) == 1
+                ):
                     from . import agent_guides
 
                     read_guide_topics.update(agent_guides.TOPIC_SECTIONS)
