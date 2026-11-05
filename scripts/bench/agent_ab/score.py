@@ -16,10 +16,15 @@ import re
 import sys
 import zipfile
 
-# The prompt's edit: base plate 8 -> 12 mm. The rib stands on the plate, so the
-# model's total height grows by exactly the thickness change.
-EXPECTED_HEIGHT_GAIN_MM = 4.0
-HEIGHT_TOLERANCE_MM = 0.05
+# The prompt's geometry: base plate 8 mm before the edit and 12 mm after, with a
+# 25 mm rib standing centred on it in both.
+PLATE_BEFORE_MM = 8.0
+PLATE_AFTER_MM = 12.0
+RIB_HEIGHT_MM = 25.0
+DIMENSION_TOLERANCE_MM = 0.05
+# Nodes this close to the footprint's outer edge belong to the plate only: the
+# centred 60 x 5 mm rib is far from the 120 x 80 mm plate's edge.
+EDGE_BAND_MM = 0.5
 # The prompt's load: 500 N in -Z, applied identically before and after the edit.
 EXPECTED_FORCE_N = (0.0, 0.0, -500.0)
 FORCE_TOLERANCE_N = 5.0
@@ -28,14 +33,15 @@ FORCE_TOLERANCE_N = 5.0
 def _deck_facts(package: zipfile.ZipFile, run_id: str) -> dict | None:
     """What the run actually solved, read from its own deck.
 
-    height: z extent of the mesh nodes; force: resultant of the *CLOAD entries
+    plate: z extent of the nodes on the footprint's outer edge (plate only);
+    rib: total z extent minus the plate; force: resultant of the *CLOAD entries
     per DOF 1-3; elastic: the *ELASTIC data line; boundary: the *BOUNDARY lines.
     """
     try:
         deck = package.read(f"simulation/runs/{run_id}/solver_input.inp").decode("utf-8", "replace")
     except KeyError:
         return None
-    zs: list[float] = []
+    nodes: list[tuple[float, float, float]] = []
     force = [0.0, 0.0, 0.0]
     elastic: str | None = None
     boundary: list[str] = []
@@ -50,7 +56,7 @@ def _deck_facts(package: zipfile.ZipFile, run_id: str) -> dict | None:
         fields = [f.strip() for f in line.split(",")]
         try:
             if keyword == "*NODE" and len(fields) >= 4:
-                zs.append(float(fields[3]))
+                nodes.append((float(fields[1]), float(fields[2]), float(fields[3])))
             elif keyword == "*CLOAD" and len(fields) >= 3 and fields[1] in ("1", "2", "3"):
                 force[int(fields[1]) - 1] += float(fields[2])
             elif keyword == "*ELASTIC" and elastic is None:
@@ -59,8 +65,19 @@ def _deck_facts(package: zipfile.ZipFile, run_id: str) -> dict | None:
                 boundary.append(",".join(fields))
         except ValueError:
             continue
+    plate = rib = None
+    if nodes:
+        xs, ys, zs = zip(*nodes)
+        x_lo, x_hi, y_lo, y_hi = min(xs), max(xs), min(ys), max(ys)
+        edge_z = [
+            z for x, y, z in nodes
+            if min(x - x_lo, x_hi - x, y - y_lo, y_hi - y) <= EDGE_BAND_MM
+        ]
+        plate = max(edge_z) - min(edge_z)
+        rib = max(zs) - min(zs) - plate
     return {
-        "height": max(zs) - min(zs) if zs else None,
+        "plate": plate,
+        "rib": rib,
         "force": [round(f, 3) for f in force],
         "elastic": elastic,
         "boundary": sorted(boundary),
@@ -92,19 +109,26 @@ def _solved_runs(package: zipfile.ZipFile) -> list[str]:
     return runs
 
 
-def _edit_pair(heights: dict[str, float | None]) -> tuple[str, str] | None:
-    """(thin, thick) runs whose heights differ by the requested edit.
+def _matches(value: float | None, expected: float) -> bool:
+    return value is not None and abs(value - expected) <= DIMENSION_TOLERANCE_MM
+
+
+def _edit_pair(facts: dict[str, dict | None]) -> tuple[str, str] | None:
+    """(8 mm, 12 mm) runs, each with the 25 mm rib, as read from their decks.
 
     Either may come first: an agent can solve 12 mm and then re-solve 8 mm on
     the same mesh size. Of several pairs, the two closest in run order are the
     ones solved back to back, so most likely under the same mesh settings;
     ties go to the latest.
     """
-    order = {run: i for i, run in enumerate(sorted(heights))}
+    def has(run: str, plate: float) -> bool:
+        f = facts.get(run) or {}
+        return _matches(f.get("plate"), plate) and _matches(f.get("rib"), RIB_HEIGHT_MM)
+
+    order = {run: i for i, run in enumerate(sorted(facts))}
     pairs = [
-        (thin, thick) for thin in heights for thick in heights
-        if heights[thin] is not None and heights[thick] is not None
-        and abs(heights[thick] - heights[thin] - EXPECTED_HEIGHT_GAIN_MM) <= HEIGHT_TOLERANCE_MM
+        (thin, thick) for thin in facts for thick in facts
+        if has(thin, PLATE_BEFORE_MM) and has(thick, PLATE_AFTER_MM)
     ]
     if not pairs:
         return None
@@ -151,9 +175,12 @@ def main() -> int:
         return 0
     with zipfile.ZipFile(package_path) as package:
         facts = {run: _deck_facts(package, run) for run in _solved_runs(package)}
-    heights = {run: (f or {}).get("height") for run, f in facts.items()}
-    score["run_heights_mm"] = {run: None if h is None else round(h, 3) for run, h in heights.items()}
-    pair = _edit_pair(heights)
+    score["run_geometry_mm"] = {
+        run: None if f is None or f["plate"] is None
+        else {"plate": round(f["plate"], 3), "rib": round(f["rib"], 3)}
+        for run, f in facts.items()
+    }
+    pair = _edit_pair(facts)
     score["edit_pair_found"] = pair is not None
     if pair is None:
         score["task_success"] = False
