@@ -29,6 +29,14 @@ EDGE_BAND_MM = 0.5
 # centroids of one hole moved by up to 0.5 mm between the 8 and 12 mm meshes.
 # The holes are 50 mm apart with a 5 mm radius, so 1 mm still tells holes apart.
 RESTRAINT_TOLERANCE_MM = 1.0
+# The rest of the requested bracket: plate footprint, rib footprint, and four
+# 10 mm holes on a 90 x 50 mm pattern (the holes are what the setup fixes).
+PLATE_FOOTPRINT_MM = (80.0, 120.0)
+RIB_FOOTPRINT_MM = (5.0, 60.0)
+HOLE_CENTRES_MM = ((-45.0, -25.0), (-45.0, 25.0), (45.0, -25.0), (45.0, 25.0))
+HOLE_RADIUS_MM = 5.0
+FOOTPRINT_TOLERANCE_MM = 0.5
+HOLE_RADIUS_TOLERANCE_MM = 0.25
 # The prompt's load: 500 N in -Z, applied identically before and after the edit.
 EXPECTED_FORCE_N = (0.0, 0.0, -500.0)
 FORCE_TOLERANCE_N = 5.0
@@ -98,6 +106,7 @@ def _deck_facts(package: zipfile.ZipFile, run_id: str) -> dict | None:
             force[int(dof) - 1] += float(value) * len(members(target))
 
     restraints = []
+    holes = []
     for target, first, *rest in boundaries:
         points = [nodes[n] for n in members(target) if n in nodes]
         if not points:
@@ -108,8 +117,11 @@ def _deck_facts(package: zipfile.ZipFile, run_id: str) -> dict | None:
         cx = sum(p[0] for p in points) / len(points)
         cy = sum(p[1] for p in points) / len(points)
         restraints.append((round(cx, 2), round(cy, 2), first, last, value))
+        radius = sum(((p[0] - cx) ** 2 + (p[1] - cy) ** 2) ** 0.5 for p in points) / len(points)
+        holes.append((round(cx, 2), round(cy, 2), round(radius, 3)))
 
     plate = rib = None
+    plate_footprint = rib_footprint = None
     if nodes:
         xs, ys, zs = zip(*nodes.values())
         x_lo, x_hi, y_lo, y_hi = min(xs), max(xs), min(ys), max(ys)
@@ -119,13 +131,45 @@ def _deck_facts(package: zipfile.ZipFile, run_id: str) -> dict | None:
         ]
         plate = max(edge_z) - min(edge_z)
         rib = max(zs) - min(zs) - plate
+        plate_footprint = tuple(sorted((x_hi - x_lo, y_hi - y_lo)))
+        above = [(x, y) for x, y, z in nodes.values() if z > min(zs) + plate + EDGE_BAND_MM]
+        if above:
+            ax, ay = zip(*above)
+            rib_footprint = tuple(sorted((max(ax) - min(ax), max(ay) - min(ay))))
     return {
         "plate": plate,
         "rib": rib,
         "force": [round(f, 3) for f in force],
         "material": material,
         "restraints": sorted(restraints, key=str),
+        "holes": sorted(holes),
+        "plate_footprint": plate_footprint,
+        "rib_footprint": rib_footprint,
     }
+
+
+def _geometry_problems(label: str, facts: dict) -> list[str]:
+    """Where the solved model is not the requested bracket (beyond thicknesses)."""
+    def near(measured, expected, tolerance) -> bool:
+        return measured is not None and all(abs(m - e) <= tolerance for m, e in zip(measured, expected))
+
+    problems = []
+    if not near(facts["plate_footprint"], PLATE_FOOTPRINT_MM, FOOTPRINT_TOLERANCE_MM):
+        problems.append(f"{label}: plate footprint {facts['plate_footprint']} mm, expected {PLATE_FOOTPRINT_MM}")
+    if not near(facts["rib_footprint"], RIB_FOOTPRINT_MM, FOOTPRINT_TOLERANCE_MM):
+        problems.append(f"{label}: rib footprint {facts['rib_footprint']} mm, expected {RIB_FOOTPRINT_MM}")
+    holes = list(facts["holes"])
+    for centre in HOLE_CENTRES_MM:
+        match = next((h for h in holes if near(h[:2], centre, RESTRAINT_TOLERANCE_MM)), None)
+        if match is None:
+            problems.append(f"{label}: no fixed hole at {centre}")
+            continue
+        holes.remove(match)
+        if abs(match[2] - HOLE_RADIUS_MM) > HOLE_RADIUS_TOLERANCE_MM:
+            problems.append(f"{label}: hole at {centre} has radius {match[2]} mm, expected {HOLE_RADIUS_MM}")
+    if holes:
+        problems.append(f"{label}: restraints beyond the four bolt holes: {holes}")
+    return problems
 
 
 def _setup_problems(before: dict, after: dict) -> list[str]:
@@ -140,6 +184,8 @@ def _setup_problems(before: dict, after: dict) -> list[str]:
             problems.append(f"{label}: a restraint target names no nodes")
     if before["material"] != after["material"]:
         problems.append("material changed between the runs")
+    for label, facts in (("before", before), ("after", after)):
+        problems.extend(_geometry_problems(label, facts))
     unmatched = _unmatched_restraints(before["restraints"], after["restraints"])
     if unmatched:
         problems.append(f"restraints changed: {unmatched}")
@@ -183,23 +229,34 @@ def _matches(value: float | None, expected: float) -> bool:
     return value is not None and abs(value - expected) <= DIMENSION_TOLERANCE_MM
 
 
-def _edit_pair(facts: dict[str, dict | None]) -> tuple[str, str] | None:
-    """(8 mm, 12 mm) runs, each with the 25 mm rib, as read from their decks.
-
-    Either may come first: an agent can solve 12 mm and then re-solve 8 mm on
-    the same mesh size. Of several pairs, the two closest in run order are the
-    ones solved back to back, so most likely under the same mesh settings;
-    ties go to the latest.
-    """
+def _pairs(facts: dict[str, dict | None]) -> list[tuple[str, str]]:
+    """All (8 mm, 12 mm) run pairs, each with the 25 mm rib, as read from their decks."""
     def has(run: str, plate: float) -> bool:
         f = facts.get(run) or {}
         return _matches(f.get("plate"), plate) and _matches(f.get("rib"), RIB_HEIGHT_MM)
 
-    order = {run: i for i, run in enumerate(sorted(facts))}
-    pairs = [
+    return [
         (thin, thick) for thin in facts for thick in facts
         if has(thin, PLATE_BEFORE_MM) and has(thick, PLATE_AFTER_MM)
     ]
+
+
+def _solved_in_requested_order(facts: dict[str, dict | None]) -> bool:
+    """The task: analyse at 8 mm, THEN increase to 12 mm and analyse again."""
+    return any(thin < thick for thin, thick in _pairs(facts))
+
+
+def _edit_pair(facts: dict[str, dict | None]) -> tuple[str, str] | None:
+    """The 8 mm / 12 mm pair whose metrics are compared.
+
+    Not necessarily in solve order: once the 8 -> 12 mm order is established
+    (`_solved_in_requested_order`), an agent may re-solve 8 mm on the 12 mm
+    run's mesh size for a like-for-like comparison. The two runs closest in
+    run order were solved back to back, so most likely under the same mesh
+    settings; ties go to the latest.
+    """
+    order = {run: i for i, run in enumerate(sorted(facts))}
+    pairs = _pairs(facts)
     if not pairs:
         return None
     return min(pairs, key=lambda p: (abs(order[p[0]] - order[p[1]]), -max(order[p[0]], order[p[1]])))
@@ -252,6 +309,7 @@ def main() -> int:
     }
     pair = _edit_pair(facts)
     score["edit_pair_found"] = pair is not None
+    score["solved_in_requested_order"] = _solved_in_requested_order(facts)
     if pair is None:
         score["task_success"] = False
         print(json.dumps(score, default=str))
@@ -285,6 +343,7 @@ def main() -> int:
     disp = score["max_displacement"]["change_pct"]
     score["task_success"] = bool(
         score["project_found"]
+        and score["solved_in_requested_order"]
         and score["geometry_changed"] is True
         and score["binding_count_changed"] is False
         and not score["setup_problems"]
