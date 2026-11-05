@@ -13,6 +13,7 @@ def _scaled(value: float | None, scale: float, digits: int) -> float | None:
 
 
 def _row(s: dict) -> dict:
+    """One table row from a trial's summary.json; an unscored trial has no success value."""
     score = s.get("score") or {}
     onboarding = s.get("onboarding_result_chars") or {}
     # Summaries written before trial_status existed: scored iff the score parsed.
@@ -35,6 +36,7 @@ def _row(s: dict) -> dict:
 
 
 def main() -> int:
+    """Print the per-trial table and per-arm success and medians for RUNS_DIR."""
     rows = [_row(json.loads(p.read_text(encoding="utf-8")))
             for p in sorted(Path(sys.argv[1]).glob("*/summary.json"))]
     keys = list(rows[0]) if rows else []

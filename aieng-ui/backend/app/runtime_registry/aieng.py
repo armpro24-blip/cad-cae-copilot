@@ -1274,6 +1274,7 @@ def register_aieng_tools(rt: Any, active_settings: Any, app_context: Any, _schem
     )
 
     def _guide_part(inp: dict[str, Any]) -> int:
+        """The requested full-guide part; 0 (reported as out of range) for an invalid value."""
         from .. import agent_guides
 
         part = agent_guides.parse_part(inp.get("part"))

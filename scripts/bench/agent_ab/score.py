@@ -216,6 +216,7 @@ def _unmatched_restraints(before: list, after: list) -> list:
 
 
 def _solved_runs(package: zipfile.ZipFile) -> list[str]:
+    """Run ids whose solver_run.json records a completed solve."""
     runs = []
     for name in sorted(package.namelist()):
         if name.startswith("simulation/runs/") and name.endswith("/solver_run.json"):
@@ -226,6 +227,7 @@ def _solved_runs(package: zipfile.ZipFile) -> list[str]:
 
 
 def _matches(value: float | None, expected: float) -> bool:
+    """A measured dimension equal to the expected one within the dimension tolerance."""
     return value is not None and abs(value - expected) <= DIMENSION_TOLERANCE_MM
 
 
@@ -263,6 +265,7 @@ def _edit_pair(facts: dict[str, dict | None]) -> tuple[str, str] | None:
 
 
 def main() -> int:
+    """Score the named project's runs and print one JSON object."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--project-name", required=True)
     args = parser.parse_args()

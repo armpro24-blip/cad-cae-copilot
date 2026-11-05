@@ -38,6 +38,7 @@ TRACKED_RESULT_TOOLS = ("aieng_agent_readme", "aieng_guide", "aieng_list_project
 
 
 def _mcp_config(checkout: Path, data_dir: Path, mcp_cwd: Path) -> dict:
+    """MCP config running the checkout's server against this trial's own data directory."""
     return {"mcpServers": {"aieng-workbench": {
         "command": "conda",
         "args": ["run", "-n", "aieng311", "--no-capture-output", "python", "-m",
@@ -51,6 +52,7 @@ def _mcp_config(checkout: Path, data_dir: Path, mcp_cwd: Path) -> dict:
 
 
 def _result_text(block: dict) -> str:
+    """Text of a tool_result block, whether its content is a string or a list of parts."""
     content = block.get("content")
     if isinstance(content, str):
         return content
@@ -112,6 +114,7 @@ def summarize_transcript(lines: list[str]) -> dict:
 
 
 def main() -> int:
+    """Run one headless trial, write transcript.jsonl and summary.json, and score it."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkout", required=True, type=Path)
     parser.add_argument("--arm", required=True)

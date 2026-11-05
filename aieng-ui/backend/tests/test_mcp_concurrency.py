@@ -83,6 +83,7 @@ def test_a_tool_that_does_not_declare_read_only_is_serialized_per_project(monkey
     state: dict = {}
 
     def _probe(_inp: dict, _ctx: dict) -> dict:
+        """Wait until the other call is inside the tool (overlap) or blocked on the lock."""
         with guard:
             state["calls"] += 1
             state["active"] += 1
@@ -116,6 +117,7 @@ def test_a_tool_that_does_not_declare_read_only_is_serialized_per_project(monkey
         server = mcp_server._build_mcp_server()
 
         def _run_pair(tool: str) -> dict:
+            """Call `tool` twice at once on one project; report calls made and whether they overlapped."""
             state.update(calls=0, active=0, both_inside=threading.Event())
 
             async def _both() -> list:

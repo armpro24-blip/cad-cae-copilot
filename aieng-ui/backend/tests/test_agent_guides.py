@@ -100,6 +100,7 @@ def test_part_parsing_keeps_the_default_but_refuses_explicit_invalid_values(valu
 
 
 def test_full_guide_split_never_cuts_a_code_fence() -> None:
+    """A blank line inside a fence is not a break point, even when the part is over budget."""
     from app import agent_guides
 
     text = "intro\n\n```python\nx = 1\n\ny = 2\n```\n\nouter\n"

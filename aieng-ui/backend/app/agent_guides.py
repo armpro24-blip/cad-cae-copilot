@@ -359,6 +359,7 @@ def full_result(part: int = 1) -> dict[str, Any]:
 
 
 def guide_result(topic: str, part: int = 1) -> dict[str, Any]:
+    """One guide topic from AGENTS.md; `part` applies only to `full`, other topics ignore it."""
     normalized = topic.strip().lower()
     if normalized == "full":
         return full_result(part)
