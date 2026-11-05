@@ -1274,10 +1274,10 @@ def register_aieng_tools(rt: Any, active_settings: Any, app_context: Any, _schem
     )
 
     def _guide_part(inp: dict[str, Any]) -> int:
-        try:
-            return int(inp.get("part") or 1)
-        except (TypeError, ValueError):
-            return 0  # reported by full_result as out of range
+        from .. import agent_guides
+
+        part = agent_guides.parse_part(inp.get("part"))
+        return 0 if part is None else part  # 0 is reported by full_result as out of range
 
     def _tool_aieng_agent_readme(inp: dict[str, Any], _ctx: dict[str, Any]) -> dict[str, Any]:
         """Return compact onboarding by default, with a full-guide compatibility mode."""

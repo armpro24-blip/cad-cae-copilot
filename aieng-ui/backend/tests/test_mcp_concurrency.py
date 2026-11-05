@@ -48,36 +48,54 @@ def test_a_tool_that_does_not_declare_read_only_is_serialized_per_project(monkey
 
     from app import runtime as rt
 
-    active = 0
-    overlapped = False
+    state = {"active": 0, "overlapped": False, "calls": 0}
     guard = threading.Lock()
 
     def _probe(_inp: dict, _ctx: dict) -> dict:
-        nonlocal active, overlapped
         with guard:
-            active += 1
-            overlapped = overlapped or active > 1
+            state["calls"] += 1
+            state["active"] += 1
+            state["overlapped"] = state["overlapped"] or state["active"] > 1
         time.sleep(0.3)
         with guard:
-            active -= 1
+            state["active"] -= 1
         return {"status": "ok"}
 
     rt.register_tool("cae.write_probe", _probe, description="default-registered probe")
+    rt.register_tool("cae.read_probe", _probe, read_only=True, description="declared reader")
     try:
+        # Pin everything else that could stop the overlap, so only the project
+        # lock can: inspection-only mode would block both calls before the probe,
+        # and a limiter of 1 would serialize them on its own.
         monkeypatch.setenv("AIENG_MCP_REQUIRE_GUIDES", "0")
+        monkeypatch.delenv("AIENG_MCP_BLOCK_APPROVAL_TOOLS", raising=False)
+        monkeypatch.setenv("AIENG_MCP_MAX_CONCURRENT_TOOLS", "2")
+        monkeypatch.setattr(mcp_server, "_TOOL_THREAD_LIMITER", None)
         monkeypatch.setattr(mcp_server, "_BACKEND_URL", "")
         server = mcp_server._build_mcp_server()
 
-        async def _both() -> None:
-            await asyncio.gather(
-                server.call_tool("cae_write_probe", {"project_id": "same"}),
-                server.call_tool("cae_write_probe", {"project_id": "same"}),
-            )
+        def _run_pair(tool: str) -> dict:
+            state.update(active=0, overlapped=False, calls=0)
 
-        asyncio.run(_both())
-        assert not overlapped, "two writes to one project ran at the same time"
+            async def _both() -> None:
+                await asyncio.gather(
+                    server.call_tool(tool, {"project_id": "same"}),
+                    server.call_tool(tool, {"project_id": "same"}),
+                )
+
+            asyncio.run(_both())
+            return dict(state)
+
+        # Control: a declared reader takes no lock, so the harness must show overlap.
+        reader = _run_pair("cae_read_probe")
+        assert reader["calls"] == 2 and reader["overlapped"], "harness did not run the calls in parallel"
+
+        writer = _run_pair("cae_write_probe")
+        assert writer["calls"] == 2, "both calls must reach the tool"
+        assert not writer["overlapped"], "two writes to one project ran at the same time"
     finally:
         rt._REGISTRY.pop("cae.write_probe", None)
+        rt._REGISTRY.pop("cae.read_probe", None)
 
 
 def test_concurrent_tool_count_is_bounded() -> None:

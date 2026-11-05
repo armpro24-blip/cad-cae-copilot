@@ -139,10 +139,10 @@ def _required_guide_topic(tool_name: str) -> str | None:
 
 
 def _requested_part(args: dict[str, Any]) -> int | None:
-    try:
-        return int(args.get("part") or 1)
-    except (TypeError, ValueError):
-        return None
+    """The full-guide part the call asks for; None for an invalid value (never unlocks)."""
+    from . import agent_guides
+
+    return agent_guides.parse_part(args.get("part"))
 
 
 def _guide_required_result(tool_name: str, topic: str, read_topics: set[str]) -> dict[str, Any]:

@@ -87,6 +87,17 @@ def test_full_guide_is_served_whole_in_parts_that_fit_a_client_budget() -> None:
     assert agent_guides.full_result(first["parts_total"] + 1)["code"] == "invalid_input"
 
 
+@pytest.mark.parametrize(("value", "expected"), [
+    (None, 1), (1, 1), (3, 3), (2.0, 2), ("2", 2),
+    (0, None), (-1, None), (1.5, None), (True, None), ("x", None), ("", None),
+])
+def test_part_parsing_keeps_the_default_but_refuses_explicit_invalid_values(value, expected) -> None:
+    """`int(part or 1)` read an explicit 0 as part 1 — the part that unlocks the gate."""
+    from app import agent_guides
+
+    assert agent_guides.parse_part(value) == expected
+
+
 def test_full_guide_split_never_cuts_a_code_fence() -> None:
     from app import agent_guides
 

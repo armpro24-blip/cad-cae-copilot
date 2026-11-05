@@ -232,10 +232,12 @@ def test_full_guide_unlocks_all_guarded_categories(monkeypatch) -> None:
         monkeypatch.delenv("AIENG_MCP_REQUIRE_GUIDES", raising=False)
         monkeypatch.setattr(ms, "_BACKEND_URL", "")
         mcp = ms._build_mcp_server()
-        # A later part does not carry the contracts, so it unlocks nothing.
-        asyncio.run(mcp.call_tool(_mcp_name("aieng.guide"), {"topic": "full", "part": 2}))
-        blocked = json.loads(_tool_text(asyncio.run(mcp.call_tool("cae_guarded_probe", {"project_id": "p1"}))))
-        assert blocked["code"] == "guide_required"
+        # A later part does not carry the contracts, and an invalid part is
+        # refused rather than read as part 1 — neither unlocks anything.
+        for part in (2, 0, 1.5, -1, "x"):
+            asyncio.run(mcp.call_tool(_mcp_name("aieng.guide"), {"topic": "full", "part": part}))
+            blocked = json.loads(_tool_text(asyncio.run(mcp.call_tool("cae_guarded_probe", {"project_id": "p1"}))))
+            assert blocked["code"] == "guide_required", f"part={part!r} unlocked the gate"
 
         asyncio.run(mcp.call_tool(_mcp_name("aieng.agent_readme"), {"detail": "full"}))
 

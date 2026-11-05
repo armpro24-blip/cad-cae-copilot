@@ -310,6 +310,26 @@ def split_full_guide(markdown: str, max_chars: int = FULL_PART_MAX_CHARS) -> lis
     return parts or [""]
 
 
+def parse_part(value: Any) -> int | None:
+    """Return the requested full-guide part, or None when the value is invalid.
+
+    A missing part means part 1. An explicit 0, negative, fractional or
+    non-numeric value is invalid rather than silently read as 1 — part 1 is
+    the one that unlocks every guide category.
+    """
+    if value is None:
+        return 1
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    if isinstance(value, str) and value.strip().isdigit():
+        value = int(value.strip())
+    if isinstance(value, int) and value >= 1:
+        return value
+    return None
+
+
 def full_result(part: int = 1) -> dict[str, Any]:
     """Return one part of the complete AGENTS.md (part 1 holds both contracts)."""
     content, path = read_full_guide()

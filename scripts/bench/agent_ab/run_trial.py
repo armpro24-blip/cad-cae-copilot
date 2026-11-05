@@ -167,12 +167,17 @@ def main() -> int:
         ["conda", "run", "-n", "aieng311", "python", str(HERE / "score.py"), "--project-name", project_name],
         cwd=mcp_cwd, env=score_env, capture_output=True, text=True, stdin=subprocess.DEVNULL,
     )
+    # A trial the scorer could not read is invalid, not a task failure.
     try:
+        if scored.returncode != 0:
+            raise ValueError(f"score.py exited {scored.returncode}")
         summary["score"] = json.loads(scored.stdout.strip().splitlines()[-1])
-    except (IndexError, json.JSONDecodeError):
+        summary["trial_status"] = "scored"
+    except (IndexError, ValueError):
         summary["score"] = {"error": (scored.stderr or scored.stdout)[-2000:]}
+        summary["trial_status"] = "scoring_failed"
     (run_dir / "summary.json").write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
-    print(json.dumps({k: summary[k] for k in ("arm", "index", "cost_usd", "input_tokens_total",
+    print(json.dumps({k: summary[k] for k in ("arm", "index", "trial_status", "cost_usd", "input_tokens_total",
                                               "tool_calls_total", "error_codes")}, default=str))
     print(json.dumps(summary["score"], default=str))
     return 0
