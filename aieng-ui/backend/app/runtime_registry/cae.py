@@ -3832,6 +3832,15 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         from .. import target_comparison as _targets
 
         findings: dict[str, Any] = {}
+        # What was actually solved, in engineering words, beside the numbers it
+        # produced: a model that runs and converges can still solve the wrong
+        # physics (arXiv 2605.09360), and the boundary conditions are where
+        # agent-built simulations most often go wrong. Read it back here, not
+        # in a separate preflight call the one-call loop no longer makes.
+        try:
+            findings["setup"] = _describe_cae_setup(package_path)
+        except Exception:  # noqa: BLE001 - a description must never fail a completed run
+            pass
         cases = (solver_result.get("extracted_metrics") or {}).get("load_cases") or []
         findings["metrics"] = {
             case.get("id"): {

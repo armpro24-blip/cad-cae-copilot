@@ -138,6 +138,17 @@ def _required_guide_topic(tool_name: str) -> str | None:
     return None
 
 
+# CAD tools whose `response_detail` defaults to "compact" when called over MCP.
+# The tools themselves default to "full" for the REST/UI callers; an agent gets
+# the concise form unless it asks (Anthropic, "Writing tools for agents":
+# concise by default, detailed on request). Measured 2026-11-05: agents left it
+# unset on cad.edit_parameter and paid ~6k characters per edit for a feature
+# graph that cad.list_editable_parameters serves on demand.
+_COMPACT_BY_DEFAULT_TOOLS = frozenset({
+    "cad.execute_build123d", "cad.edit_parameter", "cad.replace_part", "cad.remove_part",
+})
+
+
 def _requested_part(args: dict[str, Any]) -> int | None:
     """The full-guide part the call asks for; None for an invalid value (never unlocks)."""
     from . import agent_guides
@@ -251,53 +262,27 @@ def _finalize_result(value: Any) -> Any:
 
 
 _SERVER_DESCRIPTION = """\
-aieng Workbench — CAD/CAE co-pilot for mechanical engineering.
+aieng Workbench — CAD/CAE co-pilot for mechanical engineering: real build123d
+(OpenCASCADE) geometry and CalculiX FEA, no API key needed.
 
-MANDATORY SESSION ONBOARDING — aieng.agent_readme MUST be called before any
-other tool in this session. It returns the current operational contract and
-available task-specific guide topics. Skipping it risks stale or incomplete
-tool behavior.
+Call aieng.agent_readme first. It returns the operating guide followed by the
+CAD and CAE contracts, and reading it satisfies the guide requirement the server
+enforces before cad.*, cae.*, opt.* and postprocess.* tools.
 
-After onboarding, call aieng.list_projects to discover available project IDs.
+Core tools — load them together: aieng.create_project, cad.execute_build123d,
+cad.edit_parameter, cae.setup_static, cae.run_simulation_pipeline. The loop:
+build → cae.setup_static once →
+cae.run_simulation_pipeline → edit → cae.run_simulation_pipeline again; each
+pipeline call returns the bound setup, metrics, mesh accuracy and the change
+since the previous run.
 
-This server exposes real 3D CAD modeling (build123d / OpenCASCADE) and
-structural FEA (CalculiX) tools. cad.execute_build123d runs your Python code
-against build123d and produces actual STEP/STL/GLB geometry — no API key needed.
-
-Quick start (MANDATORY ORDER — do not skip step 1):
-  1. aieng.agent_readme      → REQUIRED operational onboarding
-  2. aieng.list_projects     → discover project IDs
-  3. aieng.agent_context { project_id }  → geometry state + suggested next steps
-
-Before the first CAD modeling/edit action, call aieng.guide { topic: "cad" }.
-Before the first simulation/solver action, call aieng.guide { topic: "cae" }.
-Use other guide topics when their task category applies.
-The server enforces these reads before CAD, CAE, and package-lifecycle tools.
-
-Sustainable modeling loop: cad.get_source (read state) → cad.execute_build123d
-with mode=append (build onto `previous_result`; set `.label` and
-`.color = Color(r,g,b)` on parts so the topology gets named parts and the
-returned thumbnail shows them in distinct colors) → read the returned 2×2
-contact-sheet thumbnail (front/side/top/iso) + named_parts/parts_added to
-verify silhouette and alignment, then repeat.
-
-Token-aware loop: use response_detail="compact" for routine CAD iterations.
-Compact responses keep named_parts/parts_added, every verdict, a one-line
-geometry summary and the 4-view thumbnail (~300 image tokens; look at it), drop
-the feature graph, and may return cache_hit=true when the exact same build123d
-source was already executed. Pass thumbnail=false only when no visual check is
-needed (e.g. a pure dimensional edit judged by regression_diff).
-
-Reference-driven modelling: when the target is a real product/character/
-vehicle, call cad.set_reference_image first with image_url or image_path —
-every subsequent thumbnail will tile the reference next to the four views
-so proportions can be calibrated against the truth.
-
-Engineering parts (brackets / housings / fixtures): label parts with the
-canonical types from aieng/src/aieng/schemas/feature_graph.schema.json (base_plate,
-mounting_hole, rib, boss, flange, ...) and call cad.critique afterwards
-for a deterministic manufacturability audit (min wall thickness, standard
-hole sizes, floating components).
+CAD responses are compact over MCP and include a 4-view thumbnail
+(front/side/top/iso, ~300 image tokens): look at it. Set `.label` and
+`.color = Color(r, g, b)` on parts so they are named and visible. For a real
+product, character or vehicle, call cad.set_reference_image first so every
+thumbnail shows the reference beside the model. For mechanical parts use the
+canonical labels (base_plate, rib, boss, flange, mounting_hole) and check with
+cad.critique.
 """
 
 
@@ -899,14 +884,19 @@ def _build_mcp_server(name: str = "aieng-workbench", *, compact_surface: bool | 
                             read_guide_topics.update(agent_guides.TOPIC_SECTIONS)
                     elif topic:
                         read_guide_topics.add(topic)
-                elif (
-                    name_ == "aieng.agent_readme"
-                    and str(args.get("detail") or "").lower() == "full"
-                    and _requested_part(args) == 1
-                ):
+                elif name_ == "aieng.agent_readme":
                     from . import agent_guides
 
-                    read_guide_topics.update(agent_guides.TOPIC_SECTIONS)
+                    if str(args.get("detail") or "").lower() == "full":
+                        if _requested_part(args) == 1:
+                            read_guide_topics.update(agent_guides.TOPIC_SECTIONS)
+                    else:
+                        # The quickstart carries the cad and cae contracts in
+                        # full, so reading it is reading them.
+                        read_guide_topics.update(agent_guides.QUICKSTART_CONTRACT_TOPICS)
+
+                if name_ in _COMPACT_BY_DEFAULT_TOOLS and "response_detail" not in args:
+                    args = {**args, "response_detail": "compact"}
 
                 required_topic = _required_guide_topic(name_)
                 if (

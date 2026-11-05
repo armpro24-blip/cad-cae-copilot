@@ -52,8 +52,10 @@ and package-lifecycle tools require `package`. A skipped read returns
 `code: "guide_required"` without executing or requesting approval. The `cad`
 and `cae` topics are the short contracts below (**CAD contract**, **CAE
 contract**); `cad-reference` and `cae-reference` hold the longer rationale.
-Reading part 1 of `aieng.guide {topic: "full"}` or `aieng.agent_readme
-{detail: "full"}` — which contains both contracts — unlocks all categories. Operators may explicitly disable this guard with
+`aieng.agent_readme` returns the quickstart followed by both contracts, so
+reading it unlocks `cad` and `cae` — one onboarding call. Reading part 1 of
+`aieng.guide {topic: "full"}` or `aieng.agent_readme {detail: "full"}` — which
+contains both contracts — unlocks all categories. Operators may explicitly disable this guard with
 `AIENG_MCP_REQUIRE_GUIDES=0`.
 
 **The server answers during long calls.** Tool bodies run in worker threads, so

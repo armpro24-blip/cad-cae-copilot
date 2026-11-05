@@ -164,7 +164,7 @@ def test_agent_readme_defaults_to_compact_and_full_mode_remains_available(mcp_se
     full = json.loads(full_raw)
 
     assert quick["mode"] == "quickstart"
-    assert len(quick["content"]) < 8_000
+    assert len(quick["content"]) < 14_000  # quickstart + the cad and cae contracts
     assert full["mode"] == "full"
     assert len(full["content"]) > 50_000
     # Both modes carry the registry identity for stale-session detection (#29).
@@ -1007,3 +1007,55 @@ def test_compact_tool_surface_keeps_onboarding_and_cad_cae_tools() -> None:
     }
     missing = required - tools
     assert not missing, f"compact surface missing required tools: {missing}"
+
+
+def test_reading_the_quickstart_unlocks_the_cad_and_cae_tools(monkeypatch) -> None:
+    """The readme carries both contracts, so no separate guide call is required."""
+    import asyncio
+
+    import app.mcp_server as ms
+
+    def _probe(_inp: dict[str, Any], _ctx: dict[str, Any]) -> dict[str, Any]:
+        return {"status": "ok"}
+
+    _rt.register_tool("cae.readme_probe", _probe, read_only=True, description="probe")
+    try:
+        monkeypatch.delenv("AIENG_MCP_REQUIRE_GUIDES", raising=False)
+        monkeypatch.setattr(ms, "_BACKEND_URL", "")
+        mcp = ms._build_mcp_server()
+        blocked = json.loads(_tool_text(asyncio.run(mcp.call_tool("cae_readme_probe", {}))))
+        assert blocked["code"] == "guide_required"
+
+        asyncio.run(mcp.call_tool(_mcp_name("aieng.agent_readme"), {}))
+        allowed = json.loads(_tool_text(asyncio.run(mcp.call_tool("cae_readme_probe", {}))))
+        assert allowed == {"status": "ok"}
+    finally:
+        _rt._REGISTRY.pop("cae.readme_probe", None)
+
+
+def test_cad_tools_default_to_compact_over_mcp(monkeypatch) -> None:
+    """Concise by default for agents; an explicit choice is kept."""
+    import asyncio
+
+    import app.mcp_server as ms
+
+    seen: list[Any] = []
+
+    def _probe(inp: dict[str, Any], _ctx: dict[str, Any]) -> dict[str, Any]:
+        seen.append(inp.get("response_detail"))
+        return {"status": "ok"}
+
+    assert {"cad.execute_build123d", "cad.edit_parameter", "cad.replace_part",
+            "cad.remove_part"} == set(ms._COMPACT_BY_DEFAULT_TOOLS)
+    # A probe stands in for the CAD tools, which the modeling-plan gate would stop.
+    _rt.register_tool("cae.compact_probe", _probe, description="probe")
+    monkeypatch.setattr(ms, "_COMPACT_BY_DEFAULT_TOOLS", frozenset({"cae.compact_probe"}))
+    try:
+        monkeypatch.setenv("AIENG_MCP_REQUIRE_GUIDES", "0")
+        monkeypatch.setattr(ms, "_BACKEND_URL", "")
+        mcp = ms._build_mcp_server()
+        asyncio.run(mcp.call_tool("cae_compact_probe", {"project_id": "p1"}))
+        asyncio.run(mcp.call_tool("cae_compact_probe", {"project_id": "p1", "response_detail": "full"}))
+        assert seen == ["compact", "full"]
+    finally:
+        _rt._REGISTRY.pop("cae.compact_probe", None)

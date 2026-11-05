@@ -29,43 +29,18 @@ QUICKSTART = """\
 The `aieng-workbench` MCP tools are the interface. Do not browse `aieng/src/`
 to discover capabilities; it is not the runtime.
 
-## First three calls
+## Start
 
-1. `aieng.agent_readme` — this page.
-2. `aieng.list_projects` — project ids (or `aieng.create_project` for a new one).
-3. `aieng.agent_context {project_id}` — geometry, `@face:` pointers, stale
-   warnings, CAE state, suggested next steps.
+1. `aieng.agent_readme` — this page. It ends with the CAD and CAE contracts;
+   reading it satisfies the server's guide requirement for `cad.*`, `cae.*`,
+   `opt.*` and `postprocess.*` tools (a skipped read returns
+   `code: "guide_required"` with the exact `next_call`).
+2. `aieng.create_project` for a new part, or `aieng.list_projects` →
+   `aieng.agent_context {project_id}` for an existing one.
 
-## Guides are required per category, once per session
-
-Before the first CAD modeling or geometry-edit action, read
-`aieng.guide {topic:"cad"}`. Before the first simulation, solver,
-post-processing or optimization action, read `aieng.guide {topic:"cae"}`. Each
-is a short contract. Re-read a guide only if the session lost that context. The
-server enforces this: a skipped read returns `code: "guide_required"` with the
-exact `next_call`, and the tool does not run.
-
-Reference topics, only when the task needs them: `cad-reference` and
-`cae-reference` (why each rule exists, with the measured failures),
-`cad-helpers`, `cad-modes`, `cae-assembly`, `pointers`, `tools`, `workflows`,
-`package` (required before import/validation tools), `approvals`, `operators`,
-`fallback`, `frontend`, `review`, and `full` (the whole AGENTS.md, in parts).
-
-## Rules that apply everywhere
-
-- Before the first CAD mutation of a new request, show a concise plan through
-  your native question tool (Claude Code `AskUserQuestion`, Codex
-  `request_user_input`) with Approve / Revise / Cancel; without one, call
-  `cad.confirm_modeling_plan`. After approval, iterate without asking per call.
-- `cae.run_solver`, `cad.restore_snapshot`, `aieng.apply_shape_ir_patch` and
-  `aieng.delete_project` are approved individually.
-- Use `@face:` / `@feature:` / `@artifact:` pointers exactly as returned.
-- Never claim a solver result unless `cae.run_solver` completed and its results
-  were extracted. Report the result's `credibility` tier with it.
-- Follow a refusal's `code`, message and `recommended_next_calls`; do not work
-  around it.
-- Long tools (CAD builds, solves) keep running; do not repeat a call that has
-  not returned.
+The core tools, to load together: `aieng.create_project`,
+`cad.execute_build123d`, `cad.edit_parameter`, `cae.setup_static`,
+`cae.run_simulation_pipeline`.
 
 ## The core loop: build, analyse, resize, re-analyse
 
@@ -73,11 +48,22 @@ Reference topics, only when the task needs them: `cad-reference` and
 `cae.run_simulation_pipeline {project_id, mesh_size_mm}` → `cad.edit_parameter`
 → `cae.run_simulation_pipeline {project_id}` again. Each pipeline call meshes
 when the mesh is missing or older than the geometry, solves into a NEW run
-(`run_001`, then `run_002`, …), and returns the metrics, the mesh accuracy band
-and `change_since_previous_run` — the before/after, the same numbers
-`cae.compare_runs` gives. Driving the steps yourself also works; reusing an old
-mesh or the pre-edit deck is then refused (`stale_mesh`, `stale_deck`) rather
-than silently reporting the old numbers.
+(`run_001`, then `run_002`, …), and returns the bound setup, the metrics, the
+mesh accuracy band and `change_since_previous_run` — the before/after itself,
+so no separate `cae.compare_runs` call is needed. Driving the steps yourself also works; reusing
+an old mesh or the pre-edit deck is then refused (`stale_mesh`, `stale_deck`)
+rather than silently reporting the old numbers.
+
+Long tools (CAD builds, solves) keep running; do not repeat a call that has not
+returned. CAD responses are compact over MCP; pass `response_detail: "full"` for
+the full geometry report and feature graph.
+
+Reference topics via `aieng.guide {topic}`, only when the task needs them:
+`cad-reference` and `cae-reference` (why each rule exists), `cad-helpers`,
+`cad-modes`, `cae-assembly`, `package` (required before import/validation
+tools), `pointers`, `tools`, `workflows`, `approvals`, `operators`, `fallback`,
+`frontend`, `review`, and `full` (the whole AGENTS.md, in parts).
+Re-read a guide only if the session lost that context.
 """
 
 
@@ -258,15 +244,28 @@ def available_topics() -> list[str]:
     return [*TOPIC_SECTIONS, "full"]
 
 
+# The quickstart carries these contracts in full, so reading it satisfies their
+# guide gate. Measured 2026-11-05: onboarding was readme + guide cad + guide cae
+# — three calls and a turn before any work, for ~2k tokens of contract.
+QUICKSTART_CONTRACT_TOPICS = ("cad", "cae")
+
+
 def quickstart_result() -> dict[str, Any]:
+    """The onboarding page: quickstart followed by the CAD and CAE contracts."""
     _, path = read_full_guide()
+    contracts = "\n\n".join(guide_result(topic)["content"] for topic in QUICKSTART_CONTRACT_TOPICS)
+    surface = _version_surface()
     return {
-        "content": QUICKSTART,
+        "content": QUICKSTART + "\n" + contracts,
         "path": str(path),
         "mode": "quickstart",
         "available_topics": available_topics(),
-        "version_surface": _version_surface(),
-        "detail_hint": "MANDATORY: Call aieng.guide {topic} once per session before the first action of that category. Topic map — cad: geometry creation/edit, cae: simulation/solver, workflows: multi-step pipelines, approvals: gated tools, operators: admin actions, pointers: entity selection, package: import/export/lifecycle, fallback: non-MCP mode, frontend: UI development, tools: tool taxonomy, full: complete rules. Re-read only if session context was lost or the guide changed. Full reference: aieng.agent_readme {detail:'full'}."
+        # Versions only: the compatibility policy and hashes are for tooling
+        # (scripts/update_version_surface.py), not for an agent's context.
+        "version_surface": {
+            "version": surface.get("version"),
+            **{name: info.get("version") for name, info in (surface.get("surfaces") or {}).items()},
+        },
     }
 
 

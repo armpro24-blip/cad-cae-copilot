@@ -1298,9 +1298,10 @@ def register_aieng_tools(rt: Any, active_settings: Any, app_context: Any, _schem
         _tool_aieng_agent_readme,
         read_only=True,
         description=(
-            "Return compact operational onboarding. Read this once at the start of a session, "
-            "then use aieng.guide only for task-specific detail. detail=full returns the "
-            "complete AGENTS.md one part at a time (see `part`)."
+            "Onboarding: the quickstart followed by the CAD and CAE contracts. Read it once at "
+            "the start of a session; it satisfies the guide requirement for cad.*, cae.*, "
+            "opt.* and postprocess.* tools. aieng.guide serves reference topics on demand; "
+            "detail=full returns the complete AGENTS.md one part at a time (see `part`)."
         ),
         input_schema=_schema("aieng.agent_readme"),
     )
