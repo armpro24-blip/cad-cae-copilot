@@ -1693,7 +1693,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             if project_id and result.get("status") != "error":
                 from .. import target_comparison as _targets
 
-                acceptance = _targets.acceptance_verdict(active_settings, str(project_id))
+                acceptance = _targets.acceptance_verdict(active_settings, str(project_id), package_path)
                 if acceptance:
                     result["acceptance_verdict"] = acceptance
 

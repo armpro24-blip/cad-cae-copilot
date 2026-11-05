@@ -244,15 +244,36 @@ def test_acceptance_verdict_lists_only_what_did_not_pass(monkeypatch) -> None:
              "expected": {"value": 100}, "actual": {"value": 8.6}},
             {"target_type": "max_displacement", "status": "fail", "comparator": "<=",
              "expected": {"value": 0.001}, "actual": {"value": 0.0024}, "notes": "dropped"},
+            {"target_type": "first_natural_frequency", "status": "unknown",
+             "expected": {"value": 200}, "reason_code": "metric_missing"},
         ],
     })
     verdict = target_comparison.acceptance_verdict(None, "p1")
 
     assert verdict["summary"]["fail"] == 1
-    assert verdict["not_passed"] == [{
-        "target_type": "max_displacement", "comparator": "<=",
-        "expected": {"value": 0.001}, "actual": {"value": 0.0024}, "status": "fail",
-    }]
+    assert verdict["not_passed"] == [
+        {"target_type": "max_displacement", "comparator": "<=",
+         "expected": {"value": 0.001}, "actual": {"value": 0.0024}, "status": "fail"},
+        # reason_code tells the agent WHY it is unknown — kept, unlike free notes.
+        {"target_type": "first_natural_frequency", "expected": {"value": 200},
+         "status": "unknown", "reason_code": "metric_missing"},
+    ]
+
+
+def test_acceptance_verdict_is_omitted_for_a_package_other_than_the_projects(tmp_path, monkeypatch) -> None:
+    """An explicit package override must not get the project package's verdict."""
+    from app import target_comparison
+
+    project_pkg, variant_pkg = tmp_path / "project.aieng", tmp_path / "variant.aieng"
+    monkeypatch.setattr(target_comparison, "_resolve_package", lambda _s, _p: project_pkg)
+    monkeypatch.setattr(target_comparison, "compare_package_targets", lambda _s, _p: {
+        "summary": {"total": 1, "pass": 1}, "items": [{"status": "pass"}],
+    })
+
+    assert target_comparison.acceptance_verdict(None, "p1", variant_pkg) is None
+    assert target_comparison.acceptance_verdict(None, "p1", project_pkg) == {
+        "summary": {"total": 1, "pass": 1}, "not_passed": [],
+    }
 
 
 @pytest.mark.parametrize("comparison", [
