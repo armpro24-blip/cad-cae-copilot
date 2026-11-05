@@ -3715,6 +3715,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
     rt.register_tool(
         "cae.prepare_solver_run",
         _tool_cae_prepare_solver_run,
+        read_only=True,
         description=(
             "Inspect a .aieng package and return a reviewable solver run preflight plan. "
             "Checks for mesh, solver settings, load case, and input deck presence. "

@@ -37,6 +37,113 @@ def test_same_project_gets_one_lock_different_projects_do_not() -> None:
     assert a1 is not b, "unrelated projects must not block each other"
 
 
+def _text(call_result: object) -> str:
+    """Text payload of ``call_tool`` on either SDK major (list vs CallToolResult)."""
+    content = getattr(call_result, "content", call_result)
+    if isinstance(content, (list, tuple)) and content:
+        return getattr(content[0], "text", str(content[0]))
+    return str(content)
+
+
+def test_a_tool_that_does_not_declare_read_only_is_serialized_per_project(monkeypatch) -> None:
+    """Writing is the default: an undeclared tool must take the project lock.
+
+    The old default made every non-approval tool read-only, so 24 package
+    writers ran unlocked, and two of them sent in one message by an agent
+    interleaved inside one `.aieng` package.
+
+    Synchronized, not timed: the first call to enter the tool waits until the
+    other one is either inside the tool too (overlap) or blocked on the
+    project lock (contention). Without the lock the writer pair overlaps
+    deterministically; with it, the second call is observed waiting.
+    """
+    import asyncio
+
+    from app import runtime as rt
+
+    class _InstrumentedLock:
+        def __init__(self) -> None:
+            self._lock = threading.Lock()
+            self.contended = threading.Event()
+
+        def __enter__(self) -> "_InstrumentedLock":
+            # Contention is a failed acquire while the lock is held, not merely
+            # a second attempt: the latter would also fire if the dispatcher
+            # released the lock before running the tool.
+            if not self._lock.acquire(blocking=False):
+                self.contended.set()
+                self._lock.acquire()
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            self._lock.release()
+
+    lock = _InstrumentedLock()
+    guard = threading.Lock()
+    state: dict = {}
+
+    def _probe(_inp: dict, _ctx: dict) -> dict:
+        """Wait until the other call is inside the tool (overlap) or blocked on the lock."""
+        with guard:
+            state["calls"] += 1
+            state["active"] += 1
+            if state["active"] == 2:
+                state["both_inside"].set()
+        try:
+            deadline = time.monotonic() + 10
+            while not (state["both_inside"].is_set() or lock.contended.is_set()):
+                if time.monotonic() > deadline:
+                    # Returned, not raised: the server would turn an exception
+                    # into a tool_exception result, which _run_pair asserts on.
+                    return {"status": "timeout"}
+                time.sleep(0.005)
+            return {"status": "ok"}
+        finally:
+            with guard:
+                state["active"] -= 1
+
+    rt.register_tool("cae.write_probe", _probe, description="default-registered probe")
+    rt.register_tool("cae.read_probe", _probe, read_only=True, description="declared reader")
+    try:
+        # Pin everything else that could stop the overlap, so only the project
+        # lock can: inspection-only mode would block both calls before the probe,
+        # and a limiter of 1 would serialize them on its own.
+        monkeypatch.setenv("AIENG_MCP_REQUIRE_GUIDES", "0")
+        monkeypatch.delenv("AIENG_MCP_BLOCK_APPROVAL_TOOLS", raising=False)
+        monkeypatch.setenv("AIENG_MCP_MAX_CONCURRENT_TOOLS", "2")
+        monkeypatch.setattr(mcp_server, "_TOOL_THREAD_LIMITER", None)
+        monkeypatch.setattr(mcp_server, "_project_mutation_lock", lambda _key: lock)
+        monkeypatch.setattr(mcp_server, "_BACKEND_URL", "")
+        server = mcp_server._build_mcp_server()
+
+        def _run_pair(tool: str) -> dict:
+            """Call `tool` twice at once on one project; report calls made and whether they overlapped."""
+            state.update(calls=0, active=0, both_inside=threading.Event())
+
+            async def _both() -> list:
+                return await asyncio.gather(
+                    server.call_tool(tool, {"project_id": "same"}),
+                    server.call_tool(tool, {"project_id": "same"}),
+                )
+
+            results = [json.loads(_text(r)) for r in asyncio.run(_both())]
+            assert results == [{"status": "ok"}] * 2, f"a {tool} call did not complete: {results}"
+            return {"calls": state["calls"], "overlapped": state["both_inside"].is_set()}
+
+        # Control: a declared reader takes no lock, so both calls are inside at once.
+        reader = _run_pair("cae_read_probe")
+        assert reader == {"calls": 2, "overlapped": True}
+        assert not lock.contended.is_set(), "a declared reader must not take the project lock"
+
+        writer = _run_pair("cae_write_probe")
+        assert writer["calls"] == 2, "both calls must reach the tool"
+        assert lock.contended.is_set(), "the second write never waited on the project lock"
+        assert not writer["overlapped"], "two writes to one project ran at the same time"
+    finally:
+        rt._REGISTRY.pop("cae.write_probe", None)
+        rt._REGISTRY.pop("cae.read_probe", None)
+
+
 def test_concurrent_tool_count_is_bounded() -> None:
     limiter = mcp_server._tool_thread_limiter()
     assert limiter is mcp_server._tool_thread_limiter(), "limiter must be shared"

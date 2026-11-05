@@ -232,6 +232,21 @@ def test_full_guide_unlocks_all_guarded_categories(monkeypatch) -> None:
         monkeypatch.delenv("AIENG_MCP_REQUIRE_GUIDES", raising=False)
         monkeypatch.setattr(ms, "_BACKEND_URL", "")
         mcp = ms._build_mcp_server()
+        # A part on a topic that has no parts is ignored, even a value int()
+        # cannot parse: the gate records the topic as read before the handler
+        # runs, so the handler must not fail and leave a contract unserved.
+        served = json.loads(_tool_text(asyncio.run(
+            mcp.call_tool(_mcp_name("aieng.guide"), {"topic": "cad", "part": "²"})
+        )))
+        assert "## CAD contract" in served["content"]
+
+        # A later part does not carry the contracts, and an invalid part is
+        # refused rather than read as part 1 — neither unlocks anything.
+        for part in (2, 0, 1.5, -1, "x"):
+            asyncio.run(mcp.call_tool(_mcp_name("aieng.guide"), {"topic": "full", "part": part}))
+            blocked = json.loads(_tool_text(asyncio.run(mcp.call_tool("cae_guarded_probe", {"project_id": "p1"}))))
+            assert blocked["code"] == "guide_required", f"part={part!r} unlocked the gate"
+
         asyncio.run(mcp.call_tool(_mcp_name("aieng.agent_readme"), {"detail": "full"}))
 
         allowed = asyncio.run(mcp.call_tool("cae_guarded_probe", {"project_id": "p1"}))
@@ -298,6 +313,30 @@ def test_mcp_tools_advertise_standard_safety_annotations(mcp_server) -> None:
     assert read_only is not None
     assert _hint(read_only, "readOnlyHint") is True
     assert _hint(read_only, "destructiveHint") is False
+
+
+@pytest.mark.parametrize("tool_name", [
+    "cae.setup_static",
+    "cae.generate_mesh",
+    "cae.generate_solver_input",
+    "cae.apply_setup_patch",
+    "cae.extract_solver_results",
+    "opt.writeback_to_shape_ir",
+    "aieng.convert",
+    "report.generate",
+])
+def test_tools_that_write_do_not_claim_to_be_read_only(mcp_server, tool_name: str) -> None:
+    """Clients run `readOnlyHint: true` tools in parallel.
+
+    These write the package but were registered without an explicit flag, and
+    the old default (`not requires_approval`) called them read-only. Measured
+    2026-11-05: a headless Claude Code agent sent `cae.setup_static` and
+    `cae.generate_mesh` in one message, they ran concurrently, and the mesher
+    read a half-written package (`BadZipFile`).
+    """
+    annotations = _tool_dict(mcp_server)[_mcp_name(tool_name)].annotations
+    assert annotations is not None
+    assert _hint(annotations, "readOnlyHint") is False
 
 
 # ── FastMCP call_tool dispatch (real client path) ─────────────────────────────
@@ -450,6 +489,7 @@ def test_mcp_hard_block_does_not_block_safe_tools(monkeypatch) -> None:
         "test.safe_read",
         _safe,
         requires_approval=False,
+        read_only=True,  # a reader must say so; undeclared tools count as writers
         description="safe read",
         input_schema={"type": "object", "additionalProperties": True},
     )

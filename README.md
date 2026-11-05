@@ -529,8 +529,8 @@ of tested-vs-documented clients:
 ```
 
 Use `aieng.guide { topic }` for task-specific detail, or
-`aieng.agent_readme { detail: "full" }` when the complete canonical
-[`AGENTS.md`](AGENTS.md) is genuinely required.
+`aieng.agent_readme { detail: "full" }` (returned in parts) when the complete
+canonical [`AGENTS.md`](AGENTS.md) is genuinely required.
 
 **The sustainable modeling loop:**
 ```

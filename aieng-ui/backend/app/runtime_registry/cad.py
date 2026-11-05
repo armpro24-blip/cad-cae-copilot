@@ -57,6 +57,7 @@ def register_cad_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
     rt.register_tool(
         "cad.plan_build123d_skill",
         _tool_cad_plan_build123d_skill,
+        read_only=True,
         input_schema=_schema("cad.plan_build123d_skill"),
         description=(
             "Read-only CAD skill planner. Use this before cad.execute_build123d for common "
@@ -130,6 +131,7 @@ def register_cad_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
     rt.register_tool(
         "cad.get_source",
         _tool_cad_get_source,
+        read_only=True,
         input_schema=_schema("cad.get_source"),
         description=(
             "Read-only: return the project's accumulated build123d source code plus a "
@@ -220,6 +222,7 @@ def register_cad_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
     rt.register_tool(
         "cad.list_editable_parameters",
         _tool_cad_list_editable_parameters,
+        read_only=True,
         input_schema=_schema("cad.list_editable_parameters"),
         description=(
             "Read-only: list the CAD parameters that can be edited fast and deterministically "
@@ -244,6 +247,7 @@ def register_cad_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
     rt.register_tool(
         "cad.critique",
         _tool_cad_critique,
+        read_only=True,
         input_schema=_schema("cad.critique"),
         description=(
             "Run a deterministic engineering critique of the project geometry. Walks the "
@@ -272,6 +276,7 @@ def register_cad_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
     rt.register_tool(
         "cad.design_review",
         _tool_cad_design_review,
+        read_only=True,
         input_schema=_schema("cad.design_review"),
         description=(
             "Read-only self-review that synthesizes the deterministic critique, structural "
@@ -564,6 +569,7 @@ def register_cad_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
     rt.register_tool(
         "cad.get_named_part_bbox",
         _tool_cad_get_named_part_bbox,
+        read_only=True,
         input_schema=_schema("cad.get_named_part_bbox"),
         description=(
             "Read-only: look up a named part by its exact topology_map label and return "
@@ -769,6 +775,7 @@ def register_cad_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
     rt.register_tool(
         "cad.list_snapshots",
         _tool_cad_list_snapshots,
+        read_only=True,
         input_schema=_schema("cad.list_snapshots"),
         description=(
             "Read-only: list the recent CAD snapshots (undo timeline). A snapshot is "

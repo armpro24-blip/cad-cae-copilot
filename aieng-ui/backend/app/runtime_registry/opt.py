@@ -189,6 +189,7 @@ def register_opt_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
     rt.register_tool(
         "opt.derive_problem_from_cae",
         _tool_opt_derive_problem_from_cae,
+        read_only=True,
         description=(
             "Derive a 2D topology-optimization problem (grid + supports + loads + design "
             "space) from a project's CAE setup (simulation/setup.yaml supports/loads) + "

@@ -5,7 +5,8 @@ Codex, Cursor, Cline, …) working in this workspace. This is the single source 
 truth for detailed guidance — `CLAUDE.md` and `.github/copilot-instructions.md`
 point here. The MCP tool `aieng.agent_readme` returns a compact operational
 quickstart by default; `aieng.guide {topic}` extracts detailed sections from this
-file, and `aieng.agent_readme {detail: "full"}` returns the complete document.
+file, and `aieng.agent_readme {detail: "full"}` returns the complete document in
+parts that fit an MCP client's output budget (`part`, `parts_total`, `next_call`).
 
 ---
 
@@ -48,9 +49,11 @@ only when the complete canonical guide is genuinely required.
 The MCP server enforces task-guide reads per server session: CAD tools require
 the `cad` topic, CAE/post-processing/topology-optimization tools require `cae`,
 and package-lifecycle tools require `package`. A skipped read returns
-`code: "guide_required"` without executing or requesting approval. Reading
-`aieng.guide {topic: "full"}` or `aieng.agent_readme {detail: "full"}` unlocks
-all categories. Operators may explicitly disable this guard with
+`code: "guide_required"` without executing or requesting approval. The `cad`
+and `cae` topics are the short contracts below (**CAD contract**, **CAE
+contract**); `cad-reference` and `cae-reference` hold the longer rationale.
+Reading part 1 of `aieng.guide {topic: "full"}` or `aieng.agent_readme
+{detail: "full"}` — which contains both contracts — unlocks all categories. Operators may explicitly disable this guard with
 `AIENG_MCP_REQUIRE_GUIDES=0`.
 
 **The server answers during long calls.** Tool bodies run in worker threads, so
@@ -62,6 +65,163 @@ cannot interleave inside one `.aieng` package; and at most
 `AIENG_MCP_MAX_CONCURRENT_TOOLS` (default 8) tool bodies run at once. Do not
 read a slow tool as a dead server, and do not fire the same mutation twice
 because the first has not returned — it is running.
+
+**A tool is a writer unless it is registered `read_only=True`.** That one flag
+decides the per-project lock, the `readOnlyHint` clients use to run calls in
+parallel, and whether inspection-only mode blocks the tool. It used to default
+to `not requires_approval`, which labelled 24 package writers read-only
+(`cae.setup_static`, `cae.generate_mesh`, `opt.writeback_to_shape_ir`, …); in a
+2026-11-05 headless trial every agent run sent two writes to one project in a
+single message, and one run's mesher read a half-written package
+(`BadZipFile`). When you add a tool that writes nothing, say so; otherwise leave
+the default.
+
+---
+
+## CAD contract
+
+What `aieng.guide {topic: "cad"}` serves: the rules for `cad.*` tools. Why each
+rule exists, with the measured failures behind it, is in `cad-reference`; the
+helper catalogue is `cad-helpers`; design/engineering modes are `cad-modes`.
+Refusals return a `code` and a message that say what to do next — follow them.
+
+**Approval.** Before the first CAD mutation of a new request, show a short
+modeling plan (parts, key dimensions, assumptions) through your native question
+tool (Claude Code `AskUserQuestion`, Codex `request_user_input`) with Approve /
+Revise / Cancel; without one, call `cad.confirm_modeling_plan`. A printed "please
+confirm" is not a confirmation. After approval, iterate within the plan without
+asking again; ask again only if the goal or scope changes materially.
+`cad.restore_snapshot`, `aieng.apply_shape_ir_patch`, `aieng.delete_project` and
+`cae.run_solver` are approved individually.
+
+**Code contract for `cad.execute_build123d`.**
+- Bind the final model to a variable named **`result`**. No export calls.
+- Give every part a `.label` (canonical names for mechanical parts: `base_plate`,
+  `rib`, `boss`, `flange`, `wall`, `cover`, `mounting_hole_pattern`, …) and a
+  `.color = Color(r, g, b)`; combine parts with `Compound(children=[...])`.
+- Declare every dimension a user may change as an **UPPER_SNAKE_CASE** constant.
+  Literals cannot be edited by `cad.edit_parameter` or swept by `opt.*`.
+- Encode intent that must hold with `require(condition, "message")`; a violation
+  fails the build as `code: "design_rule_violation"`.
+- `mode: "replace"` (default) is the whole model. `mode: "append"` runs the stored
+  script first and exposes it as `previous_result`; use it only when
+  `cad.get_source` reports `has_base: true`, and still reassign `result`.
+- Pass `model_kind: "organic"` for characters, vehicles and products.
+- Pre-injected helpers (`housing`, `rib`, `boss`, `rounded_box`, `lofted_stack`, …)
+  need no import; see `cad-helpers`. Impossible helper inputs raise `ValueError`;
+  substitutions are reported in `helper_adjustments`.
+
+**Read every build response before the next step.**
+- Look at all four views of the thumbnail (front, side, top, iso), and compare
+  against the reference image when one is attached (`cad.set_reference_image`,
+  `cad.search_reference_image`).
+- `geometry_report_summary`: non-zero `floating` or `symmetry_issues` → call
+  `cad.design_review` and fix before reporting done.
+- `modeling_fidelity.level` `crude` or `basic` → not done; improve the form.
+- `editable_parameters.total == 0` → re-emit with named constants before done.
+- `helper_adjustments` → a helper built something other than what was asked.
+
+**Editing.**
+- Pure dimension change: `cad.list_editable_parameters` → `cad.edit_parameter
+  {featureId, parameterName, newValue}`. A parameter with `scope: "global"`
+  moves several parts.
+- Read `regression_diff.verdict`: `clean`; `collateral_change` (parts you did
+  not target moved — named in `collateral_parts`); `identical` (nothing changed;
+  wrong constant or a clamped value); `topology_changed` (a part appeared or
+  disappeared).
+- One part: `cad.replace_part {label, code}` / `cad.remove_part {label}`.
+- Undo: `cad.list_snapshots` → `cad.restore_snapshot` (approval; the current
+  state is not snapshotted first).
+- Any geometry change invalidates CAE results; re-analysing follows the
+  CAE contract (new mesh, new deck under a new `run_id`, `cae.compare_runs`).
+
+**Checks before calling a part done.** `cad.critique {process: cnc|sheet_metal|
+fdm|sla}` for manufacturability, `cad.design_review` for critique + symmetry +
+fixes, `cad.validate_targets` against a `cad.author_brief`, `cad.diagnose` for a
+`ready` / `needs_repair` verdict. All are read-only.
+
+**Pointers.** Use `@face:`, `@feature:`, `@edge:`, `@group:`, `@artifact:` ids
+exactly as tools return them; never invent one.
+
+---
+
+## CAE contract
+
+What `aieng.guide {topic: "cae"}` serves: the rules for `cae.*`, `opt.*` and
+`postprocess.*` tools. The measured failures behind each rule are in
+`cae-reference`; multi-part assemblies are `cae-assembly`. Refusals return a
+`code` and a message (often `recommended_next_calls`) — follow them, never
+work around them.
+
+**The static pipeline.**
+1. `cae.setup_static {project_id, material, fix, load: {at, force_n, direction}}`
+   — ordinary words: `bottom`/`top`/`left`/`right`/`front`/`back`, `±X/±Y/±Z`,
+   `largest flat face`, `bolt holes`, any of them scoped to a part
+   (`"rib_main top"`), or `@face:` ids. Read the echo (face, area, normal, part)
+   to confirm it bound what you meant. Ambiguous words return
+   `needs_user_input` with `candidates`: choose one, never guess. For anything
+   else (several load cases, thermal BCs, DOF ranges) use
+   `cae.apply_setup_patch`. To record a load case with acceptance criteria use
+   `cae.author_load_case`, then `cae.apply_load_case`.
+2. `cae.generate_mesh {mesh_size_mm}` — quadratic C3D10 by default. Read
+   `accuracy.band`.
+3. `cae.prepare_solver_run` — preflight; runs nothing. If not ready, follow
+   `recommended_next_calls` in order.
+4. `cae.generate_solver_input {run_id}` → `cae.run_solver {input_deck_path}`
+   (approval) → `cae.extract_solver_results` → optionally
+   `cae.extract_field_regions` and `postprocess.refresh_cae_summary`.
+5. `report.generate` writes an HTML report and returns its path.
+
+**Re-analysing after any geometry change** (`cad.edit_parameter`, a rebuild, a
+part edit):
+- Re-mesh (`cae.generate_mesh`). An old mesh is refused as `stale_mesh`.
+- Generate the deck under a **new** `run_id` (`run_002`, `run_003`, …). Reusing
+  a run id fails or overwrites the baseline; the refusal names a free id.
+- Solve with that run's `input_deck_path`. A pre-edit deck is refused as
+  `stale_deck`; a `run_id` that disagrees with the deck path as
+  `run_id_conflict`.
+- Faces that moved are re-found from the words recorded by `cae.setup_static`;
+  `cae.prepare_solver_run` reports `selector_rebind`. If a phrase no longer
+  picks the same faces it is refused (`unbound_setup_faces`): re-run
+  `cae.setup_static` with words that do.
+- Use `cae.compare_runs` for the before/after. It re-reads each run's own
+  result; `geometry_changed: false` means both runs solved the same geometry.
+  Stresses are compared peak to peak: check `peak_location` from
+  `cae.extract_field_regions` before saying a change happened "at" a place.
+
+**Analysis types** (`analysis_type` via `cae.apply_setup_patch`): `static`,
+`modal`, `buckling`, `thermal`, `thermal_structural`. Nothing else exists:
+no fatigue or durability, transient, nonlinear contact, bolt preload, or loads
+and restraints on edges or points. Say so instead of substituting another
+analysis — a yield-based sizing sweep is not a fatigue answer.
+
+**Before you quote a number.**
+- Never claim a solver result unless `cae.run_solver` completed and the
+  extraction returned values.
+- Report the `credibility` tier and its `qualifications` with the number:
+  `executed_solver_result` > `proxy_assembly_result` > `surrogate_prediction` >
+  `critique_finding`; `unverified`, `unreliable_mesh` and `stale_geometry` mean
+  the number must not be presented as a result.
+- Mesh `accuracy.band`: `unreliable` → the stress is likely under-predicted, so
+  refine and re-solve. `band: null` (not judged, e.g. hollow parts) → say so and
+  run `cae.mesh_convergence` (approval) before relying on it. The band is a
+  heuristic; only a converged `cae.mesh_convergence` establishes mesh
+  independence.
+- `max_von_mises_stress` is the peak of nodal-averaged stress; a sharp
+  concentration is higher. `max_temperature` is in the units of the applied
+  temperatures.
+- `cae.extract_field_regions` always returns clusters: check
+  `field_statistics.near_uniform` before calling one a hot spot.
+
+**Optimization and studies** (`opt.*`, `cae.mesh_convergence`; solving ones
+need approval). `opt.sizing_sweep` / `opt.doe_sizing_study` vary named
+constants only, never recommend a variant solved on an `unreliable` mesh, and
+apply a winner only with `apply_winner=true`. Topology derivation may return
+`needs_user_input`; resolve it (e.g. `design_space_node: "whole_model"`,
+`dimension: "3d"`) — do not pass the refusal on as a problem.
+
+**Solver missing.** If `cae.prepare_solver_run` reports no CalculiX, tell the
+user; installation is in `cae-reference`. Do not install it yourself.
 
 ---
 
@@ -1534,8 +1694,8 @@ expects as well as evidence it has — so it is carried through as
 
 | Tool | Purpose |
 |------|---------|
-| `aieng.agent_readme` | Compact operational quickstart by default; `detail: "full"` returns this complete guide |
-| `aieng.guide` | Task-specific detailed sections from this canonical guide. `cad` / `cae` carry the contract (and satisfy the gate); `cad-helpers`, `cad-modes`, `cae-assembly` hold the reference material they hand off via `see_also`; also `pointers`, `workflows`, `package`, … |
+| `aieng.agent_readme` | Compact operational quickstart by default; `detail: "full"` returns this complete guide, one `part` at a time |
+| `aieng.guide` | Task-specific sections of this guide. `cad` / `cae` are the short contracts (and satisfy the gate); `cad-reference`, `cae-reference`, `cad-helpers`, `cad-modes`, `cae-assembly` hold the reference material they hand off via `see_also`; also `pointers`, `workflows`, `package`, `review`, … `full` is paged with `part` |
 | `aieng.list_projects` | All known projects with id, name, status, and (for agent-built geometry) `named_parts` + `part_count` |
 | `aieng.find_projects_by_part` | Locate a project by a part label (case-insensitive substring on `named_parts`) |
 | `aieng.agent_context` | Compact context: pointers, stale warnings, next steps |

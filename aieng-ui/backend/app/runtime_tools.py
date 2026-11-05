@@ -145,6 +145,7 @@ def register_engineering_template_tools(rt: Any, settings: Settings) -> None:
     rt.register_tool(
         "engineering_template.preview",
         _engineering_template_tool("preview"),
+        read_only=True,
         description=(
             "Read-only preview of a controlled engineering template (CAD script preview, "
             "FEA setup draft, design target suggestions). No package write."

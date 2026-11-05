@@ -57,6 +57,7 @@ def register_standards_tools(rt: Any, active_settings: Any, app_context: Any, _s
     rt.register_tool(
         "list_materials",
         _tool_list_materials,
+        read_only=True,
         description="List all available engineering materials with properties. Optional filter by category or search query.",
         input_schema=_schema("list_materials"),
     )
@@ -68,6 +69,7 @@ def register_standards_tools(rt: Any, active_settings: Any, app_context: Any, _s
     rt.register_tool(
         "get_material_details",
         _tool_get_material_details,
+        read_only=True,
         description="Return full properties for a specific material including E, nu, density, yield strength, ultimate strength, thermal expansion.",
         input_schema=_schema("get_material_details"),
     )
@@ -81,6 +83,7 @@ def register_standards_tools(rt: Any, active_settings: Any, app_context: Any, _s
     rt.register_tool(
         "compare_materials",
         _tool_compare_materials,
+        read_only=True,
         description="Compare properties of two or more materials side by side with normalized scores.",
         input_schema=_schema("compare_materials"),
     )
@@ -96,6 +99,7 @@ def register_standards_tools(rt: Any, active_settings: Any, app_context: Any, _s
     rt.register_tool(
         "list_standard_parts",
         _tool_list_standard_parts,
+        read_only=True,
         description="List available standard part categories and types (fasteners, bearings, shafts, profiles, holes).",
         input_schema=_schema("list_standard_parts"),
     )
@@ -110,6 +114,7 @@ def register_standards_tools(rt: Any, active_settings: Any, app_context: Any, _s
     rt.register_tool(
         "get_standard_part_specs",
         _tool_get_standard_part_specs,
+        read_only=True,
         description="Return Shape IR spec and available presets for a standard part type.",
         input_schema=_schema("get_standard_part_specs"),
     )
@@ -171,6 +176,7 @@ def register_standards_tools(rt: Any, active_settings: Any, app_context: Any, _s
     rt.register_tool(
         "generate_bom",
         _tool_generate_bom,
+        read_only=True,
         description="Generate a Bill of Materials from the current project parts, including standard parts and their quantities.",
         input_schema=_schema("generate_bom"),
     )

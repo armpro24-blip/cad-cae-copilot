@@ -66,15 +66,48 @@ def test_quickstart_is_compact_and_preserves_first_three_calls() -> None:
     assert 'code: "guide_required"' in result["content"]
 
 
-def test_full_guide_compatibility_mode_returns_canonical_agents_md() -> None:
+def test_full_guide_is_served_whole_in_parts_that_fit_a_client_budget() -> None:
+    """Served in one piece, AGENTS.md (~46k tokens) exceeded Claude Code's 25k
+    MCP output limit, so the documented "read full" path was cut off."""
     from app import agent_guides
 
-    result = agent_guides.full_result()
+    canonical, _ = agent_guides.read_full_guide()
+    first = agent_guides.full_result()
+    parts = [agent_guides.full_result(n)["content"] for n in range(1, first["parts_total"] + 1)]
 
-    assert result["mode"] == "full"
-    assert result["path"].endswith("AGENTS.md")
-    assert len(result["content"]) > 50_000
-    assert "## What the workbench can actually do" in result["content"]
+    assert first["mode"] == "full"
+    assert first["path"].endswith("AGENTS.md")
+    assert "".join(parts) == canonical, "paging must not drop or repeat anything"
+    assert all(len(p) <= agent_guides.FULL_PART_MAX_CHARS for p in parts)
+    assert first["next_call"] == {"tool": "aieng.guide", "input": {"topic": "full", "part": 2}}
+    # The gate lets part 1 unlock every category, so part 1 must hold the contracts.
+    assert "## CAD contract" in first["content"]
+    assert "## CAE contract" in first["content"]
+    assert "next_call" not in agent_guides.full_result(first["parts_total"])
+    assert agent_guides.full_result(first["parts_total"] + 1)["code"] == "invalid_input"
+
+
+@pytest.mark.parametrize(("value", "expected"), [
+    (None, 1), (1, 1), (3, 3), (2.0, 2), ("2", 2),
+    (0, None), (-1, None), (1.5, None), (True, None), ("x", None), ("", None),
+    ("²", None),  # superscript two: isdigit() is True, int() raises
+])
+def test_part_parsing_keeps_the_default_but_refuses_explicit_invalid_values(value, expected) -> None:
+    """`int(part or 1)` read an explicit 0 as part 1 — the part that unlocks the gate."""
+    from app import agent_guides
+
+    assert agent_guides.parse_part(value) == expected
+
+
+def test_full_guide_split_never_cuts_a_code_fence() -> None:
+    """A blank line inside a fence is not a break point, even when the part is over budget."""
+    from app import agent_guides
+
+    text = "intro\n\n```python\nx = 1\n\ny = 2\n```\n\nouter\n"
+    parts = agent_guides.split_full_guide(text, max_chars=12)
+
+    assert "".join(parts) == text
+    assert any("x = 1\n\ny = 2" in part for part in parts)
 
 
 def test_topic_guide_extracts_only_requested_sections() -> None:
@@ -101,8 +134,8 @@ def test_core_topics_point_at_what_they_left_out() -> None:
     cad = agent_guides.guide_result("cad")
     cae = agent_guides.guide_result("cae")
 
-    assert {s["topic"] for s in cad["see_also"]} == {"cad-helpers", "cad-modes"}
-    assert {s["topic"] for s in cae["see_also"]} == {"cae-assembly"}
+    assert {s["topic"] for s in cad["see_also"]} == {"cad-reference", "cad-helpers", "cad-modes"}
+    assert {s["topic"] for s in cae["see_also"]} == {"cae-reference", "cae-assembly"}
     for entry in cad["see_also"] + cae["see_also"]:
         assert entry["when"], "a pointer without a 'when' is not actionable"
         assert entry["topic"] in agent_guides.TOPIC_SECTIONS
@@ -110,6 +143,27 @@ def test_core_topics_point_at_what_they_left_out() -> None:
     # Sub-topics point back at the contract they do not repeat.
     assert {s["topic"] for s in agent_guides.guide_result("cad-helpers")["see_also"]} == {"cad"}
     assert {s["topic"] for s in agent_guides.guide_result("cae-assembly")["see_also"]} == {"cae"}
+    assert {s["topic"] for s in agent_guides.guide_result("cad-reference")["see_also"]} == {"cad"}
+    assert {s["topic"] for s in agent_guides.guide_result("cae-reference")["see_also"]} == {"cae"}
+
+
+def test_required_reading_stays_small() -> None:
+    """The reads every CAD->CAE session must do before working.
+
+    Measured 2026-11-05 before the contract split: quickstart + cad + cae were
+    ~26k tokens, most of it the history behind guards that already explain
+    themselves when they refuse. Context spent there is context the agent does
+    not have for the task. ~6k tokens is the budget; rationale belongs in the
+    *-reference topics.
+    """
+    from app import agent_guides
+
+    required = (
+        agent_guides.quickstart_result()["content"]
+        + agent_guides.guide_result("cad")["content"]
+        + agent_guides.guide_result("cae")["content"]
+    )
+    assert len(required) < 24_000
 
 
 def test_split_kept_the_contract_in_the_mandatory_read() -> None:
@@ -117,19 +171,35 @@ def test_split_kept_the_contract_in_the_mandatory_read() -> None:
     from app import agent_guides
 
     cad = agent_guides.guide_result("cad")["content"]
-    assert "Bind the final model to a variable named **`result`**" in cad
-    assert "## Approval-gated tools" in cad
-    assert "UPPER_SNAKE_CASE" in cad
+    for rule in (
+        "Bind the final model to a variable named **`result`**",
+        "UPPER_SNAKE_CASE",
+        "cad.confirm_modeling_plan",
+        "AskUserQuestion",
+        "previous_result",
+        "regression_diff",
+        "editable_parameters.total == 0",
+        "cad.restore_snapshot",
+    ):
+        assert rule in cad, f"the cad contract lost {rule!r}"
 
     cae = agent_guides.guide_result("cae")["content"]
-    assert "Read `accuracy` before quoting a stress" in cae
-    assert "## Approval-gated tools" in cae
+    for rule in (
+        "accuracy.band",
+        "credibility",
+        "stale_mesh",
+        "new** `run_id`",
+        "needs_user_input",
+        "cae.mesh_convergence",
+        "No fatigue",
+    ):
+        assert rule.lower() in cae.lower(), f"the cae contract lost {rule!r}"
 
 
 def test_cad_topic_keeps_feedback_loop_after_python_comments() -> None:
     from app import agent_guides
 
-    content = agent_guides.guide_result("cad")["content"]
+    content = agent_guides.guide_result("cad-reference")["content"]
 
     assert "# step 2, mode=append" in content
     assert "**Visual feedback (multi-view contact sheet).**" in content
@@ -146,7 +216,7 @@ def test_cad_topic_keeps_feedback_loop_after_python_comments() -> None:
     ("topic", "required_fragments"),
     [
         (
-            "cae",
+            "cae-reference",
             (
                 "## Pointer syntax — `@kind:id`",
                 "**Free-form faces and CAE.**",

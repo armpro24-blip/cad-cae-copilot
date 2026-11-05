@@ -26,96 +26,71 @@ def _version_surface() -> dict[str, Any]:
 QUICKSTART = """\
 # aieng Workbench — MCP Quickstart
 
-Use the `aieng-workbench` MCP tools as the primary interface. Do not browse
-`aieng/src/` to discover runtime CAD capabilities; active CAD/CAE execution is
-implemented in `aieng-ui/backend`.
+The `aieng-workbench` MCP tools are the interface. Do not browse `aieng/src/`
+to discover capabilities; it is not the runtime.
 
 ## First three calls
 
-1. `aieng.agent_readme` — this compact operational guide.
-2. `aieng.list_projects` — discover project IDs.
-3. `aieng.agent_context {project_id}` — inspect current geometry, pointers,
-   stale-artifact warnings, CAE state, and suggested next steps.
+1. `aieng.agent_readme` — this page.
+2. `aieng.list_projects` — project ids (or `aieng.create_project` for a new one).
+3. `aieng.agent_context {project_id}` — geometry, `@face:` pointers, stale
+   warnings, CAE state, suggested next steps.
 
-## Core operating rules
+## Guides are required per category, once per session
 
-- Use `cad.execute_build123d` for geometry creation/add/remove. Bind the final
-  model to `result`; do not export manually. Name parts with `.label`, color
-  them with `.color`, and declare editable dimensions as UPPER_SNAKE_CASE.
-- Use `mode="append"` only after `cad.get_source` reports an existing base.
-- Use `cad.edit_parameter` for pure dimensional changes and inspect its
-  `regression_diff`.
-- After CAD generation, inspect the returned four-view thumbnail plus
-  `geometry_report`; do not judge geometry only from face counts.
-- Use `@face:...`, `@feature:...`, `@part:...`, and `@artifact:...` pointers
-  verbatim. Never invent a pointer.
-- Inspect CAE readiness before simulation. Material, loads, and constraints are
-  required. Never claim solver results unless `cae.run_solver` returned
-  successful evidence.
-- Before the first CAD mutation for a new request, show a concise plan through
-  the agent's native interactive question tool (Claude Code `AskUserQuestion`,
-  Codex `request_user_input`, or equivalent) with Approve / Revise / Cancel.
-  Fall back to `cad.confirm_modeling_plan` when no native question tool exists.
-  On approval, continue in the same task; ordinary CAD build/edit iterations
-  need no per-tool approval. Material scope changes need a new confirmation.
-- A normal `cad.execute_build123d` call writes/updates the project's `.aieng`
-  package by default. `write_files=false` is an explicit no-write exception.
+Before the first CAD modeling or geometry-edit action, read
+`aieng.guide {topic:"cad"}`. Before the first simulation, solver,
+post-processing or optimization action, read `aieng.guide {topic:"cae"}`. Each
+is a short contract. Re-read a guide only if the session lost that context. The
+server enforces this: a skipped read returns `code: "guide_required"` with the
+exact `next_call`, and the tool does not run.
 
-## Common workflows
+Reference topics, only when the task needs them: `cad-reference` and
+`cae-reference` (why each rule exists, with the measured failures),
+`cad-helpers`, `cad-modes`, `cae-assembly`, `pointers`, `tools`, `workflows`,
+`package` (required before import/validation tools), `approvals`, `operators`,
+`fallback`, `frontend`, `review`, and `full` (the whole AGENTS.md, in parts).
 
-- Inspect: `aieng.agent_context` → `aieng.inspect_package` as needed.
-- Build: context → `cad.get_source` → `cad.execute_build123d` → visual/numeric
-  review → iterate → `cad.critique` for engineering parts.
-- Modify dimension: context → `cad.list_editable_parameters` or source context
-  → `cad.edit_parameter` → inspect `regression_diff`.
-- Simulate: context/readiness → complete setup → `cae.prepare_solver_run` →
-  generate input if needed → approved `cae.run_solver` → extract/postprocess.
-- **Resize and re-analyse (the full loop, and the one to know):**
-  `cad.edit_parameter` → `cae.generate_mesh` →
-  `cae.generate_solver_input {run_id: "run_002"}` — **a NEW run id, not
-  optional** → `cae.run_solver {input_deck_path: ".../run_002/solver_input.inp"}`
-  → `cae.extract_solver_results` → `cae.compare_runs` for the before/after.
-  Each run owns its deck, FRD, log and the geometry revision the deck was built
-  for; reusing `run_001` either fails or overwrites the baseline you are
-  comparing against. Re-running the pre-edit deck is refused
-  (`code: "stale_deck"`) — without that guard it reported the old numbers as
-  the new ones: 0.0% change on a beam whose thickness had doubled.
+## Rules that apply everywhere
 
-## Detailed guides
+- Before the first CAD mutation of a new request, show a concise plan through
+  your native question tool (Claude Code `AskUserQuestion`, Codex
+  `request_user_input`) with Approve / Revise / Cancel; without one, call
+  `cad.confirm_modeling_plan`. After approval, iterate without asking per call.
+- `cae.run_solver`, `cad.restore_snapshot`, `aieng.apply_shape_ir_patch` and
+  `aieng.delete_project` are approved individually.
+- Use `@face:` / `@feature:` / `@artifact:` pointers exactly as returned.
+- Never claim a solver result unless `cae.run_solver` completed and its results
+  were extracted. Report the result's `credibility` tier with it.
+- Follow a refusal's `code`, message and `recommended_next_calls`; do not work
+  around it.
+- Long tools (CAD builds, solves) keep running; do not repeat a call that has
+  not returned.
 
-Call `aieng.guide {topic}` only when the task needs more detail. Available
-topics: `cad`, `cae`, `pointers`, `tools`, `workflows`, `package`, `fallback`,
-`frontend`, `approvals`, `operators`, and `full`.
+## The core loop: build, analyse, resize, re-analyse
 
-`cad` and `cae` carry the CONTRACT and are what the gate requires. Reference
-material is one call away when the task calls for it: `cad-helpers` (the
-pre-injected helper catalogue + curve patterns), `cad-modes` (industrial-design
-and engineering modes), `cae-assembly` (multi-part assemblies). Each core topic
-lists these under `see_also` with a plain "read this when…".
-
-Before the first CAD modeling or geometry-edit action in a session, read
-`aieng.guide {topic:"cad"}` once. Before the first simulation-planning or solver
-action, read `aieng.guide {topic:"cae"}` once. Re-read a guide only if the session
-lost that context or the guide changed. This preserves detailed discipline
-without repeatedly spending tokens on unchanged guidance.
-
-The MCP server enforces these category reads before CAD, CAE/post-processing/
-topology-optimization, and package-lifecycle tools. If a read was skipped, the
-tool returns `code: "guide_required"` with the exact `next_call` and does not
-execute or request approval. Reading the `full` guide unlocks all categories.
+`cad.execute_build123d` → `cae.setup_static` → `cae.generate_mesh` →
+`cae.generate_solver_input {run_id: "run_001"}` → `cae.run_solver` →
+`cae.extract_solver_results` → `cad.edit_parameter` → `cae.generate_mesh`
+again → `cae.generate_solver_input {run_id: "run_002"}` — a NEW run id →
+`cae.run_solver {input_deck_path: ".../run_002/solver_input.inp"}` →
+`cae.extract_solver_results` → `cae.compare_runs` for the before/after.
+Skipping the re-mesh or reusing the old deck is refused (`stale_mesh`,
+`stale_deck`) rather than silently reporting the old numbers.
 """
 
 
-# The mandatory pre-action reads (`cad`, `cae`) carry the CONTRACT — the rules an
-# agent must not violate. Reference material an agent needs only when the task
-# calls for it lives in sub-topics, fetched on demand. Measured before the split:
-# `cad` was ~5.5k tokens, of which the four design/reference sections were 53%;
-# `cae` was ~10.2k, of which Assembly IR v0 (irrelevant to every single-part
-# session) was 24%. Paid once per session per agent, that is a real tax on every
-# connected client. Only the core topics satisfy the guide gate — reading the
-# helper catalogue is not the same as reading the approval rules.
+# The mandatory pre-action reads (`cad`, `cae`) carry only the CONTRACT: the
+# rules an agent must apply on its own and how to read the responses. Rules the
+# code enforces explain themselves when they refuse, so their history — the
+# measured failures behind each guard — lives in `cad-reference` /
+# `cae-reference`. Measured before this split (2026-11-05): the gated reads were
+# cad ~7.7k and cae ~16.7k tokens, ~26k of required reading with the quickstart
+# before a CAD->CAE task could start; that history is maintainer rationale, not
+# operating instructions. Only the core topics satisfy the guide gate.
 TOPIC_SECTIONS: dict[str, tuple[str, ...]] = {
-    "cad": (
+    "cad": ("CAD contract",),
+    "cad-reference": (
         "Real 3D CAD modeling (no API key needed)",
         "Pointer syntax — `@kind:id`",
         "B — CAD generation from scratch",
@@ -133,22 +108,16 @@ TOPIC_SECTIONS: dict[str, tuple[str, ...]] = {
         "Industrial Design Mode — escape primitive stacking",
         "Engineering Mode — well-formed mechanical parts",
     ),
-    "cae": (
+    "cae": ("CAE contract",),
+    "cae-reference": (
         "Structural FEA (CalculiX)",
         "Pointer syntax — `@kind:id`",
+        "Credibility tiering (read the `credibility` stamp)",
         "CAE setup (no approval)",
         "Simulation execution (requires approval — runs external CalculiX)",
         "Post-processing (no approval)",
         "C — CAD → CAE simulation pipeline",
         "D — Inspect results and explain findings",
-        # The guide gate is per CATEGORY, and workflow E is where the re-solve
-        # contract lives: the new-`run_id` requirement, `stale_deck`,
-        # `run_id_conflict`, and `cae.compare_runs`. Those govern
-        # `cae.generate_solver_input` and `cae.run_solver` — both gated on THIS
-        # topic — yet the section was served only under `cad`. An agent doing
-        # exactly what the gate asks got the CAE tool list without the rules for
-        # the tools it had just been gated on, re-solved into `run_001`, and met
-        # guards whose explanation it was never shown.
         "E — Parametric modification (design iteration)",
         "Approval-gated tools",
         "Stale-artifact warnings",
@@ -211,6 +180,10 @@ TOPIC_SECTIONS: dict[str, tuple[str, ...]] = {
 # is only an improvement if the material it dropped stays findable.
 TOPIC_SEE_ALSO: dict[str, tuple[tuple[str, str], ...]] = {
     "cad": (
+        ("cad-reference",
+         "when a rule or response field needs its rationale — the measured "
+         "failures behind each CAD guard, the full response-field semantics, "
+         "and worked examples"),
         ("cad-helpers",
          "before writing lofts/sweeps/fillets by hand — the pre-injected helper "
          "catalogue (housing/rib/boss/capsule/…) and the curve patterns"),
@@ -219,13 +192,19 @@ TOPIC_SEE_ALSO: dict[str, tuple[tuple[str, str], ...]] = {
          "design mode) or a bracket/housing destined for CNC or FEA "
          "(engineering mode, canonical feature labels + DfM rules)"),
     ),
+    "cad-reference": (("cad", "the code contract, approval boundary and response fields"),),
     "cad-helpers": (("cad", "the code contract, approval boundary and response fields"),),
     "cad-modes": (("cad", "the code contract, approval boundary and response fields"),),
     "cae": (
+        ("cae-reference",
+         "when a refusal or result field needs its rationale — mesh accuracy, "
+         "binding and rebind mechanics, post-processing definitions, solver "
+         "installation, and the measured failures behind each guard"),
         ("cae-assembly",
          "only for MULTI-PART packages: Assembly IR, interfaces, proxy "
          "connections, bolt-preload honesty and assembly topology optimization"),
     ),
+    "cae-reference": (("cae", "the analysis contract, solver gate and result honesty rules"),),
     "cae-assembly": (("cae", "the analysis contract, solver gate and result honesty rules"),),
 }
 
@@ -290,21 +269,100 @@ def quickstart_result() -> dict[str, Any]:
     }
 
 
-def full_result() -> dict[str, Any]:
+# One part of the full guide must fit an MCP client's tool-output budget.
+# Claude Code's default is 25k tokens; the whole AGENTS.md is ~46k, so served in
+# one piece it was cut off and the "read full" path delivered half a guide.
+# 60k characters is ~15k tokens of this markdown.
+FULL_PART_MAX_CHARS = 60_000
+
+
+def split_full_guide(markdown: str, max_chars: int = FULL_PART_MAX_CHARS) -> list[str]:
+    """Split the guide into parts of at most ``max_chars``.
+
+    Breaks only at blank lines outside code fences, so no paragraph, table or
+    code block is cut in two. A single paragraph longer than ``max_chars``
+    becomes its own (oversized) part rather than being cut.
+    """
+    # Blocks end at a blank line outside a fence; parts are packed from whole blocks.
+    blocks: list[str] = []
+    current: list[str] = []
+    in_fence = False
+    for line in markdown.splitlines(keepends=True):
+        stripped = line.lstrip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = not in_fence
+        current.append(line)
+        if not in_fence and not line.strip():
+            blocks.append("".join(current))
+            current = []
+    if current:
+        blocks.append("".join(current))
+
+    parts: list[str] = []
+    part = ""
+    for block in blocks:
+        if part and len(part) + len(block) > max_chars:
+            parts.append(part)
+            part = ""
+        part += block
+    if part:
+        parts.append(part)
+    return parts or [""]
+
+
+def parse_part(value: Any) -> int | None:
+    """Return the requested full-guide part, or None when the value is invalid.
+
+    A missing part means part 1. An explicit 0, negative, fractional or
+    non-numeric value is invalid rather than silently read as 1 — part 1 is
+    the one that unlocks every guide category.
+    """
+    if value is None:
+        return 1
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    if isinstance(value, str):
+        try:
+            value = int(value.strip())  # "²".isdigit() is True but int("²") raises
+        except ValueError:
+            return None
+    if isinstance(value, int) and value >= 1:
+        return value
+    return None
+
+
+def full_result(part: int = 1) -> dict[str, Any]:
+    """Return one part of the complete AGENTS.md (part 1 holds both contracts)."""
     content, path = read_full_guide()
-    return {
-        "content": content,
+    parts = split_full_guide(content)
+    if not 1 <= part <= len(parts):
+        return {
+            "status": "error",
+            "code": "invalid_input",
+            "message": f"part must be between 1 and {len(parts)}",
+            "parts_total": len(parts),
+        }
+    result = {
+        "content": parts[part - 1],
         "path": str(path),
         "mode": "full",
+        "part": part,
+        "parts_total": len(parts),
         "available_topics": available_topics(),
         "version_surface": _version_surface(),
     }
+    if part < len(parts):
+        result["next_call"] = {"tool": "aieng.guide", "input": {"topic": "full", "part": part + 1}}
+    return result
 
 
-def guide_result(topic: str) -> dict[str, Any]:
+def guide_result(topic: str, part: int = 1) -> dict[str, Any]:
+    """One guide topic from AGENTS.md; `part` applies only to `full`, other topics ignore it."""
     normalized = topic.strip().lower()
     if normalized == "full":
-        return full_result()
+        return full_result(part)
     sections = TOPIC_SECTIONS.get(normalized)
     if not sections:
         return {
