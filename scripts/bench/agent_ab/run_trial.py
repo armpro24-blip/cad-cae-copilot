@@ -136,7 +136,7 @@ def main() -> int:
     parser.add_argument("--model", default="claude-sonnet-5-5")
     parser.add_argument("--max-budget-usd", default="8")
     parser.add_argument("--timeout-s", type=int, default=3600)
-    parser.add_argument("--task", choices=("bracket", "cantilever"), default="bracket")
+    parser.add_argument("--task", choices=("bracket", "cantilever", "sizing", "bracket_answer"), default="bracket")
     parser.add_argument("--native", action="store_true",
                         help="no workbench: the agent gets a shell and the same libraries")
     args = parser.parse_args()
@@ -155,11 +155,11 @@ def main() -> int:
     project_name = f"ab-{args.arm}-{args.index}"
     if args.task == "bracket":
         if args.native:
-            sys.exit("the bracket task is scored from the workbench package; use --task cantilever")
+            sys.exit("the bracket task is scored from the workbench package; use an answer-scored task")
         prompt = (HERE / "prompt.md").read_text(encoding="utf-8").format(project_name=project_name)
     else:
         tools = TOOLS_SENTENCE["native" if args.native else "mcp"].format(project_name=project_name)
-        prompt = (HERE / "task_cantilever.md").read_text(encoding="utf-8").format(tools=tools)
+        prompt = (HERE / f"task_{args.task}.md").read_text(encoding="utf-8").format(tools=tools)
     claude = shutil.which("claude")
     if claude is None:
         sys.exit("claude CLI not found on PATH")
@@ -189,10 +189,11 @@ def main() -> int:
 
     summary["task"] = args.task
     summary["native"] = args.native
-    if args.task == "cantilever":
-        from score_answer import score_cantilever
+    if args.task != "bracket":
+        import score_answer
 
-        summary["score"] = score_cantilever(summary.get("final_text"))
+        scorer = getattr(score_answer, f"score_{args.task}")
+        summary["score"] = scorer(summary.get("final_text"))
         summary["trial_status"] = "scored"
         return _finish(run_dir, summary)
 

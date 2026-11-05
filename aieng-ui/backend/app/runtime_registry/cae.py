@@ -190,6 +190,53 @@ def _load_magnitude_and_direction(
     return None, None
 
 
+def _attach_peak_singularity(package_path: Path, clusters: list[dict[str, Any]],
+                             warnings: list[str]) -> None:
+    """Give each stress cluster a `peak_singularity` verdict (see `stress_peak_check`)."""
+    import tempfile
+    import zipfile
+
+    from ..stress_peak_check import concave_edge_samples, judge_stress_peak
+
+    if not any(isinstance(c, dict) and c.get("peak_location") for c in clusters):
+        return
+    with zipfile.ZipFile(package_path) as zf:
+        names = set(zf.namelist())
+
+        def _read(member: str) -> Any:
+            return json.loads(zf.read(member)) if member in names else None
+
+        element_size = ((_read("simulation/mesh/mesh_metadata.json") or {}).get("target_size_mm"))
+        bcs = (_read("simulation/cae_imports/parsed_boundary_conditions.json") or {}).get(
+            "boundary_conditions") or []
+        step = zf.read("geometry/generated.step") if "geometry/generated.step" in names else None
+    # A rigid restraint of every translation is singular at its edge; a roller
+    # or symmetry plane (one DOF) is not.
+    fully_fixed = {
+        str(bc.get("id")) for bc in bcs if isinstance(bc, dict)
+        and int(bc.get("dof_start") or 0) <= 1 and int(bc.get("dof_end") or 0) >= 3
+    }
+    samples = None
+    if step is not None and isinstance(element_size, (int, float)) and element_size > 0:
+        with tempfile.TemporaryDirectory() as tmp:
+            step_path = Path(tmp) / "model.step"
+            step_path.write_bytes(step)
+            try:
+                samples = concave_edge_samples(step_path, float(element_size) / 4.0)
+            except Exception as exc:  # noqa: BLE001 - say the edges were not examined
+                warnings.append(f"sharp-edge check skipped: {type(exc).__name__}: {exc}")
+    for cluster in clusters:
+        peak = cluster.get("peak_location") if isinstance(cluster, dict) else None
+        if not peak:
+            continue
+        target = cluster.get("cae_target_ref")
+        cluster["peak_singularity"] = judge_stress_peak(
+            peak, concave_samples=samples,
+            element_size_mm=float(element_size) if isinstance(element_size, (int, float)) else None,
+            restraint_id=str(target) if target in fully_fixed else None,
+        )
+
+
 def _describe_cae_setup(package_path: Path) -> list[str]:
     """State the bound physics in engineering language, for a preflight read-back.
 
@@ -1863,6 +1910,13 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                     f"Field regions were extracted, but field summary refresh failed: {type(exc).__name__}: {exc}"
                 )
 
+        clusters = result.get("clusters", [])
+        if str(field).lower() in ("s", "stress"):
+            try:
+                _attach_peak_singularity(_Path(package_path_str), clusters, warnings)
+            except Exception as exc:  # noqa: BLE001 - the regions themselves were extracted
+                warnings.append(f"singularity check failed: {type(exc).__name__}: {exc}")
+
         # Refresh the CAE -> Shape IR result map so hotspots stay tied to nodes.
         cae_result_map_status = "ok"
         try:
@@ -1880,7 +1934,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             "out_path": result.get("out_path"),
             "cluster_count": result.get("cluster_count", 0),
             "cae_result_map_refreshed": cae_result_map_status,
-            "clusters": result.get("clusters", []),
+            "clusters": clusters,
             "warnings": warnings,
             "artifacts": [
                 {
@@ -2983,6 +3037,14 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                     changed_artifacts.append(art)
                     return True
                 except FileExistsError:
+                    # The deck `cae.generate_solver_input` wrote under this run
+                    # is the one just solved: already there, nothing refused.
+                    try:
+                        with _zipfile.ZipFile(package_path, "r") as zf:
+                            if zf.read(artifact_path) == source.read_bytes():
+                                return True
+                    except (KeyError, OSError, _zipfile.BadZipFile):
+                        pass
                     warnings.append(f"{artifact_path} already exists and overwrite=False")
                 except Exception as exc:
                     warnings.append(f"Failed to write {artifact_path}: {exc}")
@@ -3005,11 +3067,17 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                         "metrics come from the solver's output file, which was "
                         "not written into the package."
                     )
-            if dat_path:
-                _write_safe(f"{run_prefix}/outputs/result.dat", dat_path)
+            dat_in_package = bool(dat_path) and _write_safe(f"{run_prefix}/outputs/result.dat", dat_path)
 
             # Extract results if requested — route by analysis type: modal/buckling
             # read the .dat (eigenfrequencies / buckling factors), static reads FRD.
+            # `overwrite` protects this RUN's members. `results/computed_metrics.json`
+            # is the package's latest extraction, and once this run's own result
+            # file has landed it is this run's to replace: the earlier run keeps
+            # its own FRD, which is what `cae.compare_runs` reads. Passing the
+            # run-level `overwrite=False` through refused every re-solve's
+            # extraction, so `cae.run_simulation_pipeline` returned empty metrics
+            # after each edit.
             extraction_failed = False
             extracted_metrics: dict[str, Any] | None = None
             if extract_results and analysis_type in ("modal", "buckling") and dat_path:
@@ -3021,7 +3089,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                         aieng_root=active_settings.aieng_root,
                         load_case_id=load_case_id,
                         software=solver,
-                        overwrite=overwrite,
+                        overwrite=overwrite or dat_in_package,
                     )
                     extracted_metrics = ext_result.get("metrics")
                     changed_artifacts.extend(ext_result.get("artifacts", []))
@@ -3042,7 +3110,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                         aieng_root=active_settings.aieng_root,
                         load_case_id=load_case_id,
                         software=solver,
-                        overwrite=overwrite,
+                        overwrite=overwrite or frd_in_package,
                         # ...and only when the package member IS this run's FRD.
                         # If the write was refused (overwrite=False over an
                         # existing result), that member is the PREVIOUS run's
@@ -3887,6 +3955,22 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                     ],
                     "warnings": comparison.get("warnings") or [],
                 }
+        # Whether the peak stress is a number at all. Without the workbench, agents
+        # found the bracket's peak was a singularity with a three-mesh study; with
+        # it they ran none and quoted it with a hedge. The geometry says so at no
+        # solve cost.
+        has_stress = any("max_von_mises_stress" in m for m in findings["metrics"].values())
+        if has_stress:
+            regions = invoke("cae.extract_field_regions", {
+                "project_id": project_id, "field": "stress", "overwrite": True,
+                "frd_path": f"simulation/runs/{run_id}/outputs/result.frd",
+            })
+            clusters = regions.get("clusters") if isinstance(regions, dict) else None
+            peaks = [c for c in clusters or [] if isinstance(c, dict) and c.get("peak_singularity")]
+            if peaks:
+                top = max(peaks, key=lambda c: (c.get("magnitude") or {}).get("value") or 0.0)
+                findings["stress_peak"] = {"value_mpa": (top.get("magnitude") or {}).get("value"),
+                                           **top["peak_singularity"]}
         verdict = _targets.acceptance_verdict(active_settings, project_id, package_path)
         if verdict:
             findings["acceptance_verdict"] = verdict

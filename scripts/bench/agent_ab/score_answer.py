@@ -71,3 +71,88 @@ def score_cantilever(final_text: str | None) -> dict:
         "relative_error": errors,
         "task_success": within,
     }
+
+
+# Sizing task: the smallest thickness meeting tip deflection <= 0.5 mm and a
+# safety factor of 2 on a 276 MPa yield. Deflection governs (stress needs only
+# t >= 6.6 mm). Timoshenko deflection = bending + shear, because the 3D model
+# includes shear; at t ~ 16.7 mm shear adds ~0.6 %.
+DEFLECTION_LIMIT_MM, POISSON, SHEAR_COEFFICIENT = 0.5, 0.33, 5.0 / 6.0
+# Feasible within 1 % (a converged 3D model and Timoshenko agree to about that),
+# and no more than 5 % heavier than the lightest feasible beam.
+FEASIBILITY_SLACK, WASTE_LIMIT = 0.01, 0.05
+
+
+def timoshenko_tip_deflection(thickness_mm: float) -> float:
+    """Bending F L^3 / (3 E I) plus shear F L / (k G A)."""
+    shear_modulus = E_MPA / (2.0 * (1.0 + POISSON))
+    area = WIDTH_MM * thickness_mm
+    return (beam_reference(thickness_mm)["tip_deflection_mm"]
+            + FORCE_N * LENGTH_MM / (SHEAR_COEFFICIENT * shear_modulus * area))
+
+
+def minimum_thickness_mm() -> float:
+    """Bisection for the thickness at which the tip deflection equals the limit."""
+    low, high = 1.0, 100.0
+    for _ in range(80):
+        mid = (low + high) / 2.0
+        low, high = (mid, high) if timoshenko_tip_deflection(mid) > DEFLECTION_LIMIT_MM else (low, mid)
+    return high
+
+
+def score_sizing(final_text: str | None) -> dict:
+    """Is the reported thickness feasible, not wasteful, and its deflection consistent?"""
+    answer = extract_answer(final_text)
+    if answer is None:
+        return {"answer_found": False, "task_success": False}
+    t_min = minimum_thickness_mm()
+    try:
+        thickness = float(answer.get("thickness_mm"))
+        deflection = float(answer.get("tip_deflection_mm"))
+    except (TypeError, ValueError):
+        return {"answer_found": True, "answer": answer, "task_success": False, "reason": "non-numeric answer"}
+    expected_deflection = timoshenko_tip_deflection(thickness)
+    deflection_error = (deflection - expected_deflection) / expected_deflection
+    feasible = thickness >= t_min * (1.0 - FEASIBILITY_SLACK)
+    not_wasteful = thickness <= t_min * (1.0 + WASTE_LIMIT)
+    consistent = abs(deflection_error) <= DEFLECTION_TOLERANCE
+    return {
+        "answer_found": True,
+        "answer": answer,
+        "reference_min_thickness_mm": round(t_min, 3),
+        "thickness_excess": round(thickness / t_min - 1.0, 4),
+        "deflection_relative_error": round(deflection_error, 4),
+        "feasible": feasible,
+        "not_wasteful": not_wasteful,
+        "deflection_consistent": consistent,
+        "task_success": feasible and not_wasteful and consistent,
+    }
+
+
+# Bracket answer task. No closed form: the reference is a mesh-convergence study
+# through the workbench (quadratic tets at 4 / 2.8 / 2 / 1.4 mm, GCI < 0.6 %,
+# apparent order ~2.2), Richardson-extrapolated. Only displacement is scored:
+# the peak von Mises sits on the sharp rib-to-plate corner, a singularity that
+# kept rising under refinement (11.1 -> 17.6 MPa at 8 mm).
+BRACKET_REFERENCE = {"before": {"max_displacement_mm": 0.00504}, "after": {"max_displacement_mm": 0.002437}}
+
+
+def score_bracket_answer(final_text: str | None) -> dict:
+    """Relative error of each reported max displacement against the converged reference."""
+    answer = extract_answer(final_text)
+    if answer is None:
+        return {"answer_found": False, "task_success": False}
+    errors: dict[str, float | None] = {}
+    for case, reference in BRACKET_REFERENCE.items():
+        try:
+            reported = float((answer.get(case) or {}).get("max_displacement_mm"))
+            errors[case] = round((reported - reference["max_displacement_mm"]) / reference["max_displacement_mm"], 4)
+        except (TypeError, ValueError):
+            errors[case] = None
+    return {
+        "answer_found": True,
+        "answer": answer,
+        "reference": BRACKET_REFERENCE,
+        "displacement_relative_error": errors,
+        "task_success": all(e is not None and abs(e) <= DEFLECTION_TOLERANCE for e in errors.values()),
+    }

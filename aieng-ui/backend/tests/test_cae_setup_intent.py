@@ -144,3 +144,43 @@ def test_describe_face_is_readable_by_a_human() -> None:
     line = describe_face(_BRACKET["entities"][2], {"body_001": "base_plate"})
     assert "@face:face_001" in line and "plane" in line
     assert "9600.0 mm²" in line and "on base_plate" in line
+
+
+# The rib FUSED into the plate — one solid, so a part name cannot tell them
+# apart. Measured on an agent's first build: "top" took the plate face and the
+# rib's 500 N landed on it.
+_FUSED_BRACKET = {
+    "entities": [
+        {"id": "body_001", "type": "solid", "name": "base_plate"},
+        _face("face_003", normal=(0, 0, 1), area=8985.8, center=[0.0, 0.0, 8.0]),     # plate top
+        _face("face_005", normal=(0, 0, -1), area=9285.8, center=[0.0, 0.0, 0.0]),    # plate bottom
+        _face("face_016", normal=(0, 0, 1), area=300.0, center=[0.0, 0.0, 33.0]),     # rib top
+        _face("face_017", normal=(0, 0, -1), area=900.0, center=[0.0, 0.0, 5.0]),     # pocket roof
+    ]
+}
+
+
+def test_top_of_a_stepped_part_is_refused_with_both_readings() -> None:
+    hit = resolve_face_intent(_FUSED_BRACKET, "top")
+    assert hit["status"] == "ambiguous"
+    assert hit["face_ids"] == []
+    assert [c.split()[0] for c in hit["candidates"]] == ["@face:face_003", "@face:face_016"]
+
+
+def test_bottom_resolves_when_the_largest_face_is_also_the_outermost() -> None:
+    """A downward face further in (a pocket's roof) does not make "bottom" ambiguous."""
+    hit = resolve_face_intent(_FUSED_BRACKET, "bottom")
+    assert hit["status"] == "ok"
+    assert hit["face_ids"] == ["face_005"]
+
+
+def test_a_part_scope_still_resolves_on_separate_bodies_with_positions() -> None:
+    separate = {"entities": [
+        {"id": "body_001", "type": "solid", "name": "base_plate"},
+        {"id": "body_002", "type": "solid", "name": "rib_main"},
+        _face("face_002", normal=(0, 0, 1), area=9500.0, center=[0.0, 0.0, 8.0]),
+        _face("face_020", normal=(0, 0, 1), area=300.0, center=[0.0, 0.0, 33.0], body="body_002"),
+    ]}
+    assert resolve_face_intent(separate, "base_plate top")["face_ids"] == ["face_002"]
+    assert resolve_face_intent(separate, "rib_main top")["face_ids"] == ["face_020"]
+    assert resolve_face_intent(separate, "top")["status"] == "ambiguous"

@@ -212,8 +212,13 @@ analysis — a yield-based sizing sweep is not a fatigue answer.
   heuristic; only a converged `cae.mesh_convergence` establishes mesh
   independence.
 - `max_von_mises_stress` is the peak of nodal-averaged stress; a sharp
-  concentration is higher. `max_temperature` is in the units of the applied
-  temperatures.
+  concentration is higher. Read `stress_peak` (pipeline) or each cluster's
+  `peak_singularity` (`cae.extract_field_regions`): `singular: true` means the
+  peak sits at a sharp concave edge or on a fully fixed face, where linear
+  elasticity has no finite stress and refinement raises it without limit —
+  quote the displacement or a stress away from it, never that peak.
+  `singular: false` is not convergence. `max_temperature` is in the units of
+  the applied temperatures.
 - `cae.extract_field_regions` always returns clusters: check
   `field_statistics.near_uniform` before calling one a hot spot.
 
@@ -2036,7 +2041,11 @@ What makes it safe rather than merely convenient:
   three steps later (or never).
 - Ambiguous wording is **refused** with the real candidate faces listed, never
   guessed: two same-size faces pointing the same way, or a phrase it cannot
-  parse, both return `needs_user_input` + `candidates`.
+  parse, both return `needs_user_input` + `candidates`. So does a direction on
+  a stepped part where the largest face that way is not the outermost one
+  (`"top"` of a plate with a rib fused on: the plate face or the rib top?) —
+  it used to take the largest, and an agent's 500 N meant for the rib landed on
+  the plate.
 - A sloped face still resolves when it is genuinely the most `top`-facing
   surface (a triangular gusset's hypotenuse), but is reported as
   `inclined 32° from top` at medium confidence — never as if it were flat-on.

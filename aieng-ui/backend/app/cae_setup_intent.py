@@ -51,6 +51,8 @@ _ALIGNMENT_MIN = 0.85
 _INCLINED_MIN = 0.2
 # Two candidates whose areas are within this ratio are "equally good" → ambiguous.
 _AMBIGUOUS_AREA_RATIO = 0.9
+# Faces closer than this along the requested axis sit at the same level.
+_LEVEL_TOLERANCE_MM = 1e-3
 
 
 def _faces(topology: dict[str, Any]) -> list[dict[str, Any]]:
@@ -142,6 +144,15 @@ def _alignment(face: dict[str, Any], axis: int, sign: float) -> float | None:
 def _area(face: dict[str, Any]) -> float:
     value = face.get("area")
     return float(value) if isinstance(value, (int, float)) else 0.0
+
+
+def _position(face: dict[str, Any], axis: int, sign: float) -> float:
+    """How far out the face sits in the requested direction; unknown sits nowhere."""
+    center = face.get("center")
+    try:
+        return float(center[axis]) * sign
+    except (TypeError, ValueError, IndexError):
+        return float("-inf")
 
 
 def face_signature(topology: dict[str, Any], face_id: str) -> dict[str, Any] | None:
@@ -374,6 +385,23 @@ def resolve_face_intent(topology: dict[str, Any], intent: Any) -> dict[str, Any]
             "scope it to a part (e.g. \"base_plate bottom\") or pass an @face: pointer",
             [f for _c, f in aligned[:6]], body_names,
         )
+
+    # "The top" has two readings — the biggest upward face and the highest one —
+    # and on a stepped part they are different faces. Measured on a plate with
+    # a rib fused onto it: "top" took the 8986 mm² plate face at z = 8 and the
+    # 500 N meant for the 300 mm² rib top at z = 33 landed on the plate. When
+    # the readings agree (a plate's outer bottom is also its lowest face, pocket
+    # or not) there is nothing to ask.
+    if not inclined:
+        outermost = max(aligned, key=lambda pair: _position(pair[1], axis, sign))[1]
+        if (outermost is not best
+                and _position(outermost, axis, sign) - _position(best, axis, sign) > _LEVEL_TOLERANCE_MM):
+            return _fail(
+                f"{matched_word}{scope_note} could mean the largest {matched_word}-facing face "
+                f"or the outermost one, and they differ; scope it to a part (e.g. \"rib "
+                f"{matched_word}\") or pass an @face: pointer",
+                [best, outermost], body_names,
+            )
 
     note = ""
     if inclined:
