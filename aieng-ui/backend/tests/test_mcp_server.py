@@ -232,6 +232,14 @@ def test_full_guide_unlocks_all_guarded_categories(monkeypatch) -> None:
         monkeypatch.delenv("AIENG_MCP_REQUIRE_GUIDES", raising=False)
         monkeypatch.setattr(ms, "_BACKEND_URL", "")
         mcp = ms._build_mcp_server()
+        # A part on a topic that has no parts is ignored, even a value int()
+        # cannot parse: the gate records the topic as read before the handler
+        # runs, so the handler must not fail and leave a contract unserved.
+        served = json.loads(_tool_text(asyncio.run(
+            mcp.call_tool(_mcp_name("aieng.guide"), {"topic": "cad", "part": "²"})
+        )))
+        assert "## CAD contract" in served["content"]
+
         # A later part does not carry the contracts, and an invalid part is
         # refused rather than read as part 1 — neither unlocks anything.
         for part in (2, 0, 1.5, -1, "x"):

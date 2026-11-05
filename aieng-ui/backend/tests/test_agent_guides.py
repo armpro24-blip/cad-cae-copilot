@@ -90,6 +90,7 @@ def test_full_guide_is_served_whole_in_parts_that_fit_a_client_budget() -> None:
 @pytest.mark.parametrize(("value", "expected"), [
     (None, 1), (1, 1), (3, 3), (2.0, 2), ("2", 2),
     (0, None), (-1, None), (1.5, None), (True, None), ("x", None), ("", None),
+    ("²", None),  # superscript two: isdigit() is True, int() raises
 ])
 def test_part_parsing_keeps_the_default_but_refuses_explicit_invalid_values(value, expected) -> None:
     """`int(part or 1)` read an explicit 0 as part 1 — the part that unlocks the gate."""

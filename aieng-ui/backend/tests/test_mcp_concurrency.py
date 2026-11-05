@@ -43,20 +43,48 @@ def test_a_tool_that_does_not_declare_read_only_is_serialized_per_project(monkey
     The old default made every non-approval tool read-only, so 24 package
     writers ran unlocked, and two of them sent in one message by an agent
     interleaved inside one `.aieng` package.
+
+    Synchronized, not timed: the first call to enter the tool waits until the
+    other one is either inside the tool too (overlap) or blocked on the
+    project lock (contention). Without the lock the writer pair overlaps
+    deterministically; with it, the second call is observed waiting.
     """
     import asyncio
 
     from app import runtime as rt
 
-    state = {"active": 0, "overlapped": False, "calls": 0}
+    class _InstrumentedLock:
+        def __init__(self) -> None:
+            self._lock = threading.Lock()
+            self._attempts = 0
+            self._count_guard = threading.Lock()
+            self.contended = threading.Event()
+
+        def __enter__(self) -> "_InstrumentedLock":
+            with self._count_guard:
+                self._attempts += 1
+                if self._attempts >= 2:
+                    self.contended.set()
+            self._lock.acquire()
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            self._lock.release()
+
+    lock = _InstrumentedLock()
     guard = threading.Lock()
+    state: dict = {}
 
     def _probe(_inp: dict, _ctx: dict) -> dict:
         with guard:
             state["calls"] += 1
             state["active"] += 1
-            state["overlapped"] = state["overlapped"] or state["active"] > 1
-        time.sleep(0.3)
+            if state["active"] == 2:
+                state["both_inside"].set()
+        deadline = time.monotonic() + 10
+        while not (state["both_inside"].is_set() or lock.contended.is_set()):
+            assert time.monotonic() < deadline, "the second call neither entered nor waited"
+            time.sleep(0.005)
         with guard:
             state["active"] -= 1
         return {"status": "ok"}
@@ -71,11 +99,12 @@ def test_a_tool_that_does_not_declare_read_only_is_serialized_per_project(monkey
         monkeypatch.delenv("AIENG_MCP_BLOCK_APPROVAL_TOOLS", raising=False)
         monkeypatch.setenv("AIENG_MCP_MAX_CONCURRENT_TOOLS", "2")
         monkeypatch.setattr(mcp_server, "_TOOL_THREAD_LIMITER", None)
+        monkeypatch.setattr(mcp_server, "_project_mutation_lock", lambda _key: lock)
         monkeypatch.setattr(mcp_server, "_BACKEND_URL", "")
         server = mcp_server._build_mcp_server()
 
         def _run_pair(tool: str) -> dict:
-            state.update(active=0, overlapped=False, calls=0)
+            state.update(calls=0, active=0, both_inside=threading.Event())
 
             async def _both() -> None:
                 await asyncio.gather(
@@ -84,14 +113,16 @@ def test_a_tool_that_does_not_declare_read_only_is_serialized_per_project(monkey
                 )
 
             asyncio.run(_both())
-            return dict(state)
+            return {"calls": state["calls"], "overlapped": state["both_inside"].is_set()}
 
-        # Control: a declared reader takes no lock, so the harness must show overlap.
+        # Control: a declared reader takes no lock, so both calls are inside at once.
         reader = _run_pair("cae_read_probe")
-        assert reader["calls"] == 2 and reader["overlapped"], "harness did not run the calls in parallel"
+        assert reader == {"calls": 2, "overlapped": True}
+        assert not lock.contended.is_set(), "a declared reader must not take the project lock"
 
         writer = _run_pair("cae_write_probe")
         assert writer["calls"] == 2, "both calls must reach the tool"
+        assert lock.contended.is_set(), "the second write never waited on the project lock"
         assert not writer["overlapped"], "two writes to one project ran at the same time"
     finally:
         rt._REGISTRY.pop("cae.write_probe", None)

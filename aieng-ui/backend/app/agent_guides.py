@@ -323,8 +323,11 @@ def parse_part(value: Any) -> int | None:
         return None
     if isinstance(value, float) and value.is_integer():
         value = int(value)
-    if isinstance(value, str) and value.strip().isdigit():
-        value = int(value.strip())
+    if isinstance(value, str):
+        try:
+            value = int(value.strip())  # "²".isdigit() is True but int("²") raises
+        except ValueError:
+            return None
     if isinstance(value, int) and value >= 1:
         return value
     return None

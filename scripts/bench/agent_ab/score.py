@@ -20,26 +20,66 @@ import zipfile
 # model's total height grows by exactly the thickness change.
 EXPECTED_HEIGHT_GAIN_MM = 4.0
 HEIGHT_TOLERANCE_MM = 0.05
+# The prompt's load: 500 N in -Z, applied identically before and after the edit.
+EXPECTED_FORCE_N = (0.0, 0.0, -500.0)
+FORCE_TOLERANCE_N = 5.0
 
 
-def _deck_height(package: zipfile.ZipFile, run_id: str) -> float | None:
-    """Z extent of the run's mesh nodes, read from its own solver deck."""
+def _deck_facts(package: zipfile.ZipFile, run_id: str) -> dict | None:
+    """What the run actually solved, read from its own deck.
+
+    height: z extent of the mesh nodes; force: resultant of the *CLOAD entries
+    per DOF 1-3; elastic: the *ELASTIC data line; boundary: the *BOUNDARY lines.
+    """
     try:
         deck = package.read(f"simulation/runs/{run_id}/solver_input.inp").decode("utf-8", "replace")
     except KeyError:
         return None
-    match = re.search(r"^\*NODE[^\n]*\n(.*?)(?=^\*)", deck, re.M | re.S | re.I)
-    if not match:
-        return None
-    zs = []
-    for line in match.group(1).splitlines():
-        fields = line.split(",")
-        if len(fields) >= 4:
-            try:
+    zs: list[float] = []
+    force = [0.0, 0.0, 0.0]
+    elastic: str | None = None
+    boundary: list[str] = []
+    keyword = ""
+    for raw in deck.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("**"):
+            continue
+        if line.startswith("*"):
+            keyword = line.split(",")[0].upper()
+            continue
+        fields = [f.strip() for f in line.split(",")]
+        try:
+            if keyword == "*NODE" and len(fields) >= 4:
                 zs.append(float(fields[3]))
-            except ValueError:
-                continue
-    return max(zs) - min(zs) if zs else None
+            elif keyword == "*CLOAD" and len(fields) >= 3 and fields[1] in ("1", "2", "3"):
+                force[int(fields[1]) - 1] += float(fields[2])
+            elif keyword == "*ELASTIC" and elastic is None:
+                elastic = ",".join(fields)
+            elif keyword == "*BOUNDARY":
+                boundary.append(",".join(fields))
+        except ValueError:
+            continue
+    return {
+        "height": max(zs) - min(zs) if zs else None,
+        "force": [round(f, 3) for f in force],
+        "elastic": elastic,
+        "boundary": sorted(boundary),
+    }
+
+
+def _setup_problems(before: dict, after: dict) -> list[str]:
+    """Reasons the two runs did not solve the requested, identical setup."""
+    problems = []
+    for label, facts in (("before", before), ("after", after)):
+        if any(abs(f - e) > FORCE_TOLERANCE_N for f, e in zip(facts["force"], EXPECTED_FORCE_N)):
+            problems.append(f"{label}: applied force {facts['force']} N, expected {list(EXPECTED_FORCE_N)}")
+        if not facts["elastic"] or not facts["boundary"]:
+            problems.append(f"{label}: deck records no material or no restraint")
+    if before["elastic"] != after["elastic"]:
+        problems.append(f"material changed: {before['elastic']} -> {after['elastic']}")
+    if before["boundary"] != after["boundary"]:
+        problems.append("restraints changed between the runs")
+    return problems
 
 
 def _solved_runs(package: zipfile.ZipFile) -> list[str]:
@@ -104,8 +144,14 @@ def main() -> int:
 
     settings = Settings.from_env()
     package_path = resolve_project_path(settings, project_id, get_project(settings, project_id).get("aieng_file"))
+    if package_path is None or not package_path.exists():
+        # The agent produced no package: a failed task, not an unscorable trial.
+        score.update(package_found=False, task_success=False)
+        print(json.dumps(score, default=str))
+        return 0
     with zipfile.ZipFile(package_path) as package:
-        heights = {run: _deck_height(package, run) for run in _solved_runs(package)}
+        facts = {run: _deck_facts(package, run) for run in _solved_runs(package)}
+    heights = {run: (f or {}).get("height") for run, f in facts.items()}
     score["run_heights_mm"] = {run: None if h is None else round(h, 3) for run, h in heights.items()}
     pair = _edit_pair(heights)
     score["edit_pair_found"] = pair is not None
@@ -127,17 +173,24 @@ def main() -> int:
         score[name] = {"before": row.get("before"), "after": row.get("after"),
                        "change_pct": round(pct, 2) if isinstance(pct, (int, float)) else None}
     score["compare_warnings"] = comparison.get("warnings")
+    # A lower stress after the edit means nothing if the load or restraint
+    # changed with it: check what each deck actually applied.
+    score["setup_problems"] = _setup_problems(facts[pair[0]], facts[pair[1]])
+    score["applied_force_n"] = {run: facts[run]["force"] for run in pair}
     if comparison.get("status") != "ok":
         score["compare_message"] = comparison.get("message")
 
     # The promised task succeeded only in the requested project, with a solve
-    # before and after the 8 -> 12 mm edit, and the thicker plate no worse in
-    # either metric. A fallback project is scored for diagnosis only.
+    # before and after the 8 -> 12 mm edit under the same requested load,
+    # material and restraints, and the thicker plate no worse in either metric.
+    # A fallback project is scored for diagnosis only.
     stress = score["max_von_mises_stress"]["change_pct"]
     disp = score["max_displacement"]["change_pct"]
     score["task_success"] = bool(
         score["project_found"]
         and score["geometry_changed"] is True
+        and score["binding_count_changed"] is False
+        and not score["setup_problems"]
         and stress is not None and disp is not None
         and stress < 0 and disp < 0
     )
