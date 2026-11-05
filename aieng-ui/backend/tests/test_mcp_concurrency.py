@@ -37,6 +37,14 @@ def test_same_project_gets_one_lock_different_projects_do_not() -> None:
     assert a1 is not b, "unrelated projects must not block each other"
 
 
+def _text(call_result: object) -> str:
+    """Text payload of ``call_tool`` on either SDK major (list vs CallToolResult)."""
+    content = getattr(call_result, "content", call_result)
+    if isinstance(content, (list, tuple)) and content:
+        return getattr(content[0], "text", str(content[0]))
+    return str(content)
+
+
 def test_a_tool_that_does_not_declare_read_only_is_serialized_per_project(monkeypatch) -> None:
     """Writing is the default: an undeclared tool must take the project lock.
 
@@ -56,16 +64,15 @@ def test_a_tool_that_does_not_declare_read_only_is_serialized_per_project(monkey
     class _InstrumentedLock:
         def __init__(self) -> None:
             self._lock = threading.Lock()
-            self._attempts = 0
-            self._count_guard = threading.Lock()
             self.contended = threading.Event()
 
         def __enter__(self) -> "_InstrumentedLock":
-            with self._count_guard:
-                self._attempts += 1
-                if self._attempts >= 2:
-                    self.contended.set()
-            self._lock.acquire()
+            # Contention is a failed acquire while the lock is held, not merely
+            # a second attempt: the latter would also fire if the dispatcher
+            # released the lock before running the tool.
+            if not self._lock.acquire(blocking=False):
+                self.contended.set()
+                self._lock.acquire()
             return self
 
         def __exit__(self, *_exc: object) -> None:
@@ -81,13 +88,18 @@ def test_a_tool_that_does_not_declare_read_only_is_serialized_per_project(monkey
             state["active"] += 1
             if state["active"] == 2:
                 state["both_inside"].set()
-        deadline = time.monotonic() + 10
-        while not (state["both_inside"].is_set() or lock.contended.is_set()):
-            assert time.monotonic() < deadline, "the second call neither entered nor waited"
-            time.sleep(0.005)
-        with guard:
-            state["active"] -= 1
-        return {"status": "ok"}
+        try:
+            deadline = time.monotonic() + 10
+            while not (state["both_inside"].is_set() or lock.contended.is_set()):
+                if time.monotonic() > deadline:
+                    # Returned, not raised: the server would turn an exception
+                    # into a tool_exception result, which _run_pair asserts on.
+                    return {"status": "timeout"}
+                time.sleep(0.005)
+            return {"status": "ok"}
+        finally:
+            with guard:
+                state["active"] -= 1
 
     rt.register_tool("cae.write_probe", _probe, description="default-registered probe")
     rt.register_tool("cae.read_probe", _probe, read_only=True, description="declared reader")
@@ -106,13 +118,14 @@ def test_a_tool_that_does_not_declare_read_only_is_serialized_per_project(monkey
         def _run_pair(tool: str) -> dict:
             state.update(calls=0, active=0, both_inside=threading.Event())
 
-            async def _both() -> None:
-                await asyncio.gather(
+            async def _both() -> list:
+                return await asyncio.gather(
                     server.call_tool(tool, {"project_id": "same"}),
                     server.call_tool(tool, {"project_id": "same"}),
                 )
 
-            asyncio.run(_both())
+            results = [json.loads(_text(r)) for r in asyncio.run(_both())]
+            assert results == [{"status": "ok"}] * 2, f"a {tool} call did not complete: {results}"
             return {"calls": state["calls"], "overlapped": state["both_inside"].is_set()}
 
         # Control: a declared reader takes no lock, so both calls are inside at once.

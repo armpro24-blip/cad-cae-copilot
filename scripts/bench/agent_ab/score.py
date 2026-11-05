@@ -25,52 +25,96 @@ DIMENSION_TOLERANCE_MM = 0.05
 # Nodes this close to the footprint's outer edge belong to the plate only: the
 # centred 60 x 5 mm rib is far from the 120 x 80 mm plate's edge.
 EDGE_BAND_MM = 0.5
+# Two meshes sample the same bolt hole at different nodes: measured, the XY
+# centroids of one hole moved by up to 0.5 mm between the 8 and 12 mm meshes.
+# The holes are 50 mm apart with a 5 mm radius, so 1 mm still tells holes apart.
+RESTRAINT_TOLERANCE_MM = 1.0
 # The prompt's load: 500 N in -Z, applied identically before and after the edit.
 EXPECTED_FORCE_N = (0.0, 0.0, -500.0)
 FORCE_TOLERANCE_N = 5.0
+
+
+_MATERIAL_CARDS = ("*ELASTIC", "*DENSITY", "*EXPANSION", "*CONDUCTIVITY", "*PLASTIC")
 
 
 def _deck_facts(package: zipfile.ZipFile, run_id: str) -> dict | None:
     """What the run actually solved, read from its own deck.
 
     plate: z extent of the nodes on the footprint's outer edge (plate only);
-    rib: total z extent minus the plate; force: resultant of the *CLOAD entries
-    per DOF 1-3; elastic: the *ELASTIC data line; boundary: the *BOUNDARY lines.
+    rib: total z extent minus the plate; force: resultant of the *CLOAD
+    entries per DOF 1-3, an NSET target counting once per member node;
+    material: every data line of the material property cards; restraints: per
+    *BOUNDARY entry, the XY centroid of the restrained nodes with its DOF range
+    and value — independent of NSET names and of the plate thickness, since the
+    bolt holes are vertical.
     """
     try:
         deck = package.read(f"simulation/runs/{run_id}/solver_input.inp").decode("utf-8", "replace")
     except KeyError:
         return None
-    nodes: list[tuple[float, float, float]] = []
-    force = [0.0, 0.0, 0.0]
-    elastic: str | None = None
-    boundary: list[str] = []
-    keyword = ""
+    nodes: dict[int, tuple[float, float, float]] = {}
+    nsets: dict[str, list[int]] = {}
+    cloads: list[list[str]] = []
+    boundaries: list[list[str]] = []
+    material: list[str] = []
+    keyword, nset, generate = "", None, False
     for raw in deck.splitlines():
         line = raw.strip()
         if not line or line.startswith("**"):
             continue
         if line.startswith("*"):
-            keyword = line.split(",")[0].upper()
+            parts = [p.strip().upper() for p in line.split(",")]
+            keyword = parts[0]
+            nset = next((p.split("=", 1)[1] for p in parts[1:] if p.startswith("NSET=")), None)
+            generate = "GENERATE" in parts[1:]
+            if keyword == "*NSET" and nset:
+                nsets.setdefault(nset, [])
             continue
-        fields = [f.strip() for f in line.split(",")]
+        fields = [f.strip() for f in line.split(",") if f.strip()]
         try:
             if keyword == "*NODE" and len(fields) >= 4:
-                nodes.append((float(fields[1]), float(fields[2]), float(fields[3])))
-            elif keyword == "*CLOAD" and len(fields) >= 3 and fields[1] in ("1", "2", "3"):
-                force[int(fields[1]) - 1] += float(fields[2])
-            elif keyword == "*ELASTIC" and elastic is None:
-                elastic = ",".join(fields)
-            elif keyword == "*BOUNDARY":
-                boundary.append(",".join(fields))
+                nodes[int(fields[0])] = (float(fields[1]), float(fields[2]), float(fields[3]))
+            elif keyword == "*NSET" and nset:
+                if generate:
+                    first, last, step = (int(v) for v in (fields + ["1"])[:3])
+                    nsets[nset].extend(range(first, last + 1, step))
+                else:
+                    nsets[nset].extend(int(v) for v in fields)
+            elif keyword == "*CLOAD" and len(fields) >= 3:
+                cloads.append(fields)
+            elif keyword == "*BOUNDARY" and len(fields) >= 2:
+                boundaries.append(fields)
+            elif keyword in _MATERIAL_CARDS:
+                material.append(keyword + ":" + ",".join(fields))
         except ValueError:
             continue
+
+    def members(target: str) -> list[int]:
+        return [int(target)] if target.isdigit() else nsets.get(target.upper(), [])
+
+    force = [0.0, 0.0, 0.0]
+    for target, dof, value, *_ in cloads:
+        if dof in ("1", "2", "3"):
+            force[int(dof) - 1] += float(value) * len(members(target))
+
+    restraints = []
+    for target, first, *rest in boundaries:
+        points = [nodes[n] for n in members(target) if n in nodes]
+        if not points:
+            restraints.append(("unresolved", target))
+            continue
+        last = rest[0] if rest else first
+        value = rest[1] if len(rest) > 1 else "0"
+        cx = sum(p[0] for p in points) / len(points)
+        cy = sum(p[1] for p in points) / len(points)
+        restraints.append((round(cx, 2), round(cy, 2), first, last, value))
+
     plate = rib = None
     if nodes:
-        xs, ys, zs = zip(*nodes)
+        xs, ys, zs = zip(*nodes.values())
         x_lo, x_hi, y_lo, y_hi = min(xs), max(xs), min(ys), max(ys)
         edge_z = [
-            z for x, y, z in nodes
+            z for x, y, z in nodes.values()
             if min(x - x_lo, x_hi - x, y - y_lo, y_hi - y) <= EDGE_BAND_MM
         ]
         plate = max(edge_z) - min(edge_z)
@@ -79,8 +123,8 @@ def _deck_facts(package: zipfile.ZipFile, run_id: str) -> dict | None:
         "plate": plate,
         "rib": rib,
         "force": [round(f, 3) for f in force],
-        "elastic": elastic,
-        "boundary": sorted(boundary),
+        "material": material,
+        "restraints": sorted(restraints, key=str),
     }
 
 
@@ -90,13 +134,39 @@ def _setup_problems(before: dict, after: dict) -> list[str]:
     for label, facts in (("before", before), ("after", after)):
         if any(abs(f - e) > FORCE_TOLERANCE_N for f, e in zip(facts["force"], EXPECTED_FORCE_N)):
             problems.append(f"{label}: applied force {facts['force']} N, expected {list(EXPECTED_FORCE_N)}")
-        if not facts["elastic"] or not facts["boundary"]:
+        if not facts["material"] or not facts["restraints"]:
             problems.append(f"{label}: deck records no material or no restraint")
-    if before["elastic"] != after["elastic"]:
-        problems.append(f"material changed: {before['elastic']} -> {after['elastic']}")
-    if before["boundary"] != after["boundary"]:
-        problems.append("restraints changed between the runs")
+        if any(r[0] == "unresolved" for r in facts["restraints"]):
+            problems.append(f"{label}: a restraint target names no nodes")
+    if before["material"] != after["material"]:
+        problems.append("material changed between the runs")
+    unmatched = _unmatched_restraints(before["restraints"], after["restraints"])
+    if unmatched:
+        problems.append(f"restraints changed: {unmatched}")
     return problems
+
+
+def _unmatched_restraints(before: list, after: list) -> list:
+    """Restraints with no counterpart: same DOFs and value, centroid within tolerance.
+
+    Matched one to one, so four holes restrained before must be four holes
+    restrained after — a dropped or duplicated hole stays unmatched.
+    """
+    remaining = list(after)
+    unmatched = []
+    for entry in before:
+        candidates = [
+            other for other in remaining
+            if entry[0] != "unresolved" and other[0] != "unresolved"
+            and entry[2:] == other[2:]
+            and abs(entry[0] - other[0]) <= RESTRAINT_TOLERANCE_MM
+            and abs(entry[1] - other[1]) <= RESTRAINT_TOLERANCE_MM
+        ]
+        if candidates:
+            remaining.remove(min(candidates, key=lambda o: abs(o[0] - entry[0]) + abs(o[1] - entry[1])))
+        else:
+            unmatched.append(("before", entry))
+    return unmatched + [("after", other) for other in remaining]
 
 
 def _solved_runs(package: zipfile.ZipFile) -> list[str]:
