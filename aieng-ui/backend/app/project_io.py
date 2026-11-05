@@ -1779,6 +1779,41 @@ def _feature_list_from_graph(feature_graph: dict[str, Any]) -> list[dict[str, An
     return []
 
 
+def _declares_parameter(feature: dict[str, Any], parameter_name: str) -> bool:
+    params = feature.get("parameters", [])
+    if isinstance(params, dict):
+        params = [{"name": k, **(v if isinstance(v, dict) else {})} for k, v in params.items()]
+    return any(
+        isinstance(p, dict) and parameter_name in (p.get("name"), p.get("cad_parameter_name"))
+        for p in params or []
+    )
+
+
+def _resolve_edit_feature(
+    features: list[dict[str, Any]], feature_id: str, parameter_name: str,
+) -> dict[str, Any] | None:
+    """The feature an edit targets: by id, else by part name, else by its constant.
+
+    Agents address a dimension the way they wrote it — the part label they set
+    and the UPPER_SNAKE_CASE constant they declared (`beam`, `THICKNESS`) — not
+    by the graph's internal ids (`feat_body_001`, `thickness_mm`). Measured on
+    2026-11-05 headless trials, that mismatch cost every workbench run a refused
+    edit and a cad.list_editable_parameters round trip. Each fallback must be
+    unambiguous: two features with the name, or a constant declared on several
+    features, resolve to nothing and the caller's error lists the ids.
+    """
+    by_id = [f for f in features if f.get("id") == feature_id]
+    if by_id:
+        return by_id[0]
+    by_name = [f for f in features if feature_id and f.get("name") == feature_id]
+    if len(by_name) == 1 and _declares_parameter(by_name[0], parameter_name):
+        return by_name[0]
+    declaring = [f for f in features if parameter_name and _declares_parameter(f, parameter_name)]
+    if len(declaring) == 1:
+        return declaring[0]
+    return None
+
+
 def _validate_cad_parameter_edit_contract(
     package_path: Path,
     feature_id: str,
@@ -1792,7 +1827,7 @@ def _validate_cad_parameter_edit_contract(
         feature_graph = json.loads(zf.read("graph/feature_graph.json"))
 
     features = _feature_list_from_graph(feature_graph)
-    feature = next((f for f in features if f.get("id") == feature_id), None)
+    feature = _resolve_edit_feature(features, feature_id, parameter_name)
     if feature is None:
         # Name what IS there — an agent (or a flaky-test log) needs the actual
         # ids to re-target, not just the absence.

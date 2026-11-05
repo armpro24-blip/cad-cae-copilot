@@ -263,3 +263,35 @@ def _append_to_package(pkg_path: Path, member: str, content: str) -> None:
             dst.writestr(item, src.read(item.filename))
         dst.writestr(member, content)
     shutil.move(str(tmp), str(pkg_path))
+
+
+def test_pipeline_without_a_run_id_writes_a_new_run_and_overwrites_nothing(tmp_path: Path) -> None:
+    """The one-call re-solve after an edit must not destroy the baseline run.
+
+    The defaults were run_id "pipeline_run_001" and overwrite=True, so a second
+    call replaced the first run's deck and results — the comparison an edit is
+    for became impossible, on the path that is supposed to be the short one.
+    """
+    settings = _make_settings(tmp_path)
+    create_app(settings)
+    project_id, pkg_path = _make_project(settings, "pipeline-defaults")
+    with zipfile.ZipFile(pkg_path, "a") as zf:
+        zf.writestr("simulation/runs/run_001/solver_input.inp", "*HEADING\n")
+
+    from app import runtime as _rt
+
+    real_invoke = _rt.invoke_tool
+    calls: dict[str, dict[str, Any]] = {}
+    fake = _fake_invoke_tool(real_invoke)
+
+    def _recording(tool: str, inp: dict[str, Any]) -> Any:
+        calls[tool] = dict(inp)
+        return fake(tool, inp)
+
+    with patch("app.runtime.invoke_tool", side_effect=_recording):
+        result = _rt.invoke_tool("cae.run_simulation_pipeline", {"project_id": project_id, "mesh_size_mm": 2.5})
+
+    assert result["status"] == "ok"
+    for tool in ("cae.generate_solver_input", "cae.run_solver"):
+        assert calls[tool]["run_id"] == "run_002", f"{tool} must target the next free run"
+    assert calls["cae.generate_solver_input"].get("overwrite") is False

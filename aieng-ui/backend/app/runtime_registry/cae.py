@@ -3826,12 +3826,16 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 "tool": "cae.run_simulation_pipeline",
             }
 
-        run_id: str = inp.get("runId") or inp.get("run_id") or "pipeline_run_001"
+        requested_run_id: str | None = inp.get("runId") or inp.get("run_id")
         load_case_id: str = inp.get("loadCaseId") or inp.get("load_case_id") or "load_case_001"
         task_description = str(inp.get("task_description") or "").strip()
         mesh_size_raw = inp.get("mesh_size_mm", inp.get("meshSizeMm"))
         timeout_seconds: int = int(inp.get("timeout_seconds", inp.get("timeoutSeconds", 180)))
-        overwrite: bool = bool(inp.get("overwrite", True))
+        # Never destroy an earlier result by default. This was True with a fixed
+        # "pipeline_run_001", so solving again after an edit overwrote the
+        # baseline that cae.compare_runs needs — the one-call path silently did
+        # what the step-by-step path refuses.
+        overwrite: bool = bool(inp.get("overwrite", False))
 
         # Resolve package path once.
         proj = get_project(active_settings, project_id)
@@ -3843,6 +3847,16 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 "message": f"Project {project_id} has no .aieng package.",
                 "tool": "cae.run_simulation_pipeline",
             }
+
+        if requested_run_id:
+            run_id = str(requested_run_id)
+        else:
+            # Each pipeline call is a new run, named like every other run
+            # (run_NNN), so a re-solve after an edit never touches the baseline.
+            import zipfile as _zipfile
+
+            with _zipfile.ZipFile(package_path) as _zf:
+                run_id = next_run_id(set(_zf.namelist()))
 
         phase_results: dict[str, Any] = {}
 
@@ -4022,10 +4036,12 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             "[APPROVAL REQUIRED] Run the full CAE simulation pipeline in one call: "
             "optionally derive the FEA setup with AI preprocessing, generate the FE mesh, "
             "assemble the CalculiX solver deck, run the solver, extract results, and refresh "
-            "the result summary. Pass task_description to auto-derive simulation/setup.yaml "
-            "and simulation/cae_mapping.json from geometry; omit it when a setup already "
-            "exists. Typical input: {project_id, task_description: 'Bracket fixed at bolt holes, "
-            "500 N downward on top face', mesh_size_mm: 2.5, run_id: 'pipeline_run_001'}."
+            "the result summary. With a setup from cae.setup_static, the usual call is "
+            "{project_id, mesh_size_mm} — one call per solve, also after a CAD edit (pass "
+            "mesh_size_mm again so the mesh matches the edited geometry). Each call writes a "
+            "NEW run (the next free run_NNN) and never overwrites an earlier one, so "
+            "cae.compare_runs can compare them. Pass task_description only to derive the setup "
+            "with AI preprocessing (needs an API key)."
         ),
         input_schema=_schema("cae.run_simulation_pipeline"),
     )

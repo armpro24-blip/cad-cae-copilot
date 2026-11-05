@@ -122,9 +122,11 @@ asking again; ask again only if the goal or scope changes materially.
 - `helper_adjustments` → a helper built something other than what was asked.
 
 **Editing.**
-- Pure dimension change: `cad.list_editable_parameters` → `cad.edit_parameter
-  {featureId, parameterName, newValue}`. A parameter with `scope: "global"`
-  moves several parts.
+- Pure dimension change: `cad.edit_parameter {featureId, parameterName,
+  newValue}`. Your own part label and constant work (`featureId: "beam",
+  parameterName: "THICKNESS"`) when they are unambiguous; otherwise
+  `cad.list_editable_parameters` lists the ids. A parameter with
+  `scope: "global"` moves several parts.
 - Read `regression_diff.verdict`: `clean`; `collateral_change` (parts you did
   not target moved — named in `collateral_parts`); `identical` (nothing changed;
   wrong constant or a clamped value); `topology_changed` (a part appeared or
@@ -172,6 +174,11 @@ work around them.
    `acceptance_verdict` lists each requirement that did not pass) → optionally
    `cae.extract_field_regions` and `postprocess.refresh_cae_summary`.
 5. `report.generate` writes an HTML report and returns its path.
+
+Steps 2-4 in one call: `cae.run_simulation_pipeline {project_id, mesh_size_mm}`
+(approval) meshes, writes the deck and solves into the next free `run_NNN`,
+never overwriting an earlier run — also the short way to re-analyse after an
+edit.
 
 **Re-analysing after any geometry change** (`cad.edit_parameter`, a rebuild, a
 part edit):

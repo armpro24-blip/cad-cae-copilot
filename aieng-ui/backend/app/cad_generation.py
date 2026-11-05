@@ -9900,6 +9900,10 @@ def preview_build123d_parameter_edit(
         )
     except ValueError as exc:
         return {"status": "error", "code": "invalid_contract", "message": str(exc)}
+    # The caller may have named the part label and constant; continue with the
+    # graph's own ids so responses, proposals and the audit log stay canonical.
+    feature_id = str(contract["feature"].get("id") or feature_id)
+    parameter_name = str(contract["parameter"].get("name") or parameter_name)
 
     preview = _compute_parameter_edit_preview(
         settings, pkg_path, contract, new_value, timeout=timeout
@@ -9986,6 +9990,10 @@ def edit_build123d_parameter(
         )
     except ValueError as exc:
         return {"status": "error", "code": "invalid_contract", "message": str(exc)}
+    # The caller may have named the part label and constant; continue with the
+    # graph's own ids so responses, proposals and the audit log stay canonical.
+    feature_id = str(contract["feature"].get("id") or feature_id)
+    parameter_name = str(contract["parameter"].get("name") or parameter_name)
 
     param_info = contract["parameter"]
     cad_parameter_name = param_info.get("cad_parameter_name") or parameter_name
