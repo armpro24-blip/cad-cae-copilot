@@ -5,6 +5,8 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 
 _ROOT = Path(__file__).resolve().parents[2]
 _SCRIPT = _ROOT / "scripts" / "run_real_ccx_verification_gate.py"
@@ -104,3 +106,32 @@ def test_real_ccx_workflow_is_not_manual_only() -> None:
     assert "aieng/src/aieng/nafems_verification.py" in text
     assert "aieng-ui/backend/app/simulation_runner.py" in text
     assert "reference calibration is being finished" not in text
+
+
+@pytest.mark.parametrize('tests,skipped,returncode,expected', [
+    (9, 0, 0, 0), (9, 1, 0, 1), (0, 0, 0, 1), (9, 0, 1, 1),
+])
+def test_target_checks_execution_not_only_pytest_exit(monkeypatch, tests, skipped, returncode, expected):
+    from types import SimpleNamespace
+
+    env = {'PYTHONPATH': 'test-only'}
+
+    def run(cmd, **kwargs):
+        assert kwargs['env'] is env
+        assert kwargs['stdin'] is gate.subprocess.DEVNULL
+        junit = Path(cmd[cmd.index('--junitxml') + 1])
+        junit.write_text(f'<testsuite tests="{tests}" skipped="{skipped}" failures="0" errors="0"/>', encoding='utf-8')
+        return SimpleNamespace(returncode=returncode)
+
+    monkeypatch.setattr(gate.subprocess, 'run', run)
+    assert gate.run_target(gate.TARGETS['cross-validation'], env=env, allow_skips=False) == expected
+
+
+def test_cross_validation_is_installed_triggered_and_required():
+    target = gate.TARGETS['cross-validation']
+    assert 'aieng-ui/backend/tests/test_skfem_cross_validation.py' in target.args
+    assert target in gate.selected_targets('all')
+    workflow = _WORKFLOW.read_text(encoding='utf-8')
+    assert '[dev,cad,verification]' in workflow
+    for path in ('test_skfem_cross_validation.py', 'skfem_reference.py'):
+        assert workflow.count(f'"aieng-ui/backend/tests/{path}"') == 2
