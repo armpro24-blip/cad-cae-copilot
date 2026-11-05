@@ -1,0 +1,56 @@
+# 同行调研与第二轮优化：让 agent 看见结果、少读无用信息（2026-11-05）
+
+续 [agent-adaptation-ab-2026-11-05.md](agent-adaptation-ab-2026-11-05.md)。本文回答两个问题：同行在做什么、哪些值得学；按“改动最小、收益最大”的原则做了哪些改动，以及改动后测到了什么。
+
+## 结论
+
+- **最值得学的是反馈，不是脚手架。** 外部消融的结论一致：对 agent 的 CAD/CAE 结果帮助最大的，是渲染出来的多视图，以及按需求逐条给出的通过/失败和余量。脚本化的反思和角色拆分收益很小（[arXiv 2609.03718](https://arxiv.org/html/2609.03718v1)）。
+- **我们原来恰好把最有价值的反馈关掉了。** 服务端建议迭代时用 `response_detail: "compact"`，而 compact 会去掉四视图缩略图，只留下约 1.4k token 的 feature graph。在此前全部 9 次试验里，agent 一张图都没有收到。
+- **本次 4 处小改动之后**（每组 3 次，无头 Claude Code，同一个支架任务）：任务成功率保持 3/3；工具返回的文本从 71.7k 降到 51.4k 字符/次（−28%）；每次运行收到 1–2 张四视图；中位成本从 $0.324 降到 $0.291。成本只降约 10%，因为大头是多轮对话的缓存读取，不是单次工具返回。
+
+## 外部证据
+
+| 来源 | 测到的东西 | 对我们的含义 |
+|---|---|---|
+| [CADSmith, arXiv 2603.26512](https://arxiv.org/html/2603.26512) 表 I | 去掉渲染图后，复杂零件（T3）的平均 Chamfer 距离从 1.42 升到 49.68；在简单零件上影响不大 | 视觉校验对复杂件最关键 |
+| [arXiv 2605.17448](https://arxiv.org/html/2605.17448v2)（CalculiX 反馈） | 0 → 7 个视图，IoU 0.444 → 0.583；增加到 21 个视图后不再提升。一轮 FEA 反馈平均提高需求通过率 13.4 个点；反馈形式是“未通过的需求 + 实测余量”的紧凑报告，原始 deck 和日志不交给 agent | 我们已有的四视图数量合适；需求判定应在出数的地方直接返回 |
+| 同上，Hephaestus-CCX | 50 个 CalculiX 任务，每条需求都是带类型的可执行判定（几何、应力、位移、屈曲） | 与我们的 `acceptance` 设计同构，可以作为外部基准，用来证明 CAE 闭环的价值 |
+| [Anthropic：Writing tools for agents](https://www.anthropic.com/engineering/writing-tools-for-agents) | 用 `response_format` 让 agent 选择简洁或详细；返回高信号信息；Claude Code 默认单次返回上限 25,000 token；合并低价值工具 | compact 应当真正精简，且不能删掉高信号的部分 |
+| [Anthropic：Code execution with MCP](https://www.anthropic.com/engineering/code-execution-with-mcp) | 让 agent 写代码调用工具，中间结果不进入上下文，例子中 150k → 2k token；代价是需要沙箱和额外基础设施 | `cad.execute_build123d` 本身已是代码执行；把 CAE 链条也做成代码模式改动大，暂不做 |
+| [build123d-mcp](https://pypi.org/project/build123d-mcp/) | 自报 CADGenBench 从 0.360 提高到 0.457（同一模型、不使用工具对比）；提供渲染、测量、间隙检查 | 在 CAD 编写上与我们高度重叠；后来的榜单快照显示已有更高的提交，这个“第一”的说法已经过时 |
+
+## 我们自己的测量：token 花在哪里
+
+数据来自 `fix` 组 3 次运行的转录（每次运行的工具返回文本合计约 71.7k 字符）：
+
+- **建模和改参数占一半。** `cad.execute_build123d` 返回 11.8k 字符，`cad.edit_parameter` 每次调用约 10k；其中 feature graph 约 5.7k。
+- **缩进约占 30%。** MCP 返回的 JSON 以 `indent=2` 输出，这部分全是空白。
+- **图像为零。** compact 模式关掉了缩略图，而一张 480 px 的四视图只有约 300 个图像 token。
+
+## 本次改动（都在现有接口内，没有新工具）
+
+1. **MCP 返回去掉缩进**（`mcp_server._coerce_result`）。前端走 REST，不受影响。
+2. **compact 保留四视图**，只有显式传 `thumbnail: false` 才省略（`_should_render_thumbnail`）。
+3. **compact 不再返回 feature graph**（建模、改参数、替换/删除零件四处）；`editable_parameters` 摘要和全部判定字段（`regression_diff`、`critique_diff`、`geometry_report_summary`、`modeling_fidelity`）保留。完整的图仍可通过 `cad.list_editable_parameters` 和 `aieng.agent_context` 获取。
+4. **`cae.extract_solver_results` 返回 `acceptance_verdict`**：只要记录了验收准则，就直接列出未通过的需求（指标、比较方式、期望值、实测值、状态）。没有准则时响应保持不变。此前这个判定只出现在约 8k token 的 `aieng.agent_context` 里。本次支架任务没有设置验收准则，所以 A/B 测不到这一项，只有单元测试覆盖。
+
+| 组 | 成功 | 中位成本 | 中位工具调用 | 工具返回文本/次 | 收到的图像/次 |
+|---|---|---|---|---|---|
+| 精简契约 + 只读修复（`fix`） | 3/3 | $0.324 | 17 | 71.7k | 0 |
+| 再加本次 4 项（`lean2`） | 3/3 | $0.291 | 18 | 51.4k | 1–2 |
+
+两组的应力和位移变化一致（约 −40.5% / −51.6%），可信度说明的覆盖面也相同。每组只有 3 次，成本差异只是方向性的。
+
+## 没有做的事和原因（按收益/代价排序的建议）
+
+1. **一次性加载工具的客户端仍要付约 36k token 的工具定义成本**（98 个工具）。Claude Code 按需加载工具，所以本次测不到这一项。Codex 等客户端会一次加载全部。已有 `--compact-tool-surface`（35 个工具，约 13k token），但需要手动开启。下一步可以让安装文档对这些客户端默认推荐它，或者合并低频工具。这是中等改动，应当先在一个一次性加载工具的客户端上做测量。
+2. **用 Hephaestus-CCX 做 CAE 闭环的外部基准。** 它的需求判定与我们的 `acceptance` 同构，是证明“比裸 agent 更强”最直接的外部证据，可以与 CADGenBench（brief 中的任务 A）互补。
+3. **CAE 返回的精简。** `cae.run_solver` 和 `cae.generate_solver_input` 每次仍有约 4k 字符，主要是 `receipt` 和 `changed_artifacts`。仿照本次 CAD compact 的做法，是下一个小改动。
+4. **agent 从不点名 `credibility` 等级。** 12 次运行中一次都没有，尽管契约要求这样做。可能是因为可信度不在 agent 读取数字的那个响应里。可以把可信度等级放进 `cae.compare_runs` 和提取结果的顶层，改动很小，但需要先确认这些响应里目前是否已经有它。
+5. **代码模式（code execution with MCP）。** 收益可能很大，但需要新的执行边界和安全评审，属于大改，等前 4 项有了结论再说。
+
+## 边界
+
+- 外部论文的数字只读了相关表格；build123d-mcp 和 CADSmith 的数字是项目自报。
+- A/B 只覆盖 Claude Code（Sonnet 5.5）和一个任务，每组 3 次。
+- “看到图像会让结果更好”这一点，本任务测不出来：支架几何简单，两组都 3/3 成功。外部消融显示，收益集中在复杂零件上。

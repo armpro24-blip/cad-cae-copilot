@@ -168,7 +168,8 @@ work around them.
 3. `cae.prepare_solver_run` — preflight; runs nothing. If not ready, follow
    `recommended_next_calls` in order.
 4. `cae.generate_solver_input {run_id}` → `cae.run_solver {input_deck_path}`
-   (approval) → `cae.extract_solver_results` → optionally
+   (approval) → `cae.extract_solver_results` (with acceptance criteria recorded, its
+   `acceptance_verdict` lists each requirement that did not pass) → optionally
    `cae.extract_field_regions` and `postprocess.refresh_cae_summary`.
 5. `report.generate` writes an HTML report and returns its path.
 

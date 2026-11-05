@@ -219,7 +219,10 @@ def _coerce_result(value: Any) -> str:
     if isinstance(value, str):
         return value
     try:
-        return json.dumps(value, ensure_ascii=False, default=str, indent=2)
+        # No indentation: the agent parses JSON, it does not need it laid out.
+        # Measured on 2026-11-05 trial transcripts, `indent=2` was ~30% of the
+        # characters of a CAD/CAE tool response — context spent on whitespace.
+        return json.dumps(value, ensure_ascii=False, default=str)
     except Exception:
         return repr(value)
 
@@ -279,9 +282,11 @@ contact-sheet thumbnail (front/side/top/iso) + named_parts/parts_added to
 verify silhouette and alignment, then repeat.
 
 Token-aware loop: use response_detail="compact" for routine CAD iterations.
-Compact responses keep named_parts/parts_added and a one-line geometry summary,
-omit the thumbnail unless thumbnail=true, and may return cache_hit=true when the
-exact same build123d source was already executed.
+Compact responses keep named_parts/parts_added, every verdict, a one-line
+geometry summary and the 4-view thumbnail (~300 image tokens; look at it), drop
+the feature graph, and may return cache_hit=true when the exact same build123d
+source was already executed. Pass thumbnail=false only when no visual check is
+needed (e.g. a pure dimensional edit judged by regression_diff).
 
 Reference-driven modelling: when the target is a real product/character/
 vehicle, call cad.set_reference_image first with image_url or image_path —

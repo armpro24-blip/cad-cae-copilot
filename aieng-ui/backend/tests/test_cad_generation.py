@@ -1550,34 +1550,44 @@ def test_execute_build123d_code_dry_run_no_write(tmp_path: Path) -> None:
     assert result["written_artifacts"] == []
 
 
-def test_execute_build123d_code_compact_response_omits_thumbnail(tmp_path: Path) -> None:
+@pytest.mark.parametrize(("thumbnail_flag", "expect_thumbnail"), [(None, True), (False, False)])
+def test_execute_build123d_code_compact_response_keeps_the_view_and_drops_the_graph(
+    tmp_path: Path, thumbnail_flag: bool | None, expect_thumbnail: bool,
+) -> None:
+    """Compact keeps the 4-view image (~300 image tokens) and drops the feature graph.
+
+    Compact used to omit the image and keep the graph — the inverse of their
+    value to the agent. Agents iterate in compact mode, so trials never saw the
+    geometry. Only an explicit `thumbnail: false` skips the render.
+    """
     from app import cad_generation
 
     settings = _make_settings(tmp_path)
     create_app(settings)
-    project_id = _make_project(settings, "agent-cad-compact")
+    project_id = _make_project(settings, f"agent-cad-compact-{thumbnail_flag}")
+    payload = {
+        "code": "from build123d import *\nresult = Box(10, 10, 10)",
+        "response_detail": "compact",
+    }
+    if thumbnail_flag is not None:
+        payload["thumbnail"] = thumbnail_flag
 
     with (
         patch("app.cad_generation.Build123dBackend.can_generate", return_value=True),
         patch("app.cad_generation._execute_build123d_code_streaming", side_effect=_fake_stream_ok),
-        patch("app.cad_generation.render_mesh_thumbnail") as render_thumb,
+        patch("app.cad_generation.render_mesh_thumbnail", return_value="aW1n") as render_thumb,
     ):
-        result = cad_generation.execute_build123d_code(
-            settings,
-            project_id,
-            {
-                "code": "from build123d import *\nresult = Box(10, 10, 10)",
-                "response_detail": "compact",
-            },
-        )
+        result = cad_generation.execute_build123d_code(settings, project_id, payload)
 
     assert result["status"] == "ok"
     assert result["response_detail"] == "compact"
     assert result["cache_hit"] is False
     assert isinstance(result["geometry_report"], str)
     assert result["geometry_report"].startswith("geometry:")
-    assert "thumbnail_png_base64" not in result
-    render_thumb.assert_not_called()
+    assert "feature_graph" not in result
+    assert "editable_parameters" in result
+    assert ("thumbnail_png_base64" in result) is expect_thumbnail
+    assert render_thumb.called is expect_thumbnail
 
 
 def test_execute_build123d_code_exact_cache_hit_skips_executor(tmp_path: Path) -> None:

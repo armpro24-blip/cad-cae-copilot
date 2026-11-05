@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 import hashlib
 import json
 import zipfile
@@ -229,3 +231,42 @@ def test_copilot_report_and_export_include_target_comparison_block() -> None:
     )
     assert "### Design target comparison" in export
     assert "`passed_threshold`" in export
+
+
+def test_acceptance_verdict_lists_only_what_did_not_pass(monkeypatch) -> None:
+    """The verdict cae.extract_solver_results returns: summary + the failures only."""
+    from app import target_comparison
+
+    monkeypatch.setattr(target_comparison, "compare_package_targets", lambda _s, _p: {
+        "summary": {"total": 2, "pass": 1, "fail": 1, "unknown": 0, "not_evaluated": 0},
+        "items": [
+            {"target_type": "max_von_mises_stress", "status": "pass",
+             "expected": {"value": 100}, "actual": {"value": 8.6}},
+            {"target_type": "max_displacement", "status": "fail", "comparator": "<=",
+             "expected": {"value": 0.001}, "actual": {"value": 0.0024}, "notes": "dropped"},
+        ],
+    })
+    verdict = target_comparison.acceptance_verdict(None, "p1")
+
+    assert verdict["summary"]["fail"] == 1
+    assert verdict["not_passed"] == [{
+        "target_type": "max_displacement", "comparator": "<=",
+        "expected": {"value": 0.001}, "actual": {"value": 0.0024}, "status": "fail",
+    }]
+
+
+@pytest.mark.parametrize("comparison", [
+    {"summary": {"total": 0}, "items": []},
+    RuntimeError("package unreadable"),
+])
+def test_acceptance_verdict_is_absent_without_criteria_or_on_error(monkeypatch, comparison) -> None:
+    """No criteria, or a failed comparison, must leave the extraction response unchanged."""
+    from app import target_comparison
+
+    def _compare(_s, _p):
+        if isinstance(comparison, Exception):
+            raise comparison
+        return comparison
+
+    monkeypatch.setattr(target_comparison, "compare_package_targets", _compare)
+    assert target_comparison.acceptance_verdict(None, "p1") is None
