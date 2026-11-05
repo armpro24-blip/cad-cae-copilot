@@ -69,14 +69,15 @@ Reference topics, only when the task needs them: `cad-reference` and
 
 ## The core loop: build, analyse, resize, re-analyse
 
-`cad.execute_build123d` → `cae.setup_static` → `cae.generate_mesh` →
-`cae.generate_solver_input {run_id: "run_001"}` → `cae.run_solver` →
-`cae.extract_solver_results` → `cad.edit_parameter` → `cae.generate_mesh`
-again → `cae.generate_solver_input {run_id: "run_002"}` — a NEW run id →
-`cae.run_solver {input_deck_path: ".../run_002/solver_input.inp"}` →
-`cae.extract_solver_results` → `cae.compare_runs` for the before/after.
-Skipping the re-mesh or reusing the old deck is refused (`stale_mesh`,
-`stale_deck`) rather than silently reporting the old numbers.
+`cad.execute_build123d` → `cae.setup_static` (once) →
+`cae.run_simulation_pipeline {project_id, mesh_size_mm}` → `cad.edit_parameter`
+→ `cae.run_simulation_pipeline {project_id}` again. Each pipeline call meshes
+when the mesh is missing or older than the geometry, solves into a NEW run
+(`run_001`, then `run_002`, …), and returns the metrics, the mesh accuracy band
+and `change_since_previous_run` — the before/after, the same numbers
+`cae.compare_runs` gives. Driving the steps yourself also works; reusing an old
+mesh or the pre-edit deck is then refused (`stale_mesh`, `stale_deck`) rather
+than silently reporting the old numbers.
 """
 
 

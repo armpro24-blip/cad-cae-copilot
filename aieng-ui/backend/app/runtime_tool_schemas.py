@@ -204,13 +204,13 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     },
     "cae.mesh_convergence": {
         "type": "object",
-        "required": ["project_id", "mesh_sizes"],
+        "required": ["project_id"],
         "properties": {
             "project_id": {"type": "string"},
             "mesh_sizes": {
                 "type": "array",
                 "items": {"type": "number"},
-                "description": "Gmsh target element sizes (mm) to solve at — 3+ progressively finer (smaller) sizes recommended for a Grid Convergence Index; 2-6 allowed.",
+                "description": "Gmsh target element sizes (mm) to solve at — 3+ progressively finer (smaller) sizes recommended for a Grid Convergence Index; 2-6 allowed. Omit to study the current mesh: its size becomes the finest level, with two coarser ones at a ratio of sqrt(2).",
             },
             "metrics": {
                 "type": "array",

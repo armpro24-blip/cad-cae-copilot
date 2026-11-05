@@ -659,3 +659,80 @@ def test_an_unrelated_empty_nset_stays_broken_in_the_preview(tmp_path: Path) -> 
 
     assert preview["recovers_all"] is True, preview     # the moved face is recovered
     assert preview["nset_valid_after"] is False         # the empty set is not
+
+
+def test_a_re_authored_pointer_moves_the_binding_instead_of_orphaning_it(tmp_path: Path) -> None:
+    """Re-running cae.setup_static after an edit must take effect.
+
+    Measured 2026-11-05: after a thickness edit an agent re-authored the load
+    with the rib's new face (`@face:face_029`) and the response confirmed it,
+    but the deck kept refusing `LOAD_001 -> @face:face_015`: the pointer got a
+    new NSET `LOAD_001_2` beside the old one, and the orphan bound to a retired
+    face. Only a hand-written cae_mapping.json got the agent past it.
+    """
+    pkg = _package(
+        tmp_path / "bracket.aieng",
+        topology=_topology("face_029", 49.0),   # after the edit
+        load_target="@face:face_029",           # what setup_static just wrote
+        selector=None,                          # an explicit pointer: no phrase
+        mapping_face="face_015",                # the pre-edit binding
+    )
+
+    result = normalize_cae_bindings(pkg)
+
+    load_mappings = [m for m in _mapping(pkg) if m["maps_to"]["cae_target_id"] == "load_001"]
+    assert [(m["cae_entity"], m["face_ids"]) for m in load_mappings] == [("LOAD_001", ["face_029"])]
+    assert _loads(pkg)[0]["target"] == "LOAD_001"
+    assert result["rebound_from_selector"] == []  # the caller chose it; nothing was guessed
+
+
+RIB_TOP_SIGNATURE = {"surface_type": "plane", "area": 360.0, "normal": [0.0, 0.0, 1.0]}
+
+
+def _pointer_package(path: Path, topology: dict, signature: dict | None) -> Path:
+    """A load bound by explicit pointer, as cae.setup_static records it."""
+    pkg = _package(path, topology=topology, load_target="LOAD_001",
+                   selector="@face:face_012", mapping_face="face_012")
+    with zipfile.ZipFile(pkg) as zf:
+        members = {n: zf.read(n) for n in zf.namelist()}
+    loads = json.loads(members["simulation/cae_imports/parsed_loads.json"])
+    loads["loads"][0]["target_signature"] = signature
+    members["simulation/cae_imports/parsed_loads.json"] = json.dumps(loads).encode()
+    with zipfile.ZipFile(pkg, "w") as zf:
+        for name, data in members.items():
+            zf.writestr(name, data)
+    return pkg
+
+
+def test_a_pointer_bound_face_is_recovered_by_its_character(tmp_path: Path) -> None:
+    """No phrase to re-resolve: the face's type, normal and area find it.
+
+    Measured 2026-11-05: an agent bound the load by `@face:` because "top"
+    picked the plate; the thickness edit retired the id and the one-call
+    re-analysis was refused until the setup was re-authored.
+    """
+    pkg = _pointer_package(tmp_path / "bracket.aieng", _topology("face_022", 49.0), RIB_TOP_SIGNATURE)
+
+    rebound = normalize_cae_bindings(pkg)["rebound_from_selector"]
+
+    assert [(r["id"], r["face_id"], r["matched_by"]) for r in rebound] == [("load_001", "face_022", "signature")]
+    assert next(m for m in _mapping(pkg) if m["cae_entity"] == "LOAD_001")["face_ids"] == ["face_022"]
+
+
+def test_a_character_shared_by_two_faces_refuses(tmp_path: Path) -> None:
+    topology = _topology("face_022", 49.0)
+    twin = {**topology["entities"][-1], "id": "face_023", "centroid": [10.0, 0.0, 49.0]}
+    topology["entities"].append(twin)
+    pkg = _pointer_package(tmp_path / "bracket.aieng", topology, RIB_TOP_SIGNATURE)
+
+    assert normalize_cae_bindings(pkg)["rebound_from_selector"] == []
+
+
+def test_the_warning_says_the_face_was_found_by_its_character() -> None:
+    from app.runtime_registry.cae import rebind_warnings_for
+
+    [warning] = rebind_warnings_for({"rebound_from_selector": [{
+        "id": "load_001", "selector": "@face:face_012", "matched_by": "signature",
+        "face_id": "face_022", "previous_face": "@face:face_012",
+    }]})
+    assert "same type, normal and area is now @face:face_022" in warning

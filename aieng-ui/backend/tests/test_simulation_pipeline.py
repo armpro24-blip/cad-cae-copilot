@@ -295,3 +295,115 @@ def test_pipeline_without_a_run_id_writes_a_new_run_and_overwrites_nothing(tmp_p
     for tool in ("cae.generate_solver_input", "cae.run_solver"):
         assert calls[tool]["run_id"] == "run_002", f"{tool} must target the next free run"
     assert calls["cae.generate_solver_input"].get("overwrite") is False
+
+
+def test_pipeline_after_an_edit_remeshes_at_the_previous_size_and_reports_the_change(tmp_path: Path) -> None:
+    """Edit -> one pipeline call is the whole re-analysis.
+
+    The caller passes no mesh size and no run id. A mesh older than the geometry
+    is regenerated at the size it was built with (it used to be reused, and the
+    deck refused it as stale_mesh), and the result carries the metrics and the
+    before/after against the previous completed run, so no further call is
+    needed to answer "what changed".
+    """
+    settings = _make_settings(tmp_path)
+    create_app(settings)
+    project_id, pkg_path = _make_project(settings, "pipeline-after-edit")
+    with zipfile.ZipFile(pkg_path, "a") as zf:
+        zf.writestr("simulation/mesh/mesh.inp", "*NODE\n")
+        zf.writestr("simulation/mesh/mesh_metadata.json", json.dumps({"target_size_mm": 3.0}))
+        zf.writestr("simulation/runs/run_001/solver_run.json", json.dumps({"state": "completed"}))
+
+    from app import runtime as _rt
+
+    calls: dict[str, dict[str, Any]] = {}
+    fake = _fake_invoke_tool(_rt.invoke_tool)
+
+    def _recording(tool: str, inp: dict[str, Any]) -> Any:
+        calls[tool] = dict(inp)
+        if tool == "cae.run_solver":
+            return {**fake(tool, inp), "extracted_metrics": {"load_cases": [
+                {"id": "load_case_001", "metrics": {"max_displacement": {"value": 0.29, "unit": "mm", "basis": "x"}}},
+            ]}}
+        if tool == "cae.compare_runs":
+            return {"status": "ok", "geometry_changed": True, "binding_count_changed": False, "warnings": [],
+                    "comparison": [{"metric": "max_displacement", "load_case_id": "load_case_001",
+                                    "before": 2.3, "after": 0.29, "unit": "mm", "percent_change": -87.4}]}
+        return fake(tool, inp)
+
+    with (
+        patch("app.runtime.invoke_tool", side_effect=_recording),
+        patch("app.runtime_registry.cae._stale_mesh_revisions", return_value=(0, 1)),
+    ):
+        result = _rt.invoke_tool("cae.run_simulation_pipeline", {"project_id": project_id})
+
+    assert result["status"] == "ok"
+    assert result["mesh_regenerated"] == {"done": True, "reason": "mesh predates the current geometry"}
+    assert calls["cae.generate_mesh"]["mesh_size_mm"] == 3.0
+    assert result["run_id"] == "run_002"
+    assert result["metrics"] == {"load_case_001": {"max_displacement": {"value": 0.29, "unit": "mm"}}}
+    change = result["change_since_previous_run"]
+    assert (change["baseline_run"], change["geometry_changed"]) == ("run_001", True)
+    assert change["changes"][0]["percent_change"] == -87.4
+    assert calls["cae.compare_runs"] == {"project_id": project_id, "baseline_run": "run_001", "current_run": "run_002"}
+
+
+def test_pipeline_keeps_a_current_mesh(tmp_path: Path) -> None:
+    """A mesh built for the current geometry is reused, not regenerated."""
+    settings = _make_settings(tmp_path)
+    create_app(settings)
+    project_id, pkg_path = _make_project(settings, "pipeline-current-mesh")
+    with zipfile.ZipFile(pkg_path, "a") as zf:
+        zf.writestr("simulation/mesh/mesh.inp", "*NODE\n")
+
+    from app import runtime as _rt
+
+    calls: list[str] = []
+    fake = _fake_invoke_tool(_rt.invoke_tool)
+
+    def _recording(tool: str, inp: dict[str, Any]) -> Any:
+        calls.append(tool)
+        return fake(tool, inp)
+
+    with (
+        patch("app.runtime.invoke_tool", side_effect=_recording),
+        patch("app.runtime_registry.cae._stale_mesh_revisions", return_value=None),
+    ):
+        result = _rt.invoke_tool("cae.run_simulation_pipeline", {"project_id": project_id})
+
+    assert result["status"] == "ok"
+    assert "cae.generate_mesh" not in calls
+    assert result["mesh_regenerated"] == {"done": False, "reason": None}
+
+
+@pytest.mark.parametrize(("with_mesh", "expected"), [(True, [6.0, 4.243, 3.0]), (False, None)])
+def test_mesh_convergence_without_sizes_studies_the_current_mesh(tmp_path: Path, with_mesh, expected) -> None:
+    """Asked bare, the convergence study refines around the mesh in use.
+
+    Three of nine 2026-11-05 agent runs called cae.mesh_convergence without
+    mesh_sizes and were refused. With a mesh, its size is the finest level and
+    two coarser ones follow at r = sqrt(2); without one it still refuses.
+    """
+    settings = _make_settings(tmp_path)
+    create_app(settings)
+    project_id, pkg_path = _make_project(settings, f"convergence-{with_mesh}")
+    if with_mesh:
+        with zipfile.ZipFile(pkg_path, "a") as zf:
+            zf.writestr("simulation/mesh/mesh_metadata.json", json.dumps({"target_size_mm": 3.0}))
+
+    from app import runtime as _rt
+
+    seen: dict[str, Any] = {}
+
+    def _fake_convergence(_settings, _pid, *, mesh_sizes, **_kw):
+        seen["sizes"] = mesh_sizes
+        return {"status": "ok"}
+
+    with patch("app.mesh_convergence_runner.run_mesh_convergence", side_effect=_fake_convergence):
+        result = _rt.invoke_tool("cae.mesh_convergence", {"project_id": project_id})
+
+    if expected is None:
+        assert result["code"] == "bad_input" and "sizes" not in seen
+    else:
+        assert seen["sizes"] == expected
+        assert result["mesh_sizes_defaulted"] == expected

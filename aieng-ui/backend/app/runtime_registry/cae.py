@@ -5,7 +5,9 @@ Extracted from runtime_tool_registry.py to keep domain logic focused.
 
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 from typing import Any
 
 from aieng.cae_run_comparison import compare_runs as _compare_runs
@@ -38,12 +40,16 @@ def rebind_warnings_for(source_deck_synthesis: Any) -> list[str]:
     for entry in entries:
         if not isinstance(entry, dict):
             continue
+        found_by = (
+            "the only face with the same type, normal and area"
+            if entry.get("matched_by") == "signature"
+            else f"{str(entry.get('selector'))!r}"
+        )
         warnings.append(
             f"{entry.get('id')}: the face this setup named "
             f"({entry.get('previous_face') or 'the recorded @face: pointer'}) no "
-            f"longer exists; {str(entry.get('selector'))!r} now resolves to "
-            f"@face:{entry.get('face_id')} and the binding was moved to it. "
-            "Confirm that is the face you intend."
+            f"longer exists; {found_by} is now @face:{entry.get('face_id')} and "
+            "the binding was moved to it. Confirm that is the face you intend."
         )
     # Re-split area shares are the same kind of signal: the newtons on each face
     # are no longer the ones the setup recorded.
@@ -1189,6 +1195,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         boundary_conditions = [
             {"id": f"bc_{i + 1:03d}", "type": "fixed", "target": f"@face:{fid}",
              "target_selector": fix_selector,
+             "target_signature": _intent.face_signature(topology, fid),
              "dof_start": 1, "dof_end": 3, "value": 0}
             for i, fid in enumerate(fix_hit["face_ids"])
         ]
@@ -1250,6 +1257,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             loads = [
                 {"id": f"load_{i + 1:03d}", "type": "force", "target": f"@face:{fid}",
                  "target_selector": load_selector,
+                 "target_signature": _intent.face_signature(topology, fid),
                  "value_n": share, "direction": direction}
                 for i, (fid, share) in enumerate(zip(load_hit["face_ids"], shares))
             ]
@@ -2803,9 +2811,10 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 "status": "error",
                 "code": "stale_topology_references",
                 "message": (
-                    "CAE face references do not match the current topology. "
-                    "Re-run AI preprocessing to refresh face references, or update "
-                    "simulation/cae_mapping.json manually via cae.apply_setup_patch."
+                    "CAE face references do not match the current topology (the geometry "
+                    "changed since the setup was bound). Re-run cae.setup_static with the "
+                    "same words, or with the faces' new @face: ids, then solve again; "
+                    "cae.prepare_solver_run reports which references are stale."
                 ),
                 "topology_validation": topology_validation,
                 "solver_execution_performed": False,
@@ -3804,6 +3813,76 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         input_schema=_schema("cae.import_solver_evidence"),
     )
 
+    def _compact_phases(phase_results: dict[str, Any]) -> dict[str, Any]:
+        """Each stage's verdict and warnings, without its full payload."""
+        keep = ("ok", "status", "code", "message", "warnings", "element_count", "rebound_from_selector")
+        return {
+            phase: {k: v for k, v in out.items() if k in keep and v not in (None, [], {}, "")}
+            for phase, out in phase_results.items()
+            if isinstance(out, dict)
+        }
+
+    def _pipeline_findings(
+        package_path: Path, project_id: str, run_id: str,
+        solver_result: dict[str, Any], invoke: Any,
+    ) -> dict[str, Any]:
+        """Metrics, mesh accuracy, acceptance verdict and the change since the last run."""
+        import zipfile as _zipfile
+
+        from .. import target_comparison as _targets
+
+        findings: dict[str, Any] = {}
+        cases = (solver_result.get("extracted_metrics") or {}).get("load_cases") or []
+        findings["metrics"] = {
+            case.get("id"): {
+                name: {"value": m.get("value"), "unit": m.get("unit")}
+                for name, m in (case.get("metrics") or {}).items() if isinstance(m, dict)
+            }
+            for case in cases if isinstance(case, dict)
+        }
+        previous: list[str] = []
+        try:
+            with _zipfile.ZipFile(package_path) as zf:
+                names = zf.namelist()
+                if "simulation/mesh/mesh_metadata.json" in names:
+                    meta = json.loads(zf.read("simulation/mesh/mesh_metadata.json"))
+                    accuracy = meta.get("accuracy") or {}
+                    findings["mesh"] = {
+                        "element_count": meta.get("element_count"),
+                        "target_size_mm": meta.get("target_size_mm"),
+                        "accuracy_band": accuracy.get("band"),
+                        "accuracy_reason": accuracy.get("reason"),
+                    }
+                for name in names:
+                    parts = name.split("/")
+                    if (len(parts) == 4 and parts[:2] == ["simulation", "runs"]
+                            and parts[3] == "solver_run.json" and parts[2] != run_id):
+                        record = json.loads(zf.read(name))
+                        if "completed" in (record.get("state"), record.get("status")):
+                            previous.append(parts[2])
+        except Exception:  # noqa: BLE001 - findings are best-effort; the run itself succeeded
+            pass
+        if previous:
+            baseline = max(previous)
+            comparison = invoke("cae.compare_runs", {
+                "project_id": project_id, "baseline_run": baseline, "current_run": run_id,
+            })
+            if isinstance(comparison, dict) and comparison.get("status") == "ok":
+                findings["change_since_previous_run"] = {
+                    "baseline_run": baseline,
+                    "geometry_changed": comparison.get("geometry_changed"),
+                    "binding_count_changed": comparison.get("binding_count_changed"),
+                    "changes": [
+                        {k: row.get(k) for k in ("metric", "load_case_id", "before", "after", "unit", "percent_change")}
+                        for row in comparison.get("comparison") or []
+                    ],
+                    "warnings": comparison.get("warnings") or [],
+                }
+        verdict = _targets.acceptance_verdict(active_settings, project_id, package_path)
+        if verdict:
+            findings["acceptance_verdict"] = verdict
+        return findings
+
     def _tool_cae_run_simulation_pipeline(inp: dict[str, Any], _ctx: dict[str, Any]) -> dict[str, Any]:
         """Run the full CAE pipeline from setup to results.
 
@@ -3917,16 +3996,31 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         # Check whether a mesh already exists and whether the caller wants to override it.
         import zipfile as _zipfile
 
+        # Re-mesh whenever the existing mesh cannot be the right one: none yet,
+        # or built for an earlier geometry revision. The caller should not have
+        # to know — after cad.edit_parameter the next pipeline call is simply
+        # correct, instead of being refused as stale_mesh at deck generation.
         mesh_required = mesh_size_raw is not None
+        mesh_reason = "mesh_size_mm given" if mesh_required else None
+        previous_mesh_size: float | None = None
         if not mesh_required:
             try:
                 with _zipfile.ZipFile(package_path, "r") as zf:
-                    mesh_required = "simulation/mesh/mesh.inp" not in set(zf.namelist())
+                    names = set(zf.namelist())
+                    if "simulation/mesh/mesh.inp" not in names:
+                        mesh_required, mesh_reason = True, "no mesh yet"
+                    elif "simulation/mesh/mesh_metadata.json" in names:
+                        meta = json.loads(zf.read("simulation/mesh/mesh_metadata.json"))
+                        previous_mesh_size = meta.get("target_size_mm")
             except Exception:
-                mesh_required = True
+                mesh_required, mesh_reason = True, "existing mesh unreadable"
+            if not mesh_required and _stale_mesh_revisions(package_path) is not None:
+                mesh_required, mesh_reason = True, "mesh predates the current geometry"
 
         if mesh_required:
             mesh_inp: dict[str, Any] = {"project_id": project_id}
+            if mesh_size_raw is None and isinstance(previous_mesh_size, (int, float)):
+                mesh_inp["mesh_size_mm"] = float(previous_mesh_size)  # keep the chosen resolution
             if mesh_size_raw is not None:
                 try:
                     mesh_inp["mesh_size_mm"] = float(mesh_size_raw)
@@ -3983,7 +4077,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         phase_results["run_solver"] = solver_result
 
         ok = bool(solver_result.get("ok")) and bool(solver_result.get("solver_execution_performed"))
-        return {
+        result: dict[str, Any] = {
             "status": "ok" if ok else (solver_result.get("status") or "error"),
             "tool": "cae.run_simulation_pipeline",
             "ok": ok,
@@ -3991,13 +4085,21 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             "run_id": run_id,
             "load_case_id": load_case_id,
             "solver_execution_performed": solver_result.get("solver_execution_performed", False),
-            "phase_results": phase_results,
+            "mesh_regenerated": {"done": mesh_required, "reason": mesh_reason},
             "message": (
                 "Simulation pipeline completed."
                 if ok
                 else solver_result.get("message") or "Solver stage did not complete successfully."
             ),
         }
+        if not ok:
+            result["phase_results"] = phase_results
+            return result
+        # What the agent needs to judge the run, in the call that produced it;
+        # each stage's full output stays available from its own tool.
+        result["phase_results"] = _compact_phases(phase_results)
+        result.update(_pipeline_findings(package_path, project_id, run_id, solver_result, _invoke))
+        return result
 
     def _tool_cae_mesh_convergence(inp: dict[str, Any], _ctx: dict[str, Any]) -> dict[str, Any]:
         """Solve the project's current static geometry at several mesh sizes and report,
@@ -4011,11 +4113,23 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         if not pid:
             return {"status": "error", "code": "bad_input", "message": "project_id is required"}
         sizes = inp.get("mesh_sizes")
+        defaulted = False
+        if sizes is None:
+            # "Is this result converged?" means the mesh the result came from.
+            # Measured 2026-11-05: three of nine agent runs called this without
+            # mesh_sizes and were refused. Default to that mesh as the finest
+            # level plus two coarser ones at r = sqrt(2), above the r >= 1.3 the
+            # GCI method asks for (Celik et al. 2008).
+            current = _current_mesh_size(pid)
+            if current is not None:
+                sizes = [round(current * 2.0, 3), round(current * 2.0 ** 0.5, 3), current]
+                defaulted = True
         if not isinstance(sizes, list) or not sizes:
             return {"status": "error", "code": "bad_input",
-                    "message": "mesh_sizes must be a non-empty array of element sizes (mm)"}
+                    "message": "mesh_sizes must be a non-empty array of element sizes (mm); "
+                               "omit it only when a mesh exists, whose size then becomes the finest level"}
         try:
-            return run_mesh_convergence(
+            report = run_mesh_convergence(
                 active_settings,
                 pid,
                 mesh_sizes=sizes,
@@ -4026,6 +4140,23 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             )
         except Exception as exc:  # noqa: BLE001
             return {"status": "error", "code": "convergence_failed", "message": f"{type(exc).__name__}: {exc}"}
+        if defaulted and isinstance(report, dict):
+            report["mesh_sizes_defaulted"] = sizes
+        return report
+
+    def _current_mesh_size(project_id: str) -> float | None:
+        """Target element size of the project's current mesh, if there is one."""
+        import zipfile as _zipfile
+
+        try:
+            proj = get_project(active_settings, project_id)
+            pkg = resolve_project_path(active_settings, project_id, proj.get("aieng_file"))
+            with _zipfile.ZipFile(pkg) as zf:
+                meta = json.loads(zf.read("simulation/mesh/mesh_metadata.json"))
+        except Exception:  # noqa: BLE001 - no project, package or mesh: no default
+            return None
+        size = meta.get("target_size_mm")
+        return float(size) if isinstance(size, (int, float)) and size > 0 else None
 
     rt.register_tool(
         "cae.run_simulation_pipeline",
@@ -4036,12 +4167,12 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             "[APPROVAL REQUIRED] Run the full CAE simulation pipeline in one call: "
             "optionally derive the FEA setup with AI preprocessing, generate the FE mesh, "
             "assemble the CalculiX solver deck, run the solver, extract results, and refresh "
-            "the result summary. With a setup from cae.setup_static, the usual call is "
-            "{project_id, mesh_size_mm} — one call per solve, also after a CAD edit (pass "
-            "mesh_size_mm again so the mesh matches the edited geometry). Each call writes a "
-            "NEW run (the next free run_NNN) and never overwrites an earlier one, so "
-            "cae.compare_runs can compare them. Pass task_description only to derive the setup "
-            "with AI preprocessing (needs an API key)."
+            "the result summary. With a setup from cae.setup_static this is the whole analysis: "
+            "{project_id, mesh_size_mm} the first time, {project_id} after any CAD edit. It "
+            "re-meshes when the mesh is missing or predates the geometry (at the previous size), "
+            "solves into a NEW run (the next free run_NNN, never overwriting one), and returns "
+            "metrics, mesh accuracy band, acceptance_verdict and change_since_previous_run. "
+            "Pass task_description only to derive the setup with AI preprocessing (needs an API key)."
         ),
         input_schema=_schema("cae.run_simulation_pipeline"),
     )

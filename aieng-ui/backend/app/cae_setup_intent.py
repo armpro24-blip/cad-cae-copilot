@@ -144,6 +144,58 @@ def _area(face: dict[str, Any]) -> float:
     return float(value) if isinstance(value, (int, float)) else 0.0
 
 
+def face_signature(topology: dict[str, Any], face_id: str) -> dict[str, Any] | None:
+    """The character of a face, recorded so a binding can find it after an edit.
+
+    Surface type, normal, area and radius: what an edit that MOVES a face (a
+    rib lifted by a thicker plate) leaves unchanged. Position is deliberately
+    absent — it is exactly what such an edit changes.
+    """
+    face = next((f for f in _faces(topology) if str(f.get("id")) == str(face_id)), None)
+    if face is None or not _area(face):
+        return None
+    signature: dict[str, Any] = {"surface_type": face.get("surface_type"), "area": round(_area(face), 3)}
+    normal = face.get("normal")
+    if isinstance(normal, list) and len(normal) == 3:
+        signature["normal"] = [round(float(c), 4) for c in normal]
+    if isinstance(face.get("radius"), (int, float)):
+        signature["radius"] = round(float(face["radius"]), 4)
+    return signature
+
+
+def match_face_signature(
+    topology: dict[str, Any], signature: Any, *, tolerance: float = 0.01,
+) -> str | None:
+    """The ONE face with this character, or None when there is none or several.
+
+    Area and radius match within `tolerance` (relative); the normal within
+    ~0.8 degrees. Two look-alike faces (four identical bolt holes) refuse rather
+    than guess, the same discipline as `resolve_face_intent`.
+    """
+    if not isinstance(signature, dict) or not signature.get("area"):
+        return None
+
+    def close(a: Any, b: Any) -> bool:
+        return isinstance(a, (int, float)) and abs(float(a) - float(b)) <= tolerance * abs(float(b))
+
+    matches = []
+    for face in _faces(topology):
+        if face.get("surface_type") != signature.get("surface_type"):
+            continue
+        if not close(_area(face), signature["area"]):
+            continue
+        if "radius" in signature and not close(face.get("radius"), signature["radius"]):
+            continue
+        normal = face.get("normal")
+        if "normal" in signature:
+            if not (isinstance(normal, list) and len(normal) == 3):
+                continue
+            if sum(float(a) * float(b) for a, b in zip(normal, signature["normal"])) < 0.9999:
+                continue
+        matches.append(str(face.get("id")))
+    return matches[0] if len(matches) == 1 else None
+
+
 def _fail(reason: str, candidates: list[dict[str, Any]], body_names: dict[str, str]) -> dict[str, Any]:
     return {
         "status": "ambiguous" if candidates else "not_found",

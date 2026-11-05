@@ -155,7 +155,7 @@ What `aieng.guide {topic: "cae"}` serves: the rules for `cae.*`, `opt.*` and
 `code` and a message (often `recommended_next_calls`) — follow them, never
 work around them.
 
-**The static pipeline.**
+**Analysing — set up once, then one call per analysis.**
 1. `cae.setup_static {project_id, material, fix, load: {at, force_n, direction}}`
    — ordinary words: `bottom`/`top`/`left`/`right`/`front`/`back`, `±X/±Y/±Z`,
    `largest flat face`, `bolt holes`, any of them scoped to a part
@@ -165,37 +165,31 @@ work around them.
    else (several load cases, thermal BCs, DOF ranges) use
    `cae.apply_setup_patch`. To record a load case with acceptance criteria use
    `cae.author_load_case`, then `cae.apply_load_case`.
-2. `cae.generate_mesh {mesh_size_mm}` — quadratic C3D10 by default. Read
-   `accuracy.band`.
-3. `cae.prepare_solver_run` — preflight; runs nothing. If not ready, follow
-   `recommended_next_calls` in order.
-4. `cae.generate_solver_input {run_id}` → `cae.run_solver {input_deck_path}`
-   (approval) → `cae.extract_solver_results` (with acceptance criteria recorded, its
-   `acceptance_verdict` lists each requirement that did not pass) → optionally
-   `cae.extract_field_regions` and `postprocess.refresh_cae_summary`.
-5. `report.generate` writes an HTML report and returns its path.
+2. `cae.run_simulation_pipeline {project_id, mesh_size_mm}` (approval) meshes
+   (quadratic C3D10), writes the deck, solves into the next free `run_NNN` and
+   returns `metrics`, `mesh.accuracy_band`, `acceptance_verdict` (when criteria
+   are recorded) and `change_since_previous_run`. It never overwrites a run.
+3. After any geometry change (`cad.edit_parameter`, a rebuild, a part edit),
+   call it again — `{project_id}` is enough. It re-meshes at the previous size
+   because the old mesh predates the edit, solves a new run, and its
+   `change_since_previous_run` is the before/after. Faces that moved are
+   re-found from the words recorded by `cae.setup_static`, or — for an explicit
+   `@face:` — from the face's type, normal and area when exactly one face still
+   matches; each move is reported as a warning. If neither picks one face the
+   deck is refused (`unbound_setup_faces`): re-run `cae.setup_static` with words
+   or the new `@face:` ids, which replaces the old binding.
+4. `report.generate` writes an HTML report and returns its path.
 
-Steps 2-4 in one call: `cae.run_simulation_pipeline {project_id, mesh_size_mm}`
-(approval) meshes, writes the deck and solves into the next free `run_NNN`,
-never overwriting an earlier run — also the short way to re-analyse after an
-edit.
-
-**Re-analysing after any geometry change** (`cad.edit_parameter`, a rebuild, a
-part edit):
-- Re-mesh (`cae.generate_mesh`). An old mesh is refused as `stale_mesh`.
-- Generate the deck under a **new** `run_id` (`run_002`, `run_003`, …). Reusing
-  a run id fails or overwrites the baseline; the refusal names a free id.
-- Solve with that run's `input_deck_path`. A pre-edit deck is refused as
-  `stale_deck`; a `run_id` that disagrees with the deck path as
-  `run_id_conflict`.
-- Faces that moved are re-found from the words recorded by `cae.setup_static`;
-  `cae.prepare_solver_run` reports `selector_rebind`. If a phrase no longer
-  picks the same faces it is refused (`unbound_setup_faces`): re-run
-  `cae.setup_static` with words that do.
-- Use `cae.compare_runs` for the before/after. It re-reads each run's own
-  result; `geometry_changed: false` means both runs solved the same geometry.
-  Stresses are compared peak to peak: check `peak_location` from
-  `cae.extract_field_regions` before saying a change happened "at" a place.
+**Step by step, when you need the control:** `cae.generate_mesh` →
+`cae.prepare_solver_run` (preflight, follow `recommended_next_calls`) →
+`cae.generate_solver_input {run_id}` → `cae.run_solver {input_deck_path}`
+(approval) → `cae.extract_solver_results` → `cae.compare_runs`. Each re-solve
+needs a **new** `run_id` (`run_002`, …); out-of-order use is refused: an old mesh
+as `stale_mesh`, a pre-edit deck as `stale_deck`, a `run_id` that disagrees
+with the deck path as `run_id_conflict`. `cae.compare_runs` re-reads each run's
+own result; `geometry_changed: false` means both runs solved the same geometry.
+Stresses are compared peak to peak: check `peak_location` from
+`cae.extract_field_regions` before saying a change happened "at" a place.
 
 **Analysis types** (`analysis_type` via `cae.apply_setup_patch`): `static`,
 `modal`, `buckling`, `thermal`, `thermal_structural`. Nothing else exists:

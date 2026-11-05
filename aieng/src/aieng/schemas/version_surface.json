@@ -19,13 +19,13 @@
   "surfaces": {
     "artifact_schemas": {
       "policy": "unstable",
-      "sha256": "ac185b0db06b83a6ed9708332bc8c95a72ff620c1c421794297eeae5683a290c",
-      "version": "0.1.0-alpha.11"
+      "sha256": "2dd8ce6b088c9fa42300580bfa979331961fa148f1227b618850d2644ab33970",
+      "version": "0.1.0-alpha.12"
     },
     "mcp_tool_surface": {
       "policy": "unstable",
-      "sha256": "28c33bf1806dd81dbdb4286fecc114177b4d80190f6a0ac321fa8978cb0f5aa6",
-      "version": "0.1.0-alpha.21"
+      "sha256": "3e68dfea414664594d383929adbaf4095c1e734b613cf43835f1c902a9db253f",
+      "version": "0.1.0-alpha.23"
     },
     "skill_prompts": {
       "policy": "unstable",

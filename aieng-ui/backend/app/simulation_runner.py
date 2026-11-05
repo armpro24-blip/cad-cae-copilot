@@ -1607,6 +1607,7 @@ def normalize_cae_bindings(package_path: Path) -> dict[str, Any]:
     package_path = Path(package_path)
     derived: list[str] = []
     rebound: list[dict[str, Any]] = []
+    moved: list[str] = []  # NSETs pointed at another face, which must reach disk
     loads_promoted = False
 
     topo_raw = _read_member(package_path, _TOPOLOGY_PATH)
@@ -1670,7 +1671,7 @@ def normalize_cae_bindings(package_path: Path) -> dict[str, Any]:
             return bool(faces) and all(f in face_ids for f in faces)
         return False
 
-    def _reresolve(item: dict[str, Any]) -> str | None:
+    def _reresolve(item: dict[str, Any]) -> tuple[str | None, str]:
         """Recover a face whose id is gone, from the words that first chose it.
 
         A resolved `@face:` pointer cannot survive an edit that MOVES the face:
@@ -1688,26 +1689,35 @@ def normalize_cae_bindings(package_path: Path) -> dict[str, Any]:
         exactly as it would have failed at authoring time.
         """
         selector = item.get("target_selector")
-        if not isinstance(selector, str) or not selector.strip():
-            return None
         try:
-            from .cae_setup_intent import resolve_face_intent
+            from .cae_setup_intent import match_face_signature, resolve_face_intent
         except Exception:  # noqa: BLE001 - never break deck generation on an import
-            return None
+            return None, "selector"
         try:
-            hit = resolve_face_intent(topology, selector)
+            hit = (
+                resolve_face_intent(topology, selector)
+                if isinstance(selector, str) and selector.strip()
+                else {"status": "no_selector"}
+            )
         except Exception:  # noqa: BLE001
-            return None
+            hit = {"status": "error"}
         if hit.get("status") != "ok":
-            return None
+            # No phrase, or one that names the face only by its retired id (an
+            # explicit `@face:` pointer): fall back to the face's character as
+            # recorded at authoring time. Measured 2026-11-05: an agent bound the
+            # load by pointer because "top" picked the plate, the thickness edit
+            # retired the id, and the one-call re-analysis was refused until it
+            # re-authored the setup. A unique match is unambiguous; anything
+            # else refuses.
+            return match_face_signature(topology, item.get("target_signature")), "signature"
         recovered = [str(f) for f in (hit.get("face_ids") or []) if str(f) in face_ids]
         if len(recovered) == 1:
             # One face for a GROUP is the count changing (two holes became one),
             # refused below for any other count; returning it here bound every
             # entry of the group to the same face.
             if len(_interchangeable_siblings(item)) > 1:
-                return None
-            return recovered[0]
+                return None, "selector"
+            return recovered[0], "selector"
         # A MULTI-face selector — `fix: "bolt holes"` is the canonical one, and
         # `cae.setup_static` splits it into one entry per hole, every entry
         # carrying the same phrase. Recovering them one at a time is impossible
@@ -1728,7 +1738,7 @@ def normalize_cae_bindings(package_path: Path) -> dict[str, Any]:
         # does not matter which entry takes which face. Face ids are not stable,
         # so no per-entry identity could be honoured anyway; a homogeneous group
         # is exactly the case where none is needed.
-        return _recover_group(item, recovered)
+        return _recover_group(item, recovered), "selector"
 
     def _recover_group(item: dict[str, Any], recovered: list[str]) -> str | None:
         """One face from a multi-face selector, if the group can take them all."""
@@ -1806,6 +1816,41 @@ def normalize_cae_bindings(package_path: Path) -> dict[str, Any]:
             if isinstance(entry, dict) and entry.get("target_selector") == selector
         ]
 
+    def _move_binding(item: dict[str, Any], fid: str, previous: str = "") -> str | None:
+        """Point this entry's existing NSET at `fid`; return the face it left.
+
+        The existing NSET must MOVE, not gain a sibling. Leaving the old entry
+        behind leaves an NSET bound to a retired face, which resolves to zero
+        nodes — `unbound_setup_faces`, with the right face sitting next to it
+        under another name. That applies to a face recovered from its phrase and
+        equally to a pointer the caller re-authored: measured 2026-11-05, an
+        agent re-ran cae.setup_static after an edit with the rib's new face, the
+        response confirmed it, and every deck was still refused over the
+        orphaned pre-edit LOAD_001 until it hand-wrote cae_mapping.json.
+        """
+        target_id = str(item.get("id") or "")
+        previous_face: str | None = None
+        for mapping in mappings:
+            same_entity = previous and mapping.get("cae_entity") == previous
+            same_target = target_id and str(
+                (mapping.get("maps_to") or {}).get("cae_target_id") or ""
+            ) == target_id
+            if not (same_entity or same_target):
+                continue
+            if [str(f) for f in mapping.get("face_ids") or []] == [fid]:
+                continue
+            for old_fid in mapping.get("face_ids") or []:
+                previous_face = previous_face or f"@face:{old_fid}"
+                face_to_entity.pop(str(old_fid), None)
+            mapping["face_ids"] = [fid]
+            # `face_signatures` describe the OLD face; keeping them would
+            # make the next re-verification compare against a face this
+            # binding no longer uses.
+            mapping.pop("face_signatures", None)
+            face_to_entity[fid] = str(mapping.get("cae_entity") or "")
+            moved.append(str(mapping.get("cae_entity") or ""))
+        return previous_face
+
     def _bind(item: dict[str, Any], kind: str) -> bool:
         """Rewrite item.target @face -> NSET name, adding a mapping if needed."""
         fid = _face_ref_from_target(item.get("target"), face_ids)
@@ -1814,38 +1859,21 @@ def normalize_cae_bindings(package_path: Path) -> dict[str, Any]:
             # to do — and re-resolving here would report a rebind that did not
             # happen, on every run after the first.
             return False
-        if fid is None:
-            fid = _reresolve(item)
+        if fid is not None:
+            # An explicit pointer is authoritative: it was just written by
+            # cae.setup_static or cae.apply_setup_patch.
+            _move_binding(item, fid)
+        else:
+            fid, matched_by = _reresolve(item)
             if fid is None:
                 return False
-            # The existing NSET must MOVE to the recovered face, not gain a
-            # sibling. Leaving the old entry behind leaves an NSET bound to a
-            # retired face, which resolves to zero nodes — the same
-            # `unbound_setup_faces` refusal, now with the right face sitting
-            # next to it under a different name.
             previous = str(item.get("target") or "")
-            target_id = str(item.get("id") or "")
-            previous_face: str | None = None
-            for mapping in mappings:
-                same_entity = previous and mapping.get("cae_entity") == previous
-                same_target = target_id and str(
-                    (mapping.get("maps_to") or {}).get("cae_target_id") or ""
-                ) == target_id
-                if not (same_entity or same_target):
-                    continue
-                for old_fid in mapping.get("face_ids") or []:
-                    previous_face = previous_face or f"@face:{old_fid}"
-                    face_to_entity.pop(str(old_fid), None)
-                mapping["face_ids"] = [fid]
-                # `face_signatures` describe the OLD face; keeping them would
-                # make the next re-verification compare against a face this
-                # binding no longer uses.
-                mapping.pop("face_signatures", None)
-                face_to_entity[fid] = str(mapping.get("cae_entity") or "")
+            previous_face = _move_binding(item, fid, previous)
             item["target"] = f"@face:{fid}"
             rebound.append({
                 "id": item.get("id"),
                 "selector": item.get("target_selector"),
+                "matched_by": matched_by,
                 "face_id": fid,
                 "previous_face": previous_face,
                 "previous_target": previous or None,
@@ -1905,7 +1933,7 @@ def normalize_cae_bindings(package_path: Path) -> dict[str, Any]:
     writes: dict[str, bytes] = {}
     if materials_normalized:
         writes[_PARSED_MATERIALS_PATH] = json.dumps(mats_doc, indent=2).encode()
-    if derived or rebound or (not cae_raw and mappings):
+    if derived or rebound or moved or (not cae_raw and mappings):
         from aieng.simulation.cae_mapping_writer import METHOD_POINTER, finalize_cae_mapping
 
         out_mapping = {**cae_mapping, "mappings": mappings}
