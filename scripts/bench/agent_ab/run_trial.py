@@ -33,6 +33,17 @@ DISALLOWED = [
     "Bash", "PowerShell", "Read", "Write", "Edit", "Glob", "Grep", "NotebookEdit",
     "WebFetch", "WebSearch", "Agent", "Task", "AskUserQuestion", "Skill",
 ]
+# The native arm: the same libraries, reached through a shell instead of the
+# workbench. No web, no subagents, nobody to ask — same as the MCP arm.
+NATIVE_TOOLS = ["Bash", "PowerShell", "Read", "Write", "Edit", "Glob", "Grep"]
+NATIVE_DISALLOWED = ["NotebookEdit", "WebFetch", "WebSearch", "Agent", "Task", "AskUserQuestion", "Skill"]
+TOOLS_SENTENCE = {
+    "mcp": ('You are connected to the aieng-workbench MCP server. Use its tools to do the task, '
+            'in a new project named "{project_name}".'),
+    "native": ("You have a shell in the current directory. A Python environment with build123d and "
+               "gmsh (Python API) runs as `conda run -n aieng311 python`, and the CalculiX solver as "
+               "`conda run -n calculix-env ccx`. Use them to do the task."),
+}
 # Responses whose size is the onboarding tax this experiment is about.
 TRACKED_RESULT_TOOLS = ("aieng_agent_readme", "aieng_guide", "aieng_list_projects", "aieng_agent_context")
 
@@ -76,7 +87,9 @@ def summarize_transcript(lines: list[str]) -> dict:
         kind = event.get("type")
         if kind == "result":
             final = event
-        message = event.get("message") or {}
+        message = event.get("message")
+        if not isinstance(message, dict):  # some event types carry a plain string
+            message = {}
         for block in message.get("content") or []:
             if not isinstance(block, dict):
                 continue
@@ -123,6 +136,9 @@ def main() -> int:
     parser.add_argument("--model", default="claude-sonnet-5-5")
     parser.add_argument("--max-budget-usd", default="8")
     parser.add_argument("--timeout-s", type=int, default=3600)
+    parser.add_argument("--task", choices=("bracket", "cantilever", "sizing", "bracket_answer"), default="bracket")
+    parser.add_argument("--native", action="store_true",
+                        help="no workbench: the agent gets a shell and the same libraries")
     args = parser.parse_args()
 
     checkout = args.checkout.resolve()
@@ -133,10 +149,17 @@ def main() -> int:
     for path in (data_dir, mcp_cwd, agent_cwd):
         path.mkdir(parents=True)
     config_path = run_dir / "mcp.json"
-    config_path.write_text(json.dumps(_mcp_config(checkout, data_dir, mcp_cwd), indent=2), encoding="utf-8")
+    config = {"mcpServers": {}} if args.native else _mcp_config(checkout, data_dir, mcp_cwd)
+    config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
 
     project_name = f"ab-{args.arm}-{args.index}"
-    prompt = (HERE / "prompt.md").read_text(encoding="utf-8").format(project_name=project_name)
+    if args.task == "bracket":
+        if args.native:
+            sys.exit("the bracket task is scored from the workbench package; use an answer-scored task")
+        prompt = (HERE / "prompt.md").read_text(encoding="utf-8").format(project_name=project_name)
+    else:
+        tools = TOOLS_SENTENCE["native" if args.native else "mcp"].format(project_name=project_name)
+        prompt = (HERE / f"task_{args.task}.md").read_text(encoding="utf-8").format(tools=tools)
     claude = shutil.which("claude")
     if claude is None:
         sys.exit("claude CLI not found on PATH")
@@ -145,8 +168,8 @@ def main() -> int:
         "--output-format", "stream-json", "--verbose",
         "--strict-mcp-config", "--mcp-config", str(config_path),
         "--setting-sources", "project",
-        "--allowedTools", "mcp__aieng-workbench",
-        "--disallowedTools", *DISALLOWED,
+        "--allowedTools", *(NATIVE_TOOLS if args.native else ["mcp__aieng-workbench"]),
+        "--disallowedTools", *(NATIVE_DISALLOWED if args.native else DISALLOWED),
         "--max-budget-usd", str(args.max_budget_usd),
         "--no-session-persistence",
     ]
@@ -164,6 +187,16 @@ def main() -> int:
     summary.update(arm=args.arm, index=args.index, model=args.model, exit_code=exit_code,
                    wall_s=round(time.time() - started, 1))
 
+    summary["task"] = args.task
+    summary["native"] = args.native
+    if args.task != "bracket":
+        import score_answer
+
+        scorer = getattr(score_answer, f"score_{args.task}")
+        summary["score"] = scorer(summary.get("final_text"))
+        summary["trial_status"] = "scored"
+        return _finish(run_dir, summary)
+
     score_env = os.environ.copy()
     score_env.update(PYTHONPATH=str(checkout / "aieng-ui" / "backend"), AIENG_PLATFORM_DATA=str(data_dir))
     scored = subprocess.run(
@@ -179,6 +212,11 @@ def main() -> int:
     except (IndexError, ValueError):
         summary["score"] = {"error": (scored.stderr or scored.stdout)[-2000:]}
         summary["trial_status"] = "scoring_failed"
+    return _finish(run_dir, summary)
+
+
+def _finish(run_dir: Path, summary: dict) -> int:
+    """Write summary.json and print the headline numbers."""
     (run_dir / "summary.json").write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
     print(json.dumps({k: summary[k] for k in ("arm", "index", "trial_status", "cost_usd", "input_tokens_total",
                                               "tool_calls_total", "error_codes")}, default=str))

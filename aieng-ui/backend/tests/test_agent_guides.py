@@ -47,23 +47,24 @@ def test_the_quickstart_describes_the_loop_it_guards() -> None:
     assert "stale_deck" in content
 
 
-def test_quickstart_is_compact_and_preserves_first_three_calls() -> None:
+def test_the_quickstart_is_the_whole_required_read() -> None:
+    """One onboarding call carries the start, the core loop and both contracts.
+
+    Onboarding was readme + guide cad + guide cae: three calls and a turn
+    before any work, for ~2k tokens of contract.
+    """
     from app import agent_guides
 
-    result = agent_guides.quickstart_result()
+    content = agent_guides.quickstart_result()["content"]
 
-    assert result["mode"] == "quickstart"
-    assert len(result["content"]) < 8_000
-    assert "aieng.agent_readme" in result["content"]
-    assert "aieng.list_projects" in result["content"]
-    assert "aieng.agent_context" in result["content"]
-    assert "aieng.guide" in result["content"]
-    assert "Before the first CAD modeling or geometry-edit action" in result["content"]
-    assert "cad.confirm_modeling_plan" in result["content"]
-    assert "AskUserQuestion" in result["content"]
-    assert "request_user_input" in result["content"]
-    assert "Re-read a guide only if" in result["content"]
-    assert 'code: "guide_required"' in result["content"]
+    for fragment in (
+        "aieng.create_project", "aieng.list_projects", "aieng.agent_context",
+        'code: "guide_required"', "Re-read a guide only if",
+        "## CAD contract", "## CAE contract",
+        "cad.confirm_modeling_plan", "AskUserQuestion", "request_user_input",
+    ):
+        assert fragment in content, fragment
+    assert set(agent_guides.QUICKSTART_CONTRACT_TOPICS) == {"cad", "cae"}
 
 
 def test_full_guide_is_served_whole_in_parts_that_fit_a_client_budget() -> None:
@@ -158,12 +159,9 @@ def test_required_reading_stays_small() -> None:
     """
     from app import agent_guides
 
-    required = (
-        agent_guides.quickstart_result()["content"]
-        + agent_guides.guide_result("cad")["content"]
-        + agent_guides.guide_result("cae")["content"]
-    )
-    assert len(required) < 24_000
+    # The quickstart now carries both contracts, so it IS the required read.
+    required = agent_guides.quickstart_result()["content"]
+    assert len(required) < 14_000
 
 
 def test_split_kept_the_contract_in_the_mandatory_read() -> None:

@@ -42,6 +42,7 @@ the way the directory it describes did.
 | [review-handoff-workflow.md](review-handoff-workflow.md) | Local-first review handoff |
 | [workbench_ui_comfort_benchmark.md](workbench_ui_comfort_benchmark.md) | The product UX benchmark the UI is held to |
 | [roadmap.md](roadmap.md) | The live workspace-level roadmap |
+| [peer-research-and-feedback-efficiency-2026-11-05.md](peer-research-and-feedback-efficiency-2026-11-05.md) | Peer research (CADSmith, CalculiX-feedback CAD agents, Anthropic tool guidance) and the follow-up: compact responses keep the 4-view image and drop the feature graph, unindented MCP JSON, acceptance verdict on extraction — measured −28 % tool-result text, images now reach the agent |
 | [agent-adaptation-ab-2026-11-05.md](agent-adaptation-ab-2026-11-05.md) | Measured (headless Claude Code A/B): the gated cad/cae reads cut from ~26k to ~3.5k tokens with no loss in task success; fixed writing tools labelled read-only, which current agents ran in parallel and which corrupted a package |
 | [naive-baseline-comparison-2026-09-07.md](naive-baseline-comparison-2026-09-07.md) | Measured: the workbench vs. plain build123d + gmsh + ccx on the same task — same numbers, 3.3x slower, and the injected stale-deck failure caught only by the workbench |
 

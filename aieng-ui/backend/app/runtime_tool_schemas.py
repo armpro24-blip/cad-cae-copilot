@@ -204,13 +204,13 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     },
     "cae.mesh_convergence": {
         "type": "object",
-        "required": ["project_id", "mesh_sizes"],
+        "required": ["project_id"],
         "properties": {
             "project_id": {"type": "string"},
             "mesh_sizes": {
                 "type": "array",
                 "items": {"type": "number"},
-                "description": "Gmsh target element sizes (mm) to solve at — 3+ progressively finer (smaller) sizes recommended for a Grid Convergence Index; 2-6 allowed.",
+                "description": "Gmsh target element sizes (mm) to solve at — 3+ progressively finer (smaller) sizes recommended for a Grid Convergence Index; 2-6 allowed. Omit to study the current mesh: its size becomes the finest level, with two coarser ones at a ratio of sqrt(2).",
             },
             "metrics": {
                 "type": "array",
@@ -963,7 +963,8 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                 "description": (
                     "Response verbosity. full (default) returns the full geometry_report "
                     "and thumbnail unless thumbnail=false. compact returns a one-line "
-                    "geometry_report summary and omits the thumbnail unless thumbnail=true; "
+                    "geometry_report summary, omits the feature graph and keeps the thumbnail "
+                    "(pass thumbnail=false to skip it); "
                     "use compact for iterative MCP loops to reduce tokens."
                 ),
             },
@@ -1627,7 +1628,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "response_detail": {
                 "type": "string",
                 "enum": ["full", "compact"],
-                "description": "full (default) returns the full geometry_report; compact returns a one-line summary and omits the thumbnail unless thumbnail=true.",
+                "description": "full (default) returns the full geometry_report and feature graph; compact returns a one-line geometry summary without the feature graph. The thumbnail is included either way unless thumbnail=false.",
             },
         },
         "additionalProperties": True,
@@ -1649,7 +1650,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "response_detail": {
                 "type": "string",
                 "enum": ["full", "compact"],
-                "description": "full (default) returns the full geometry_report; compact returns a one-line summary and omits the thumbnail unless thumbnail=true.",
+                "description": "full (default) returns the full geometry_report and feature graph; compact returns a one-line geometry summary without the feature graph. The thumbnail is included either way unless thumbnail=false.",
             },
         },
         "additionalProperties": True,
@@ -1680,7 +1681,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "response_detail": {
                 "type": "string",
                 "enum": ["full", "compact"],
-                "description": "full (default) returns the full geometry_report; compact returns a one-line summary and omits the thumbnail unless thumbnail=true.",
+                "description": "full (default) returns the full geometry_report and feature graph; compact returns a one-line geometry summary without the feature graph. The thumbnail is included either way unless thumbnail=false.",
             },
         },
         "additionalProperties": True,
@@ -2217,10 +2218,10 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "material_hint": {"type": "string", "description": "Optional material hint for AI preprocessing."},
             "mesh_hint": {"type": "string", "enum": ["coarse", "medium", "fine"], "description": "Optional mesh hint for AI preprocessing."},
             "mesh_size_mm": {"type": "number", "exclusiveMinimum": 0, "description": "Target element size (mm). Triggers mesh generation."},
-            "run_id": {"type": "string", "description": "Solver run id, default pipeline_run_001."},
+            "run_id": {"type": "string", "description": "Solver run id; default: the next free run_NNN, so an earlier run is never reused."},
             "load_case_id": {"type": "string", "description": "Load case id, default load_case_001."},
             "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 3600, "description": "Solver timeout in seconds (default 180)."},
-            "overwrite": {"type": "boolean", "description": "Overwrite existing solver deck and run artifacts (default true)."},
+            "overwrite": {"type": "boolean", "description": "Overwrite an existing run's deck and artifacts (default false: an earlier result is never destroyed)."},
         },
         "additionalProperties": True,
     },

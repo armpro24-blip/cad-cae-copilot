@@ -3154,11 +3154,33 @@ def _normalize_response_detail(value: Any) -> str:
 
 
 def _should_render_thumbnail(payload_or_flag: Any, response_detail: str) -> bool:
+    """Render the 4-view contact sheet unless the caller passed `thumbnail: false`.
+
+    Compact responses keep it too. The image is the agent's only way to SEE the
+    geometry and costs ~300 image tokens at 480 px, less than the slim feature
+    graph compact mode drops. Compact used to omit it, and since agents follow
+    the advice to iterate in compact mode, measured trials never received one.
+    External ablations put the visual check among the largest single gains in
+    agentic CAD (CADSmith arXiv 2603.26512; arXiv 2605.17448, 0 -> 7 views).
+    """
     if isinstance(payload_or_flag, dict) and "thumbnail" in payload_or_flag:
         return bool(payload_or_flag.get("thumbnail"))
     if isinstance(payload_or_flag, bool):
         return payload_or_flag
-    return response_detail != "compact"
+    return True
+
+
+def _feature_graph_field(feature_graph: dict[str, Any], response_detail: str) -> dict[str, Any]:
+    """The `feature_graph` entry of a CAD response: absent in compact mode.
+
+    Even slimmed it was the largest field of a compact build/edit response
+    (~5.7k characters on the bracket). It is persisted and served by
+    cad.list_editable_parameters and aieng.agent_context, and the response keeps
+    its `editable_parameters` summary; every verdict field stays.
+    """
+    if response_detail == "compact":
+        return {}
+    return {"feature_graph": _slim_feature_graph_for_response(feature_graph)}
 
 
 def _geometry_report_summary(report: dict[str, Any]) -> str:
@@ -3686,7 +3708,7 @@ def _finish_execute_build123d_response(
             "feature_count": feature_count,
             "bounding_box": _union_solid_bbox(topo),
         },
-        "feature_graph": _slim_feature_graph_for_response(feature_graph),
+        **_feature_graph_field(feature_graph, response_detail),
         "geometry_report": _geometry_report_for_response(geometry_report_for_response, response_detail),
         "geometry_report_summary": _geometry_report_summary(geometry_report_for_response),
         "modeling_fidelity": _fidelity_brief(topo, feature_graph),
@@ -7937,7 +7959,7 @@ def execute_build123d_code(
             "feature_count": feature_count,
             "bounding_box": _union_solid_bbox(topo),
         },
-        "feature_graph": _slim_feature_graph_for_response(feature_graph),
+        **_feature_graph_field(feature_graph, response_detail),
         "geometry_report": _geometry_report_for_response(geometry_report_for_response, response_detail),
         "geometry_report_summary": _geometry_report_summary(geometry_report_for_response),
         "modeling_fidelity": _fidelity_brief(topo, feature_graph),
@@ -7962,7 +7984,7 @@ def execute_build123d_code(
     # mesh_meta is available, colorize each part by its build123d `.color` so
     # parts can be distinguished visually. When a reference image is attached
     # to the project, tile it next to the views for side-by-side comparison.
-    # Opt out with {"thumbnail": false}; compact mode defaults thumbnails off.
+    # Opt out with {"thumbnail": false}; compact mode keeps it (see _should_render_thumbnail).
     if _should_render_thumbnail(payload, response_detail):
         face_colors = _build_face_colors_from_mesh_meta(mesh_meta)
         # Resolve the project package via `project.get("aieng_file")` — after a
@@ -9878,6 +9900,10 @@ def preview_build123d_parameter_edit(
         )
     except ValueError as exc:
         return {"status": "error", "code": "invalid_contract", "message": str(exc)}
+    # The caller may have named the part label and constant; continue with the
+    # graph's own ids so responses, proposals and the audit log stay canonical.
+    feature_id = str(contract["feature"].get("id") or feature_id)
+    parameter_name = str(contract["parameter"].get("name") or parameter_name)
 
     preview = _compute_parameter_edit_preview(
         settings, pkg_path, contract, new_value, timeout=timeout
@@ -9964,6 +9990,10 @@ def edit_build123d_parameter(
         )
     except ValueError as exc:
         return {"status": "error", "code": "invalid_contract", "message": str(exc)}
+    # The caller may have named the part label and constant; continue with the
+    # graph's own ids so responses, proposals and the audit log stay canonical.
+    feature_id = str(contract["feature"].get("id") or feature_id)
+    parameter_name = str(contract["parameter"].get("name") or parameter_name)
 
     param_info = contract["parameter"]
     cad_parameter_name = param_info.get("cad_parameter_name") or parameter_name
@@ -10182,7 +10212,7 @@ def edit_build123d_parameter(
             "feature_count": len(feature_graph.get("features", [])),
             "bounding_box": _union_solid_bbox(topo),
         },
-        "feature_graph": _slim_feature_graph_for_response(feature_graph),
+        **_feature_graph_field(feature_graph, response_detail),
         "geometry_report": _geometry_report_for_response(geometry_report_full, response_detail),
         "geometry_report_summary": _geometry_report_summary(geometry_report_full),
         "modeling_fidelity": _fidelity_brief(topo, feature_graph),
@@ -10459,7 +10489,7 @@ def _rebuild_after_part_edit(
             "feature_count": len(feature_graph.get("features", [])),
             "bounding_box": _union_solid_bbox(topo),
         },
-        "feature_graph": _slim_feature_graph_for_response(feature_graph),
+        **_feature_graph_field(feature_graph, response_detail),
         "geometry_report": _geometry_report_for_response(geometry_report_full, response_detail),
         "geometry_report_summary": _geometry_report_summary(geometry_report_full),
         "modeling_fidelity": _fidelity_brief(topo, feature_graph),

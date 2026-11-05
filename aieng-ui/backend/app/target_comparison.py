@@ -94,6 +94,47 @@ def compare_package_targets(settings: Settings, project_id: str) -> dict[str, An
     )
 
 
+def acceptance_verdict(
+    settings: Settings, project_id: str, package_path: str | Path | None = None,
+) -> dict[str, Any] | None:
+    """Pass/fail against the package's acceptance criteria, compactly.
+
+    The comparison reached the agent only inside aieng.agent_context (~8k
+    tokens). cae.extract_solver_results returns this where the numbers are
+    produced, so the agent sees which requirement failed and by how much without
+    another call — the compact requirement report that gave the largest gains in
+    the CalculiX feedback loop of arXiv 2605.17448. None when the package records
+    no criteria (or the comparison fails), so such a response is unchanged.
+
+    The comparison reads the PROJECT's package. When `package_path` names
+    another package (an explicit override, e.g. a design variant), the verdict
+    is omitted: the project's criteria evaluated against the project's metrics
+    would be presented beside the variant's freshly extracted numbers.
+    """
+    if package_path is not None:
+        try:
+            if Path(package_path).resolve() != Path(_resolve_package(settings, project_id)).resolve():
+                return None
+        except Exception:  # noqa: BLE001 - cannot tell which package: no verdict
+            return None
+    try:
+        comparison = compare_package_targets(settings, project_id)
+    except Exception:  # noqa: BLE001 - a verdict must never fail the extraction
+        return None
+    summary = comparison.get("summary") or {}
+    if not summary.get("total"):
+        return None
+    # reason_code says WHY a target is unknown (missing metric, ambiguous load
+    # case), which decides the agent's next step.
+    keys = ("target_id", "target_type", "comparator", "expected", "actual", "status", "reason_code")
+    not_passed = [
+        {k: item[k] for k in keys if item.get(k) is not None}
+        for item in comparison.get("items") or []
+        if isinstance(item, dict) and item.get("status") != "pass"
+    ]
+    return {"summary": summary, "not_passed": not_passed}
+
+
 def _enrich_with_mapping(
     settings: Settings,
     project_id: str,

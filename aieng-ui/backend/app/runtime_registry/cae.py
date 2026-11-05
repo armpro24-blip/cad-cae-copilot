@@ -5,7 +5,9 @@ Extracted from runtime_tool_registry.py to keep domain logic focused.
 
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 from typing import Any
 
 from aieng.cae_run_comparison import compare_runs as _compare_runs
@@ -38,12 +40,16 @@ def rebind_warnings_for(source_deck_synthesis: Any) -> list[str]:
     for entry in entries:
         if not isinstance(entry, dict):
             continue
+        found_by = (
+            "the only face with the same type, normal and area"
+            if entry.get("matched_by") == "signature"
+            else f"{str(entry.get('selector'))!r}"
+        )
         warnings.append(
             f"{entry.get('id')}: the face this setup named "
             f"({entry.get('previous_face') or 'the recorded @face: pointer'}) no "
-            f"longer exists; {str(entry.get('selector'))!r} now resolves to "
-            f"@face:{entry.get('face_id')} and the binding was moved to it. "
-            "Confirm that is the face you intend."
+            f"longer exists; {found_by} is now @face:{entry.get('face_id')} and "
+            "the binding was moved to it. Confirm that is the face you intend."
         )
     # Re-split area shares are the same kind of signal: the newtons on each face
     # are no longer the ones the setup recorded.
@@ -182,6 +188,53 @@ def _load_magnitude_and_direction(
         axis[dof - 1] = -1.0 if float(value) < 0 else 1.0
         return abs(float(value)), axis
     return None, None
+
+
+def _attach_peak_singularity(package_path: Path, clusters: list[dict[str, Any]],
+                             warnings: list[str]) -> None:
+    """Give each stress cluster a `peak_singularity` verdict (see `stress_peak_check`)."""
+    import tempfile
+    import zipfile
+
+    from ..stress_peak_check import concave_edge_samples, judge_stress_peak
+
+    if not any(isinstance(c, dict) and c.get("peak_location") for c in clusters):
+        return
+    with zipfile.ZipFile(package_path) as zf:
+        names = set(zf.namelist())
+
+        def _read(member: str) -> Any:
+            return json.loads(zf.read(member)) if member in names else None
+
+        element_size = ((_read("simulation/mesh/mesh_metadata.json") or {}).get("target_size_mm"))
+        bcs = (_read("simulation/cae_imports/parsed_boundary_conditions.json") or {}).get(
+            "boundary_conditions") or []
+        step = zf.read("geometry/generated.step") if "geometry/generated.step" in names else None
+    # A rigid restraint of every translation is singular at its edge; a roller
+    # or symmetry plane (one DOF) is not.
+    fully_fixed = {
+        str(bc.get("id")) for bc in bcs if isinstance(bc, dict)
+        and int(bc.get("dof_start") or 0) <= 1 and int(bc.get("dof_end") or 0) >= 3
+    }
+    samples = None
+    if step is not None and isinstance(element_size, (int, float)) and element_size > 0:
+        with tempfile.TemporaryDirectory() as tmp:
+            step_path = Path(tmp) / "model.step"
+            step_path.write_bytes(step)
+            try:
+                samples = concave_edge_samples(step_path, float(element_size) / 4.0)
+            except Exception as exc:  # noqa: BLE001 - say the edges were not examined
+                warnings.append(f"sharp-edge check skipped: {type(exc).__name__}: {exc}")
+    for cluster in clusters:
+        peak = cluster.get("peak_location") if isinstance(cluster, dict) else None
+        if not peak:
+            continue
+        target = cluster.get("cae_target_ref")
+        cluster["peak_singularity"] = judge_stress_peak(
+            peak, concave_samples=samples,
+            element_size_mm=float(element_size) if isinstance(element_size, (int, float)) else None,
+            restraint_id=str(target) if target in fully_fixed else None,
+        )
 
 
 def _describe_cae_setup(package_path: Path) -> list[str]:
@@ -1189,6 +1242,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         boundary_conditions = [
             {"id": f"bc_{i + 1:03d}", "type": "fixed", "target": f"@face:{fid}",
              "target_selector": fix_selector,
+             "target_signature": _intent.face_signature(topology, fid),
              "dof_start": 1, "dof_end": 3, "value": 0}
             for i, fid in enumerate(fix_hit["face_ids"])
         ]
@@ -1250,6 +1304,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             loads = [
                 {"id": f"load_{i + 1:03d}", "type": "force", "target": f"@face:{fid}",
                  "target_selector": load_selector,
+                 "target_signature": _intent.face_signature(topology, fid),
                  "value_n": share, "direction": direction}
                 for i, (fid, share) in enumerate(zip(load_hit["face_ids"], shares))
             ]
@@ -1690,6 +1745,12 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
 
         if isinstance(result, dict):
             result.setdefault("frd_source", frd_source)
+            if project_id and result.get("status") != "error":
+                from .. import target_comparison as _targets
+
+                acceptance = _targets.acceptance_verdict(active_settings, str(project_id), package_path)
+                if acceptance:
+                    result["acceptance_verdict"] = acceptance
 
         return result
 
@@ -1849,6 +1910,13 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                     f"Field regions were extracted, but field summary refresh failed: {type(exc).__name__}: {exc}"
                 )
 
+        clusters = result.get("clusters", [])
+        if str(field).lower() in ("s", "stress"):
+            try:
+                _attach_peak_singularity(_Path(package_path_str), clusters, warnings)
+            except Exception as exc:  # noqa: BLE001 - the regions themselves were extracted
+                warnings.append(f"singularity check failed: {type(exc).__name__}: {exc}")
+
         # Refresh the CAE -> Shape IR result map so hotspots stay tied to nodes.
         cae_result_map_status = "ok"
         try:
@@ -1866,7 +1934,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             "out_path": result.get("out_path"),
             "cluster_count": result.get("cluster_count", 0),
             "cae_result_map_refreshed": cae_result_map_status,
-            "clusters": result.get("clusters", []),
+            "clusters": clusters,
             "warnings": warnings,
             "artifacts": [
                 {
@@ -2797,9 +2865,10 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 "status": "error",
                 "code": "stale_topology_references",
                 "message": (
-                    "CAE face references do not match the current topology. "
-                    "Re-run AI preprocessing to refresh face references, or update "
-                    "simulation/cae_mapping.json manually via cae.apply_setup_patch."
+                    "CAE face references do not match the current topology (the geometry "
+                    "changed since the setup was bound). Re-run cae.setup_static with the "
+                    "same words, or with the faces' new @face: ids, then solve again; "
+                    "cae.prepare_solver_run reports which references are stale."
                 ),
                 "topology_validation": topology_validation,
                 "solver_execution_performed": False,
@@ -2968,6 +3037,14 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                     changed_artifacts.append(art)
                     return True
                 except FileExistsError:
+                    # The deck `cae.generate_solver_input` wrote under this run
+                    # is the one just solved: already there, nothing refused.
+                    try:
+                        with _zipfile.ZipFile(package_path, "r") as zf:
+                            if zf.read(artifact_path) == source.read_bytes():
+                                return True
+                    except (KeyError, OSError, _zipfile.BadZipFile):
+                        pass
                     warnings.append(f"{artifact_path} already exists and overwrite=False")
                 except Exception as exc:
                     warnings.append(f"Failed to write {artifact_path}: {exc}")
@@ -2990,11 +3067,17 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                         "metrics come from the solver's output file, which was "
                         "not written into the package."
                     )
-            if dat_path:
-                _write_safe(f"{run_prefix}/outputs/result.dat", dat_path)
+            dat_in_package = bool(dat_path) and _write_safe(f"{run_prefix}/outputs/result.dat", dat_path)
 
             # Extract results if requested — route by analysis type: modal/buckling
             # read the .dat (eigenfrequencies / buckling factors), static reads FRD.
+            # `overwrite` protects this RUN's members. `results/computed_metrics.json`
+            # is the package's latest extraction, and once this run's own result
+            # file has landed it is this run's to replace: the earlier run keeps
+            # its own FRD, which is what `cae.compare_runs` reads. Passing the
+            # run-level `overwrite=False` through refused every re-solve's
+            # extraction, so `cae.run_simulation_pipeline` returned empty metrics
+            # after each edit.
             extraction_failed = False
             extracted_metrics: dict[str, Any] | None = None
             if extract_results and analysis_type in ("modal", "buckling") and dat_path:
@@ -3006,7 +3089,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                         aieng_root=active_settings.aieng_root,
                         load_case_id=load_case_id,
                         software=solver,
-                        overwrite=overwrite,
+                        overwrite=overwrite or dat_in_package,
                     )
                     extracted_metrics = ext_result.get("metrics")
                     changed_artifacts.extend(ext_result.get("artifacts", []))
@@ -3027,7 +3110,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                         aieng_root=active_settings.aieng_root,
                         load_case_id=load_case_id,
                         software=solver,
-                        overwrite=overwrite,
+                        overwrite=overwrite or frd_in_package,
                         # ...and only when the package member IS this run's FRD.
                         # If the write was refused (overwrite=False over an
                         # existing result), that member is the PREVIOUS run's
@@ -3798,6 +3881,101 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         input_schema=_schema("cae.import_solver_evidence"),
     )
 
+    def _compact_phases(phase_results: dict[str, Any]) -> dict[str, Any]:
+        """Each stage's verdict and warnings, without its full payload."""
+        keep = ("ok", "status", "code", "message", "warnings", "element_count", "rebound_from_selector")
+        return {
+            phase: {k: v for k, v in out.items() if k in keep and v not in (None, [], {}, "")}
+            for phase, out in phase_results.items()
+            if isinstance(out, dict)
+        }
+
+    def _pipeline_findings(
+        package_path: Path, project_id: str, run_id: str,
+        solver_result: dict[str, Any], invoke: Any,
+    ) -> dict[str, Any]:
+        """Metrics, mesh accuracy, acceptance verdict and the change since the last run."""
+        import zipfile as _zipfile
+
+        from .. import target_comparison as _targets
+
+        findings: dict[str, Any] = {}
+        # What was actually solved, in engineering words, beside the numbers it
+        # produced: a model that runs and converges can still solve the wrong
+        # physics (arXiv 2605.09360), and the boundary conditions are where
+        # agent-built simulations most often go wrong. Read it back here, not
+        # in a separate preflight call the one-call loop no longer makes.
+        try:
+            findings["setup"] = _describe_cae_setup(package_path)
+        except Exception:  # noqa: BLE001 - a description must never fail a completed run
+            pass
+        cases = (solver_result.get("extracted_metrics") or {}).get("load_cases") or []
+        findings["metrics"] = {
+            case.get("id"): {
+                name: {"value": m.get("value"), "unit": m.get("unit")}
+                for name, m in (case.get("metrics") or {}).items() if isinstance(m, dict)
+            }
+            for case in cases if isinstance(case, dict)
+        }
+        previous: list[str] = []
+        try:
+            with _zipfile.ZipFile(package_path) as zf:
+                names = zf.namelist()
+                if "simulation/mesh/mesh_metadata.json" in names:
+                    meta = json.loads(zf.read("simulation/mesh/mesh_metadata.json"))
+                    accuracy = meta.get("accuracy") or {}
+                    findings["mesh"] = {
+                        "element_count": meta.get("element_count"),
+                        "target_size_mm": meta.get("target_size_mm"),
+                        "accuracy_band": accuracy.get("band"),
+                        "accuracy_reason": accuracy.get("reason"),
+                    }
+                for name in names:
+                    parts = name.split("/")
+                    if (len(parts) == 4 and parts[:2] == ["simulation", "runs"]
+                            and parts[3] == "solver_run.json" and parts[2] != run_id):
+                        record = json.loads(zf.read(name))
+                        if "completed" in (record.get("state"), record.get("status")):
+                            previous.append(parts[2])
+        except Exception:  # noqa: BLE001 - findings are best-effort; the run itself succeeded
+            pass
+        if previous:
+            baseline = max(previous)
+            comparison = invoke("cae.compare_runs", {
+                "project_id": project_id, "baseline_run": baseline, "current_run": run_id,
+            })
+            if isinstance(comparison, dict) and comparison.get("status") == "ok":
+                findings["change_since_previous_run"] = {
+                    "baseline_run": baseline,
+                    "geometry_changed": comparison.get("geometry_changed"),
+                    "binding_count_changed": comparison.get("binding_count_changed"),
+                    "changes": [
+                        {k: row.get(k) for k in ("metric", "load_case_id", "before", "after", "unit", "percent_change")}
+                        for row in comparison.get("comparison") or []
+                    ],
+                    "warnings": comparison.get("warnings") or [],
+                }
+        # Whether the peak stress is a number at all. Without the workbench, agents
+        # found the bracket's peak was a singularity with a three-mesh study; with
+        # it they ran none and quoted it with a hedge. The geometry says so at no
+        # solve cost.
+        has_stress = any("max_von_mises_stress" in m for m in findings["metrics"].values())
+        if has_stress:
+            regions = invoke("cae.extract_field_regions", {
+                "project_id": project_id, "field": "stress", "overwrite": True,
+                "frd_path": f"simulation/runs/{run_id}/outputs/result.frd",
+            })
+            clusters = regions.get("clusters") if isinstance(regions, dict) else None
+            peaks = [c for c in clusters or [] if isinstance(c, dict) and c.get("peak_singularity")]
+            if peaks:
+                top = max(peaks, key=lambda c: (c.get("magnitude") or {}).get("value") or 0.0)
+                findings["stress_peak"] = {"value_mpa": (top.get("magnitude") or {}).get("value"),
+                                           **top["peak_singularity"]}
+        verdict = _targets.acceptance_verdict(active_settings, project_id, package_path)
+        if verdict:
+            findings["acceptance_verdict"] = verdict
+        return findings
+
     def _tool_cae_run_simulation_pipeline(inp: dict[str, Any], _ctx: dict[str, Any]) -> dict[str, Any]:
         """Run the full CAE pipeline from setup to results.
 
@@ -3820,12 +3998,16 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 "tool": "cae.run_simulation_pipeline",
             }
 
-        run_id: str = inp.get("runId") or inp.get("run_id") or "pipeline_run_001"
+        requested_run_id: str | None = inp.get("runId") or inp.get("run_id")
         load_case_id: str = inp.get("loadCaseId") or inp.get("load_case_id") or "load_case_001"
         task_description = str(inp.get("task_description") or "").strip()
         mesh_size_raw = inp.get("mesh_size_mm", inp.get("meshSizeMm"))
         timeout_seconds: int = int(inp.get("timeout_seconds", inp.get("timeoutSeconds", 180)))
-        overwrite: bool = bool(inp.get("overwrite", True))
+        # Never destroy an earlier result by default. This was True with a fixed
+        # "pipeline_run_001", so solving again after an edit overwrote the
+        # baseline that cae.compare_runs needs — the one-call path silently did
+        # what the step-by-step path refuses.
+        overwrite: bool = bool(inp.get("overwrite", False))
 
         # Resolve package path once.
         proj = get_project(active_settings, project_id)
@@ -3837,6 +4019,16 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
                 "message": f"Project {project_id} has no .aieng package.",
                 "tool": "cae.run_simulation_pipeline",
             }
+
+        if requested_run_id:
+            run_id = str(requested_run_id)
+        else:
+            # Each pipeline call is a new run, named like every other run
+            # (run_NNN), so a re-solve after an edit never touches the baseline.
+            import zipfile as _zipfile
+
+            with _zipfile.ZipFile(package_path) as _zf:
+                run_id = next_run_id(set(_zf.namelist()))
 
         phase_results: dict[str, Any] = {}
 
@@ -3897,16 +4089,31 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         # Check whether a mesh already exists and whether the caller wants to override it.
         import zipfile as _zipfile
 
+        # Re-mesh whenever the existing mesh cannot be the right one: none yet,
+        # or built for an earlier geometry revision. The caller should not have
+        # to know — after cad.edit_parameter the next pipeline call is simply
+        # correct, instead of being refused as stale_mesh at deck generation.
         mesh_required = mesh_size_raw is not None
+        mesh_reason = "mesh_size_mm given" if mesh_required else None
+        previous_mesh_size: float | None = None
         if not mesh_required:
             try:
                 with _zipfile.ZipFile(package_path, "r") as zf:
-                    mesh_required = "simulation/mesh/mesh.inp" not in set(zf.namelist())
+                    names = set(zf.namelist())
+                    if "simulation/mesh/mesh.inp" not in names:
+                        mesh_required, mesh_reason = True, "no mesh yet"
+                    elif "simulation/mesh/mesh_metadata.json" in names:
+                        meta = json.loads(zf.read("simulation/mesh/mesh_metadata.json"))
+                        previous_mesh_size = meta.get("target_size_mm")
             except Exception:
-                mesh_required = True
+                mesh_required, mesh_reason = True, "existing mesh unreadable"
+            if not mesh_required and _stale_mesh_revisions(package_path) is not None:
+                mesh_required, mesh_reason = True, "mesh predates the current geometry"
 
         if mesh_required:
             mesh_inp: dict[str, Any] = {"project_id": project_id}
+            if mesh_size_raw is None and isinstance(previous_mesh_size, (int, float)):
+                mesh_inp["mesh_size_mm"] = float(previous_mesh_size)  # keep the chosen resolution
             if mesh_size_raw is not None:
                 try:
                     mesh_inp["mesh_size_mm"] = float(mesh_size_raw)
@@ -3963,7 +4170,7 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         phase_results["run_solver"] = solver_result
 
         ok = bool(solver_result.get("ok")) and bool(solver_result.get("solver_execution_performed"))
-        return {
+        result: dict[str, Any] = {
             "status": "ok" if ok else (solver_result.get("status") or "error"),
             "tool": "cae.run_simulation_pipeline",
             "ok": ok,
@@ -3971,13 +4178,21 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             "run_id": run_id,
             "load_case_id": load_case_id,
             "solver_execution_performed": solver_result.get("solver_execution_performed", False),
-            "phase_results": phase_results,
+            "mesh_regenerated": {"done": mesh_required, "reason": mesh_reason},
             "message": (
                 "Simulation pipeline completed."
                 if ok
                 else solver_result.get("message") or "Solver stage did not complete successfully."
             ),
         }
+        if not ok:
+            result["phase_results"] = phase_results
+            return result
+        # What the agent needs to judge the run, in the call that produced it;
+        # each stage's full output stays available from its own tool.
+        result["phase_results"] = _compact_phases(phase_results)
+        result.update(_pipeline_findings(package_path, project_id, run_id, solver_result, _invoke))
+        return result
 
     def _tool_cae_mesh_convergence(inp: dict[str, Any], _ctx: dict[str, Any]) -> dict[str, Any]:
         """Solve the project's current static geometry at several mesh sizes and report,
@@ -3991,11 +4206,23 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
         if not pid:
             return {"status": "error", "code": "bad_input", "message": "project_id is required"}
         sizes = inp.get("mesh_sizes")
+        defaulted = False
+        if sizes is None:
+            # "Is this result converged?" means the mesh the result came from.
+            # Measured 2026-11-05: three of nine agent runs called this without
+            # mesh_sizes and were refused. Default to that mesh as the finest
+            # level plus two coarser ones at r = sqrt(2), above the r >= 1.3 the
+            # GCI method asks for (Celik et al. 2008).
+            current = _current_mesh_size(pid)
+            if current is not None:
+                sizes = [round(current * 2.0, 3), round(current * 2.0 ** 0.5, 3), current]
+                defaulted = True
         if not isinstance(sizes, list) or not sizes:
             return {"status": "error", "code": "bad_input",
-                    "message": "mesh_sizes must be a non-empty array of element sizes (mm)"}
+                    "message": "mesh_sizes must be a non-empty array of element sizes (mm); "
+                               "omit it only when a mesh exists, whose size then becomes the finest level"}
         try:
-            return run_mesh_convergence(
+            report = run_mesh_convergence(
                 active_settings,
                 pid,
                 mesh_sizes=sizes,
@@ -4006,6 +4233,23 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             )
         except Exception as exc:  # noqa: BLE001
             return {"status": "error", "code": "convergence_failed", "message": f"{type(exc).__name__}: {exc}"}
+        if defaulted and isinstance(report, dict):
+            report["mesh_sizes_defaulted"] = sizes
+        return report
+
+    def _current_mesh_size(project_id: str) -> float | None:
+        """Target element size of the project's current mesh, if there is one."""
+        import zipfile as _zipfile
+
+        try:
+            proj = get_project(active_settings, project_id)
+            pkg = resolve_project_path(active_settings, project_id, proj.get("aieng_file"))
+            with _zipfile.ZipFile(pkg) as zf:
+                meta = json.loads(zf.read("simulation/mesh/mesh_metadata.json"))
+        except Exception:  # noqa: BLE001 - no project, package or mesh: no default
+            return None
+        size = meta.get("target_size_mm")
+        return float(size) if isinstance(size, (int, float)) and size > 0 else None
 
     rt.register_tool(
         "cae.run_simulation_pipeline",
@@ -4016,10 +4260,12 @@ def register_cae_tools(rt: Any, active_settings: Any, app_context: Any, _schema:
             "[APPROVAL REQUIRED] Run the full CAE simulation pipeline in one call: "
             "optionally derive the FEA setup with AI preprocessing, generate the FE mesh, "
             "assemble the CalculiX solver deck, run the solver, extract results, and refresh "
-            "the result summary. Pass task_description to auto-derive simulation/setup.yaml "
-            "and simulation/cae_mapping.json from geometry; omit it when a setup already "
-            "exists. Typical input: {project_id, task_description: 'Bracket fixed at bolt holes, "
-            "500 N downward on top face', mesh_size_mm: 2.5, run_id: 'pipeline_run_001'}."
+            "the result summary. With a setup from cae.setup_static this is the whole analysis: "
+            "{project_id, mesh_size_mm} the first time, {project_id} after any CAD edit. It "
+            "re-meshes when the mesh is missing or predates the geometry (at the previous size), "
+            "solves into a NEW run (the next free run_NNN, never overwriting one), and returns "
+            "metrics, mesh accuracy band, acceptance_verdict and change_since_previous_run. "
+            "Pass task_description only to derive the setup with AI preprocessing (needs an API key)."
         ),
         input_schema=_schema("cae.run_simulation_pipeline"),
     )

@@ -58,6 +58,17 @@
             "$comment": "The engineering-language phrase that CHOSE this target face, e.g. \"rib_main top\", recorded beside the `@face:` pointer it resolved to. A resolved pointer cannot survive an edit that MOVES the face: the id retires and the binding resolves to nothing. Deck-time binding re-runs the same deterministic resolver over this phrase to recover the face, and refuses ambiguity exactly as the authoring path does. Absent on a document written before this field existed, which keeps the conservative refusal rather than guessing.",
             "type": "string",
             "minLength": 1
+          },
+          "target_signature": {
+            "$comment": "The CHARACTER of the target face when it was bound: surface type, normal, area and radius, never position. Deck-time binding falls back to it when the face id retired and no phrase re-resolves (an explicit `@face:` pointer), and accepts only a face that alone matches it within tolerance; several look-alike faces refuse. Null when the face recorded no area.",
+            "type": ["object", "null"],
+            "properties": {
+              "surface_type": {"type": ["string", "null"]},
+              "area": {"type": "number"},
+              "normal": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+              "radius": {"type": "number"}
+            },
+            "additionalProperties": false
           }
         },
         "additionalProperties": false

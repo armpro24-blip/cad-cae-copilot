@@ -52,8 +52,10 @@ and package-lifecycle tools require `package`. A skipped read returns
 `code: "guide_required"` without executing or requesting approval. The `cad`
 and `cae` topics are the short contracts below (**CAD contract**, **CAE
 contract**); `cad-reference` and `cae-reference` hold the longer rationale.
-Reading part 1 of `aieng.guide {topic: "full"}` or `aieng.agent_readme
-{detail: "full"}` — which contains both contracts — unlocks all categories. Operators may explicitly disable this guard with
+`aieng.agent_readme` returns the quickstart followed by both contracts, so
+reading it unlocks `cad` and `cae` — one onboarding call. Reading part 1 of
+`aieng.guide {topic: "full"}` or `aieng.agent_readme {detail: "full"}` — which
+contains both contracts — unlocks all categories. Operators may explicitly disable this guard with
 `AIENG_MCP_REQUIRE_GUIDES=0`.
 
 **The server answers during long calls.** Tool bodies run in worker threads, so
@@ -122,9 +124,11 @@ asking again; ask again only if the goal or scope changes materially.
 - `helper_adjustments` → a helper built something other than what was asked.
 
 **Editing.**
-- Pure dimension change: `cad.list_editable_parameters` → `cad.edit_parameter
-  {featureId, parameterName, newValue}`. A parameter with `scope: "global"`
-  moves several parts.
+- Pure dimension change: `cad.edit_parameter {featureId, parameterName,
+  newValue}`. Your own part label and constant work (`featureId: "beam",
+  parameterName: "THICKNESS"`) when they are unambiguous; otherwise
+  `cad.list_editable_parameters` lists the ids. A parameter with
+  `scope: "global"` moves several parts.
 - Read `regression_diff.verdict`: `clean`; `collateral_change` (parts you did
   not target moved — named in `collateral_parts`); `identical` (nothing changed;
   wrong constant or a clamped value); `topology_changed` (a part appeared or
@@ -153,7 +157,7 @@ What `aieng.guide {topic: "cae"}` serves: the rules for `cae.*`, `opt.*` and
 `code` and a message (often `recommended_next_calls`) — follow them, never
 work around them.
 
-**The static pipeline.**
+**Analysing — set up once, then one call per analysis.**
 1. `cae.setup_static {project_id, material, fix, load: {at, force_n, direction}}`
    — ordinary words: `bottom`/`top`/`left`/`right`/`front`/`back`, `±X/±Y/±Z`,
    `largest flat face`, `bolt holes`, any of them scoped to a part
@@ -163,31 +167,31 @@ work around them.
    else (several load cases, thermal BCs, DOF ranges) use
    `cae.apply_setup_patch`. To record a load case with acceptance criteria use
    `cae.author_load_case`, then `cae.apply_load_case`.
-2. `cae.generate_mesh {mesh_size_mm}` — quadratic C3D10 by default. Read
-   `accuracy.band`.
-3. `cae.prepare_solver_run` — preflight; runs nothing. If not ready, follow
-   `recommended_next_calls` in order.
-4. `cae.generate_solver_input {run_id}` → `cae.run_solver {input_deck_path}`
-   (approval) → `cae.extract_solver_results` → optionally
-   `cae.extract_field_regions` and `postprocess.refresh_cae_summary`.
-5. `report.generate` writes an HTML report and returns its path.
+2. `cae.run_simulation_pipeline {project_id, mesh_size_mm}` (approval) meshes
+   (quadratic C3D10), writes the deck, solves into the next free `run_NNN` and
+   returns `metrics`, `mesh.accuracy_band`, `acceptance_verdict` (when criteria
+   are recorded) and `change_since_previous_run`. It never overwrites a run.
+3. After any geometry change (`cad.edit_parameter`, a rebuild, a part edit),
+   call it again — `{project_id}` is enough. It re-meshes at the previous size
+   because the old mesh predates the edit, solves a new run, and its
+   `change_since_previous_run` is the before/after. Faces that moved are
+   re-found from the words recorded by `cae.setup_static`, or — for an explicit
+   `@face:` — from the face's type, normal and area when exactly one face still
+   matches; each move is reported as a warning. If neither picks one face the
+   deck is refused (`unbound_setup_faces`): re-run `cae.setup_static` with words
+   or the new `@face:` ids, which replaces the old binding.
+4. `report.generate` writes an HTML report and returns its path.
 
-**Re-analysing after any geometry change** (`cad.edit_parameter`, a rebuild, a
-part edit):
-- Re-mesh (`cae.generate_mesh`). An old mesh is refused as `stale_mesh`.
-- Generate the deck under a **new** `run_id` (`run_002`, `run_003`, …). Reusing
-  a run id fails or overwrites the baseline; the refusal names a free id.
-- Solve with that run's `input_deck_path`. A pre-edit deck is refused as
-  `stale_deck`; a `run_id` that disagrees with the deck path as
-  `run_id_conflict`.
-- Faces that moved are re-found from the words recorded by `cae.setup_static`;
-  `cae.prepare_solver_run` reports `selector_rebind`. If a phrase no longer
-  picks the same faces it is refused (`unbound_setup_faces`): re-run
-  `cae.setup_static` with words that do.
-- Use `cae.compare_runs` for the before/after. It re-reads each run's own
-  result; `geometry_changed: false` means both runs solved the same geometry.
-  Stresses are compared peak to peak: check `peak_location` from
-  `cae.extract_field_regions` before saying a change happened "at" a place.
+**Step by step, when you need the control:** `cae.generate_mesh` →
+`cae.prepare_solver_run` (preflight, follow `recommended_next_calls`) →
+`cae.generate_solver_input {run_id}` → `cae.run_solver {input_deck_path}`
+(approval) → `cae.extract_solver_results` → `cae.compare_runs`. Each re-solve
+needs a **new** `run_id` (`run_002`, …); out-of-order use is refused: an old mesh
+as `stale_mesh`, a pre-edit deck as `stale_deck`, a `run_id` that disagrees
+with the deck path as `run_id_conflict`. `cae.compare_runs` re-reads each run's
+own result; `geometry_changed: false` means both runs solved the same geometry.
+Stresses are compared peak to peak: check `peak_location` from
+`cae.extract_field_regions` before saying a change happened "at" a place.
 
 **Analysis types** (`analysis_type` via `cae.apply_setup_patch`): `static`,
 `modal`, `buckling`, `thermal`, `thermal_structural`. Nothing else exists:
@@ -208,8 +212,13 @@ analysis — a yield-based sizing sweep is not a fatigue answer.
   heuristic; only a converged `cae.mesh_convergence` establishes mesh
   independence.
 - `max_von_mises_stress` is the peak of nodal-averaged stress; a sharp
-  concentration is higher. `max_temperature` is in the units of the applied
-  temperatures.
+  concentration is higher. Read `stress_peak` (pipeline) or each cluster's
+  `peak_singularity` (`cae.extract_field_regions`): `singular: true` means the
+  peak sits at a sharp concave edge or on a fully fixed face, where linear
+  elasticity has no finite stress and refinement raises it without limit —
+  quote the displacement or a stress away from it, never that peak.
+  `singular: false` is not convergence. `max_temperature` is in the units of
+  the applied temperatures.
 - `cae.extract_field_regions` always returns clusters: check
   `field_statistics.near_uniform` before calling one a hot spot.
 
@@ -2032,7 +2041,11 @@ What makes it safe rather than merely convenient:
   three steps later (or never).
 - Ambiguous wording is **refused** with the real candidate faces listed, never
   guessed: two same-size faces pointing the same way, or a phrase it cannot
-  parse, both return `needs_user_input` + `candidates`.
+  parse, both return `needs_user_input` + `candidates`. So does a direction on
+  a stepped part where the largest face that way is not the outermost one
+  (`"top"` of a plate with a rib fused on: the plate face or the rib top?) —
+  it used to take the largest, and an agent's 500 N meant for the rib landed on
+  the plate.
 - A sloped face still resolves when it is genuinely the most `top`-facing
   surface (a triangular gusset's hypotenuse), but is reported as
   `inclined 32° from top` at medium confidence — never as if it were flat-on.

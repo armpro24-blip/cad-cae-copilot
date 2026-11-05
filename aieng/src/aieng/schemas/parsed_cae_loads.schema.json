@@ -68,6 +68,17 @@
             "type": "string",
             "minLength": 1
           },
+          "target_signature": {
+            "$comment": "The CHARACTER of the target face when it was bound: surface type, normal, area and radius, never position. Deck-time binding falls back to it when the face id retired and no phrase re-resolves (an explicit `@face:` pointer), and accepts only a face that alone matches it within tolerance; several look-alike faces refuse. Null when the face recorded no area.",
+            "type": ["object", "null"],
+            "properties": {
+              "surface_type": {"type": ["string", "null"]},
+              "area": {"type": "number"},
+              "normal": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+              "radius": {"type": "number"}
+            },
+            "additionalProperties": false
+          },
           "load_share_basis": {
             "$comment": "How this entry's `value_n` was derived from a force spread over several faces. `area`: it is this face's area share of `total_force_n`, and deck-time binding re-splits the total by the faces' CURRENT areas, so an edit that resizes the faces unequally does not keep the authored split. Absent on a single-face load and on documents written before this field existed, whose `value_n` is used as written.",
             "type": "string",
